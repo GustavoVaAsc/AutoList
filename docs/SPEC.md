@@ -19,7 +19,8 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 
 **Incluye**
 - Reconocimiento facial en la NPU: detección, alineación y embedding.
-- Registro de alumnos (enrolamiento) desde la pantalla táctil.
+- Registro de alumnos (enrolamiento) desde un frontend web, con la ILI9341 guiando al alumno frente a la cámara.
+- Importación de la lista maestra desde CSV.
 - Sesiones de clase con tolerancia de retardo.
 - Reglas heredadas del proyecto previo: lista maestra y anti-doble registro.
 - Retroalimentación física: servo como puerta simulada, LEDs RGB y buzzer.
@@ -29,7 +30,6 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 - Medición de consumo energético.
 
 **Opcional**
-- App multiplataforma (iOS y Android) en React Native con Expo, comunicándose por WiFi.
 - Detección de rostro en la propia XIAO ESP32S3 (cascada con la NPU).
 - Detección de vida (antispoofing).
 
@@ -37,6 +37,7 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 - Cerradura física real.
 - Integración con sistemas escolares.
 - Bluetooth.
+- App móvil.
 
 ## 3. Trazabilidad con los requisitos del documento
 
@@ -46,9 +47,9 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 | 3. La ESP32 lee los sensores y los envía a la Orange Pi | La XIAO ESP32S3 lee cámara, PIR e INA219 y los envía por HTTP y MQTT |
 | 4. Docker: Mosquitto, InfluxDB y Node-RED en la Orange Pi; base de datos y Grafana en la PC | `orangepi/docker-compose.yml` y `pc/docker-compose.yml` (Postgres en lugar de MariaDB, ver decisiones) |
 | 5. Node-RED redistribuye a InfluxDB y a la base de datos, con un nodo que ejecuta el Python de la pantalla | Flujos de ingesta y pase de lista, más un nodo `exec` que reinicia la pantalla por SSH |
-| 6. Programa de Python para la ILI9341 con menú | `orangepi/pantalla/` |
+| 6. Programa de Python para la ILI9341 con menú | `orangepi/pantalla/`, complementado con el frontend web de registro (`web/`), que corresponde a la opción "HTML" de la Fig. 1 |
 | 7. Base de datos y Grafana en la PC | Postgres con pgvector y paneles de Grafana |
-| Nota: flujo inverso hasta el actuador, con etapa de potencia | Pantalla o app → MQTT → Pico 2 W → servo, LEDs y MOSFET con tira LED |
+| Nota: flujo inverso hasta el actuador, con etapa de potencia | Pantalla → MQTT → Pico 2 W → servo, LEDs y MOSFET con tira LED |
 | Entregables: reporte con costo y consumo | Experimentos E5 y análisis de costo (sección 10) |
 
 ## 4. Arquitectura
@@ -70,7 +71,7 @@ flowchart LR
     PG[("Postgres + pgvector")]
     GF["Grafana"]
   end
-  APP["App React Native<br/>opcional"]
+  WEB["Frontend web de registro<br/>Vite + React"]
 
   CAM -->|HTTP fotos| VIS
   CAM -->|MQTT pir y energía| MQ
@@ -83,20 +84,23 @@ flowchart LR
   MQ -->|MQTT cmd| ACT
   GF --> IF
   GF --> PG
-  APP <-->|MQTT WebSocket y HTTP| MQ
+  WEB -->|HTTP API| NR
+  WEB <-->|MQTT WebSocket| MQ
 ```
 
 | Capa | Dispositivo | Responsabilidad |
 |---|---|---|
 | Campo (sensores) | XIAO ESP32S3 Sense | Fotos bajo demanda (HTTP), PIR e INA219 (MQTT) |
 | Campo (actuadores) | Raspberry Pi Pico 2 W | Servo, LEDs RGB, buzzer, MOSFET de la tira LED (MQTT) |
-| Borde | Orange Pi Zero 3W | Servicio de visión (NPU), Docker (Mosquitto, Node-RED, InfluxDB), pantalla ILI9341, RTC DS3231 |
+| Borde | Orange Pi Zero 3W | Servicio de visión (NPU), Docker (Mosquitto, Node-RED, InfluxDB), pantalla ILI9341, RTC DS3231, frontend web (servido por Node-RED) |
 | Almacenamiento | PC | Docker (Postgres con pgvector, Grafana) |
+| Administración | Navegador de la laptop del profesor | Frontend web de registro de alumnos |
 
 **Protocolos:**
 - **HTTP:** imágenes de la cámara.
 - **MQTT:** telemetría, resultados y comandos.
-- **MQTT sobre WebSocket (puerto 9001):** app.
+- **MQTT sobre WebSocket (puerto 9001):** progreso del registro en el frontend.
+- **HTTP (Node-RED):** frontend estático y API de alumnos y registro.
 - **SQL por LAN:** de Node-RED a Postgres.
 
 ## 5. Flujos
@@ -135,12 +139,12 @@ sequenceDiagram
 7. Node-RED guarda en Postgres e InfluxDB y manda la retroalimentación:
    - **verde:** registrado, y el servo abre;
    - **rojo:** desconocido o ya registrado;
-   - **ámbar:** zona gris de confianza.
+   - **ámbar:** zona gris de confianza; se repite la captura y, si persiste, el profesor lo marca manualmente desde la pantalla.
 
 ### 5.2 Control (flujo inverso)
 
 - **Automático:** Node-RED → `aula/actuador/cmd` → Pico 2 W.
-- **Manual:** desde la pantalla o la app se puede abrir el servo, probar LEDs y buzzer, e iniciar o terminar la sesión.
+- **Manual:** desde la pantalla se puede abrir el servo, probar LEDs y buzzer, e iniciar o terminar la sesión.
 
 ### 5.3 Sesión de clase
 
@@ -148,7 +152,53 @@ El profesor inicia la sesión con materia, grupo y tolerancia. Node-RED crea el 
 
 ### 5.4 Registro de alumnos (enrolamiento)
 
-Desde la pantalla se captura el número de cuenta, se confirma el consentimiento y el sistema toma 5 fotos. Se promedian los embeddings y el resultado se guarda en Postgres (fuente de verdad) y en la galería local de la Orange Pi (SQLite).
+El registro tiene dos partes: primero se da de alta al alumno en la lista maestra y después se le asocia su rostro. Todo se controla desde el frontend web; la captura siempre se hace con la XIAO y el embedding siempre se calcula en la NPU, con el mismo pipeline del pase de lista.
+
+**Parte 1: lista maestra (una vez por grupo).** El profesor sube un CSV (`no_cuenta,nombre,grupo`) desde el frontend. Node-RED lo inserta en `alumnos` con `embedding = NULL`, así que cada alumno queda **pendiente de rostro**.
+
+**Parte 2: registro del rostro.**
+
+```mermaid
+sequenceDiagram
+  participant W as Frontend web
+  participant N as Node-RED
+  participant V as Visión (NPU)
+  participant X as XIAO (cámara)
+  participant L as Pantalla ILI9341
+  participant D as Postgres
+
+  W->>N: POST /api/enrolamiento {cuenta, consentimiento}
+  N->>V: aula/vision/cmd {accion: enrolar}
+  loop 5 poses
+    V-->>L: aula/vision/enrolamiento {paso, pose}
+    V->>X: GET /capture
+    V-->>W: aula/vision/enrolamiento {paso, estado, motivo, miniatura}
+  end
+  V->>V: consistencia entre fotos y comparación contra la galería
+  V->>N: aula/vision/embedding
+  N->>D: UPDATE alumnos SET embedding
+  W->>N: POST /api/enrolamiento/probar
+  N->>V: aula/vision/cmd {accion: probar}
+  V-->>W: resultado y confianza
+```
+
+> Las flechas punteadas son mensajes MQTT que llegan al frontend y a la pantalla por Mosquitto.
+
+1. El profesor elige a un alumno pendiente en el frontend y marca el consentimiento. Sin consentimiento, el botón de inicio está deshabilitado.
+2. Node-RED valida que el alumno exista y publica la orden de registro.
+3. El servicio de visión enciende la tira LED y toma 5 fotos, una por pose: de frente, un poco a la izquierda, un poco a la derecha, un poco hacia arriba y de frente otra vez. La ILI9341 le muestra la pose al alumno, que no ve la laptop del profesor.
+4. Cada foto se valida: exactamente un rostro, cara de al menos ~100 px de ancho, nitidez mínima y giro de cabeza moderado. Si se rechaza, el frontend muestra el motivo y se repite esa pose.
+5. Se calcula el embedding de cada foto en la NPU. Los que se alejan mucho del resto se descartan; los demás se promedian y se normalizan.
+6. **Chequeo antifraude:** si el nuevo embedding se parece mucho al de otro alumno ya registrado, el frontend muestra una advertencia y el profesor decide si continúa.
+7. Node-RED guarda el embedding en Postgres (es el único que escribe en la base) y el servicio de visión actualiza su galería local. Las fotos se descartan: las miniaturas solo pasan por el navegador y el embedding nunca llega al frontend.
+8. **Prueba inmediata:** el alumno se para frente a la cámara y el frontend muestra el resultado y la confianza.
+
+**Reglas del registro:**
+- **Mismo pipeline siempre.** El embedding del registro se calcula con el mismo modelo cuantizado en la NPU que el pase de lista. Registrar con el modelo flotante en la PC baja la precisión.
+- **Misma cámara.** No se registra con la webcam de la laptop: registrarse con una cámara y reconocerse con otra también baja la precisión.
+- **Pase de lista en pausa.** Mientras hay un registro en curso, el servicio de visión ignora el PIR.
+- **Re-registro y baja** desde el frontend. Borrar el embedding es la forma de retirar el consentimiento.
+- **Sincronización.** Al arrancar, el servicio de visión pide la galería completa a Node-RED (`GET /api/galeria`).
 
 ## 6. Componentes de software
 
@@ -172,12 +222,13 @@ Desde la pantalla se captura el número de cuenta, se confirma el consentimiento
 - **Detección:** SCRFD o RetinaFace en versión mobile, con entrada fija.
 - **Reconocimiento:** MobileFaceNet o ArcFace, con entrada de 112×112.
 - **Conversión:** ONNX → Pegasus/Acuity → cuantización uint8 con imágenes de calibración → `.nb`. Referencia: ejemplos del ai-sdk de Radxa para el A733.
-- **Galería local** en SQLite, sincronizada desde Postgres.
+- **Galería local** en SQLite, sincronizada desde Postgres (`GET /api/galeria` al arrancar).
+- **Registro:** atiende las órdenes `enrolar`, `cancelar` y `probar`; publica el progreso en `aula/vision/enrolamiento` y el embedding final en `aula/vision/embedding`. Mientras registra, ignora el PIR.
 - **Mejora de imagen:** CLAHE y gamma en CPU (OpenCV). Como experimento: Zero-DCE y superresolución del recorte facial en la NPU.
 - **Publica:** número de cuenta, confianza y latencias (captura, detección, embedding, total).
 
 ### 6.4 Docker en la Orange Pi (`orangepi/docker-compose.yml`)
-- Mosquitto, con listener en 1883 y WebSocket en 9001, y usuario y contraseña.
+- Mosquitto, con listener en 1883 y WebSocket en 9001 (para el frontend), y usuario y contraseña. Con ACL, el usuario del frontend no puede leer `aula/vision/embedding`.
 - Node-RED.
 - InfluxDB.
 - **La pantalla no corre en Docker.** Es el único componente que necesita SPI, GPIO e I²C, así que se ejecuta en el host como unidad systemd (`orangepi/systemd/orangepi-pantalla.service`), con el usuario del servicio en los grupos `spi`, `gpio` e `i2c`. Node-RED la reinicia desde un nodo `exec` que corre por SSH contra el host. Así los permisos de `/dev/spidev*` y `/dev/i2c-*` los resuelve el host con sus reglas de udev, sin mapear dispositivos al contenedor, y la pantalla sobrevive a un reinicio de Node-RED.
@@ -189,7 +240,8 @@ Desde la pantalla se captura el número de cuenta, se confirma el consentimiento
 3. **Sesiones:** iniciar, terminar y generar el reporte CSV.
 4. **Pantalla:** nodo `exec` que reinicia por SSH la unidad systemd de la ILI9341 (`systemctl restart orangepi-pantalla`). Con la pantalla, Node-RED habla solo por MQTT.
 5. **Métricas del sistema:** temperatura del SoC, CPU y RAM → InfluxDB.
-6. **API HTTP para la app:** `GET /api/sesion/actual`, `GET /api/sesion/:id/reporte`.
+6. **Registro:** importación de la lista maestra, órdenes de registro y guardado del embedding que llega por `aula/vision/embedding`.
+7. **API HTTP y frontend:** endpoints del frontend (ver frontend web) y archivos estáticos de `web/` servidos con `httpStatic` desde `/data/public`. Todo protegido con `httpNodeAuth`.
 
 ### 6.6 Pantalla ILI9341 (`orangepi/pantalla`, Python, táctil XPT2046)
 
@@ -200,7 +252,7 @@ Desde la pantalla se captura el número de cuenta, se confirma el consentimiento
 | Inicio | Sesión activa, último registro (nombre y estado), contador de presentes |
 | Sesión | Iniciar o terminar, materia, grupo y tolerancia |
 | Lista | Presentes, retardos y faltantes |
-| Registrar alumno | Número de cuenta, consentimiento, captura guiada de 5 fotos |
+| Guía de registro | Se activa sola durante un registro: nombre del alumno, pose a adoptar y progreso (3/5). El registro se controla desde el frontend |
 | Control | Abrir el servo, probar LEDs, buzzer y tira LED |
 | Imagen | Última captura original y mejorada |
 | Sistema | Temperatura, latencia de la NPU, potencia, estado de la red |
@@ -217,11 +269,29 @@ Desde la pantalla se captura el número de cuenta, se confirma el consentimiento
   - potencia;
   - temperatura.
 
-### 6.8 App (opcional, `app/`, React Native con Expo)
-- **mqtt.js** sobre WebSocket para datos en vivo y la API HTTP de Node-RED para los reportes.
-- Se prueba en iPhone y Android con Expo Go, sin necesidad de Mac.
-- **Profesor:** ver la sesión en vivo, iniciar o terminar, ver la lista y descargar el reporte.
-- **Alumno:** confirmar asistencia cuando el reconocimiento quedó en zona gris (segundo factor; se acepta solo si coincide con el rostro sugerido).
+### 6.8 Frontend web de registro (`web/`, Vite + React + TypeScript)
+- Lo usa el profesor desde el navegador de su laptop, en la misma red. Se compila y Node-RED lo sirve desde la Orange Pi (`httpStatic`).
+- **mqtt.js** sobre WebSocket (puerto 9001) para el progreso en vivo; la API HTTP de Node-RED para todo lo demás.
+- Sin vista previa en vivo en la primera versión: el servidor de cámara de la ESP32 maneja mal un stream abierto mientras recibe capturas. Las miniaturas de cada foto dan la retroalimentación.
+
+| Vista | Contenido |
+|---|---|
+| Alumnos | Lista por grupo con estado (pendiente o registrado), búsqueda, re-registrar y borrar rostro |
+| Importar | Subir el CSV de la lista maestra, vista previa y errores por fila |
+| Registro | Consentimiento, iniciar o cancelar, miniaturas de las 5 poses con estado y motivo, advertencia de parecido, resultado |
+| Prueba | Reconocimiento de prueba con la confianza obtenida |
+
+**Endpoints (Node-RED, protegidos con `httpNodeAuth`):**
+
+```
+GET    /api/alumnos?grupo=          lista con estado de rostro
+POST   /api/alumnos/importar        CSV de la lista maestra
+POST   /api/enrolamiento            {"cuenta":"320068234","consentimiento":true}
+POST   /api/enrolamiento/cancelar
+POST   /api/enrolamiento/probar     reconocimiento de prueba
+DELETE /api/alumnos/:cuenta/rostro  borra el embedding (retira el consentimiento)
+GET    /api/galeria                 embeddings para el servicio de visión (no lo usa el frontend)
+```
 
 ## 7. Datos
 
@@ -234,8 +304,10 @@ aula/camara/estado       XIAO → borde            {"rssi":-58,"heap":120000,"te
 aula/actuador/cmd        borde → Pico            {"servo":"abrir","led":"verde","buzzer":1,"luz":0}
 aula/actuador/estado     Pico → borde            {"servo":"cerrado","led":"azul","luz":0}
 aula/vision/resultado    visión → Node-RED       {"cuenta":"320068234","conf":0.78,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
-aula/vision/cmd          Node-RED/pantalla → vis {"accion":"enrolar","cuenta":"320068234"}
-aula/sesion/cmd          pantalla/app → Node-RED {"accion":"iniciar","materia":"FSE","grupo":"1","tol_min":10}
+aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234"}   (enrolar, cancelar, probar)
+aula/vision/enrolamiento visión → frontend, LCD  {"cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
+aula/vision/embedding    visión → Node-RED       {"cuenta":"320068234","embedding":[...]}
+aula/sesion/cmd          pantalla → Node-RED     {"accion":"iniciar","materia":"FSE","grupo":"1","tol_min":10}
 aula/sesion/estado       Node-RED → todos        {"activa":true,"id":12}
 aula/sistema/metricas    Orange Pi → Node-RED    {"temp":52.1,"cpu":34,"ram":61}
 ```
@@ -251,7 +323,7 @@ CREATE TABLE alumnos (
   no_cuenta      VARCHAR(9) PRIMARY KEY,
   nombre         TEXT        NOT NULL,
   grupo          TEXT        NOT NULL,
-  embedding      vector(512),            -- 128 si el modelo lo usa
+  embedding      vector(512),            -- NULL = pendiente de rostro; 128 si el modelo lo usa
   consentimiento BOOLEAN     NOT NULL DEFAULT FALSE,
   fecha_alta     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -272,7 +344,7 @@ CREATE TABLE asistencias (
   hora      TIMESTAMPTZ NOT NULL DEFAULT now(),
   estado    TEXT        NOT NULL CHECK (estado IN ('presente','retardo')),
   confianza REAL,
-  metodo    TEXT        NOT NULL CHECK (metodo IN ('rostro','app','manual')),
+  metodo    TEXT        NOT NULL CHECK (metodo IN ('rostro','manual')),
   UNIQUE (no_cuenta, sesion_id)          -- reemplaza checkIfAlreadyRegistered()
 );
 
@@ -376,8 +448,8 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
   docker-compose.yml
   /sql/schema.sql
   /grafana/dashboards
-/app                     React Native + Expo (opcional)
-/herramientas            enrolamiento por lote, calibración LFW, reporte CSV
+/web                     frontend de registro (Vite + React + TypeScript)
+/herramientas            enrolamiento por lote (experimentos), calibración LFW, reporte CSV
 /docs                    diagramas, mediciones, consentimiento, reporte
 .env.example             credenciales de MQTT y Postgres (nunca subir el .env)
 ```
@@ -387,22 +459,23 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 - Exportar `flows.json` y los dashboards de Grafana al repo después de cada cambio.
 - Modelos `.nb` y datasets fuera de git: usar releases o una carpeta compartida.
 - No subir fotos de personas al repo.
+- El build de `web/` no se versiona: se genera y se copia a `/data/public` de Node-RED.
 
 ## 12. Roles y plan semanal
 
 | Persona | Rol | Módulos |
 |---|---|---|
 | **Gustavo** | Visión | Servicio C++, conversión de modelos, mejora de imagen, E1–E3, calibración LFW |
-| **Arnau** | Campo y pantalla | Firmware XIAO y Pico, etapa de potencia, pruebas unitarias, pantalla ILI9341, E4–E5 |
-| **Yordi** | Borde y datos | Docker, Node-RED, Postgres, Grafana, app (opcional), E6 |
+| **Arnau** | Campo, pantalla y Grafana | Firmware XIAO y Pico, etapa de potencia, pruebas unitarias, pantalla ILI9341, paneles de Grafana, E4–E5 |
+| **Yordi** | Borde, datos y frontend | Docker, Node-RED, Postgres, API HTTP, frontend web de registro, E6 |
 
 | Fecha | Entregable | Gustavo | Arnau | Yordi |
 |---|---|---|---|---|
 | **28 oct** | Proyecto y planeación | Spec y exposición | Lista de compras | Repo y estructura |
 | **4 nov** | Primer avance | Armbian, verificar `/dev/vipcore`, ejemplo de detección en la NPU, toolchain Pegasus en la PC | XIAO: `/capture`, PIR e INA219 por MQTT; Pico: servo y LEDs por MQTT; pruebas unitarias; overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi y la PC; esquema de Postgres; ingesta a Influx; primer panel de energía; imagen de Node-RED con `openssh-client` y clave SSH |
-| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicar resultado | MOSFET y tira LED; orquestación luz–captura; menú base de la pantalla (inicio, sesión, lista) | Flujos de pase de lista y sesiones; nodo `exec` por SSH; reporte CSV |
-| **18 nov** | Tercer avance | Filtro de calidad, mejora de imagen; E1–E3; umbral con LFW | Pantalla completa (registrar, control, imagen, sistema); E4–E5 | Grafana completo; API HTTP; app con Expo (sesión en vivo) |
-| **25 nov** | Entrega | Integración, video, reporte (costo, consumo, conclusiones) y comprimido de código (todos) | | E6, app si da tiempo |
+| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicar resultado; orden de enrolar con captura de 5 poses | MOSFET y tira LED; orquestación luz–captura; menú base de la pantalla (inicio, sesión, lista) | Flujos de pase de lista y sesiones; nodo `exec` por SSH; reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend |
+| **18 nov** | Tercer avance | Filtro de calidad, mejora de imagen; validaciones y chequeo antifraude del registro; E1–E3; umbral con LFW | Pantalla completa (guía de registro, control, imagen, sistema); Grafana completo; E4–E5 | Frontend de registro completo (alumnos, importar, registrar, probar, borrar); `httpNodeAuth` y ACL de Mosquitto |
+| **25 nov** | Entrega | Integración, video, reporte (costo, consumo, conclusiones) y comprimido de código (todos) | | E6 |
 
 ## 13. Riesgos
 
@@ -419,6 +492,9 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 | La pantalla necesita SPI, GPIO e I²C | Corre en el host como servicio systemd, fuera de Docker; Node-RED la reinicia por SSH |
 | Los overlays de SPI no exponen `/dev/spidev*` | Verificar en la semana 1 con `ls /dev/spidev*` y `armbian-config`; plan B: imagen oficial del fabricante |
 | Hora incorrecta sin internet | RTC DS3231 en la Orange Pi |
+| El frontend queda en la ruta crítica del registro | Probar los endpoints con `curl` desde la semana 2; la herramienta de enrolamiento por lote sirve de respaldo |
+| Acceso no autorizado a datos biométricos desde el frontend | `httpNodeAuth` en Node-RED y ACL en Mosquitto; los embeddings nunca llegan al navegador |
+| Un registro dispara el pase de lista | El servicio de visión ignora el PIR mientras hay un registro en curso |
 
 ## 14. Registro de decisiones
 
@@ -429,7 +505,8 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 | 25 oct | Servo como puerta simulada; MOSFET con tira LED como etapa de potencia | Sin cerradura real; la iluminación mejora el reconocimiento |
 | 25 oct | Servicio de visión en C++ | Los ejemplos de la NPU del A733 están en C++ |
 | 25 oct | Sensores en la XIAO ESP32S3; actuadores en la Pico 2 W | Cumple "la ESP32 lee el sensor" con el hardware disponible |
-| 25 oct | App opcional en React Native con Expo, por WiFi | Se prueba en iPhone sin Mac; mqtt.js maduro |
+| 25 oct | Se descarta la app móvil; el registro de alumnos se hace desde un frontend web (Vite + React) servido por Node-RED | Menos alcance; el registro necesita tablas, subir un CSV y retroalimentación visual que en la ILI9341 serían incómodas; cubre la opción "HTML" de la Fig. 1 |
+| 25 oct | Captura del registro siempre con la XIAO y embedding en la NPU | Mismo pipeline que el pase de lista; registrar con otra cámara baja la precisión |
 | 25 oct | Comparación en vivo local en la Orange Pi; Postgres como fuente de verdad | Latencia y funcionamiento aunque la PC esté apagada |
 
 ## 15. Pendientes inmediatos
@@ -440,3 +517,4 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 - [ ] Comprar: tira LED de 12 V, MOSFET, servo, INA219, PIR, buck de 5 V, fuente de 12 V
 - [ ] Redactar `docs/consentimiento.md`
 - [ ] Crear el repo con la estructura de la sección 11
+- [ ] Acordar el formato del CSV de la lista maestra (`no_cuenta,nombre,grupo`)
