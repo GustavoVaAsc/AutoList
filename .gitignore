@@ -1,0 +1,21 @@
+# Documento interno del equipo: notas de trabajo, estado y pendientes.
+# No se versiona; lo que ve el profesor es docs/HIGH-LEVEL-PLAN.md.
+docs/SPEC.md
+
+# Credenciales: solo se versiona .env.example
+.env
+
+# Modelos y datasets: fuera de git, van en releases o en una carpeta compartida
+*.nb
+*.onnx
+*.tflite
+
+# Dependencias y builds
+node_modules/
+web/dist/
+web/build/
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.swp
