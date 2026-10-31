@@ -53,6 +53,8 @@ python3 herramientas/validar_protocolo.py --contrato otro_contrato.json mensajes
   contrato: `conf` entre 0 y 1, `paso` entre 1 y 5 y `total` igual a 5.
 - Que el vector de `embedding` tenga la longitud que declara el contrato:
   `EMBEDDING_DIM` (512 por defecto), que se lee de la variable de entorno.
+- Que se cumplan las reglas declaradas dentro de `items` (`enum`, `min`, `max`
+  y `length`): se aplican a cada elemento del array.
 - Que `aula/actuador/cmd` lleve al menos un campo.
 - Que se cumplan las reglas condicionales: `aula/sesion/cmd` con
   `accion: iniciar` exige `materia`, `grupo` y `tol_min`, y `aula/vision/cmd`
@@ -61,16 +63,35 @@ python3 herramientas/validar_protocolo.py --contrato otro_contrato.json mensajes
 El validador **no inventa reglas**: si el contrato no declara un límite, un
 `enum` o una condición para un campo, no lo comprueba. Las reglas viven en
 [`docs/mqtt-topics.json`](../docs/mqtt-topics.json), con `enum`, `min`, `max`,
-`length`, `min_fields` y `required_if`.
+`length`, `min_fields` y `required_if`; dentro de `items` valen las mismas
+reglas (`enum`, `min`, `max` y `length`), aplicadas a cada elemento del array.
 
 Además, el script es defensivo con la entrada: no lee más de 16 MiB de un
 fichero ni de la entrada estándar (si se pasa de ahí, avisa y sale con código
 2) y sanea lo que imprime, así que un tópico con secuencias de escape ANSI no
 redibuja la terminal y los valores se truncan a 200 caracteres.
 
+### El contrato se valida a sí mismo
+
+Al cargarlo, el script comprueba que el contrato sea coherente. Si el JSON
+está mal editado, aborta con **código 2** y un mensaje que dice qué entrada
+del JSON es la que está mal, en vez de reventar con una traza:
+
+- cada campo declarado tiene que tener `name` y `type`;
+- cada `type` declarado tiene que ser uno de los soportados (`int`, `float`,
+  `string`, `bool`, `object` y `array`). Con un `type` desconocido, como
+  `"decimal"` por un typo, la comprobación de tipos se desactivaría en
+  silencio y dejaría pasar cualquier valor;
+- cada tópico tiene que empezar por el prefijo `base_topic` que declara el
+  contrato;
+- los ejemplos del propio contrato tienen que cumplir las reglas que el
+  contrato declara. El ejemplo del `embedding` va abreviado a 4 valores y solo
+  se acepta porque el JSON lo marca con `ejemplo_abreviado` en ese campo: un
+  ejemplo abreviado solo vale si el propio JSON lo declara así.
+
 Los errores se escriben por stderr y el proceso sale con código 1 si hay
-algún error, 0 si todo está bien y 2 si el contrato o la entrada no se pueden
-leer.
+algún error de validación, 0 si todo está bien y 2 si el contrato o la entrada
+no se pueden leer o no hay mensajes que validar.
 
 ### Ejemplos
 

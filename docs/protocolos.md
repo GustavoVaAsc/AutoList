@@ -81,7 +81,8 @@ error, ámbar: zona gris).
 
 El frontend no publica aquí: no tiene permiso de escritura (sección 3). Su
 control manual del servo, los LEDs y el buzzer llega a la XIAO a través de
-Node-RED, que es el único rol con permiso de escritura amplio.
+Node-RED, que es el único rol con permiso de escritura amplio: el navegador
+llama a `POST /api/actuadores` (sección 5) y Node-RED publica aquí.
 
 **Retained no:** un comando retenido se reentregaría al reconectar la XIAO y
 volvería a abrir el servo sin motivo.
@@ -98,8 +99,12 @@ volvería a abrir el servo sin motivo.
 | **Retained** | Sí |
 
 Semántica: el estado real de los actuadores. Va retenido para que un suscriptor
-tardío sepa cómo quedó el servo. Node-RED reacciona a este estado publicando
-un comando en `aula/actuador/cmd`.
+tardío sepa cómo quedó el servo.
+
+**Decisión de diseño de este contrato:** Node-RED reacciona a este estado
+publicando un comando en `aula/actuador/cmd`. El plan no lo fija; es una
+decisión de esta capa, y por eso se marca aquí como tal: es lo que permite a
+Node-RED rectificar el estado del servo y de los LEDs cuando le hace falta.
 
 ### 1.6 `aula/vision/resultado`
 
@@ -163,13 +168,18 @@ entregaría poses viejas a un suscriptor nuevo.
 | **Dirección** | Publica el servicio de visión (NPU). Se suscribe **solo** Node-RED. |
 | **Payload** | `{"cuenta":"320068234","embedding":[...]}` |
 | **Campos** | `cuenta` (`string`, requerido). `embedding` (`array` de `float`, requerido): vector de identidad facial. |
-| **Ejemplo** | `{"cuenta":"320068234","embedding":[0.0123,-0.0456,0.0789,-0.0321]}` |
+| **Ejemplo** | `{"cuenta":"320068234","embedding":[0.0123,-0.0456,0.0789,-0.0321]}` (ejemplo **abreviado** a 4 valores) |
 | **QoS** | 1 |
 | **Retained** | No |
 
 Semántica: el embedding ya promediado y normalizado de las 5 poses. Su
 longitud es `EMBEDDING_DIM` (512 por defecto, y el `vector(512)` del esquema de
 Postgres). Node-RED lo guarda con `UPDATE alumnos SET embedding`.
+
+**El ejemplo de arriba está abreviado a 4 valores**: el vector real tiene
+`EMBEDDING_DIM` (512) elementos. En [`mqtt-topics.json`](mqtt-topics.json) ese
+campo va marcado con `ejemplo_abreviado`, y el validador solo acepta el ejemplo
+abreviado porque el propio JSON lo declara.
 
 **Este tópico nunca lo lee el frontend.** Ver la sección 3.
 
@@ -194,7 +204,7 @@ falta `tol_min`, se usa `TOLERANCIA_MIN` del `.env`.
 |---|---|
 | **Dirección** | Publica Node-RED. Se suscriben la XIAO ESP32S3 Sense, la pantalla ILI9341 y el frontend web. |
 | **Payload** | `{"activa":true,"id":12}` |
-| **Campos** | `activa` (`bool`, requerido). `id` (`int`, opcional): identificador de la sesión en Postgres; ausente o `null` si no hay sesión activa. |
+| **Campos** | `activa` (`bool`, requerido). `id` (`int`, opcional): identificador de la sesión en Postgres, que asigna Node-RED; va ausente si no hay sesión activa. |
 | **Ejemplo** | `{"activa":true,"id":12}` |
 | **QoS** | 1 |
 | **Retained** | Sí |
@@ -203,11 +213,19 @@ Semántica: el estado de la sesión de clase. Al iniciarla, Node-RED crea el
 registro en Postgres y publica aquí; la XIAO enciende el LED azul. Va retenido
 para que quien se suscriba después sepa si hay sesión activa.
 
+**El `id` lo asigna Node-RED** y siempre es un entero: no vale `null`, y si
+no hay sesión activa el campo va ausente.
+
+**Retained y sesiones:** como el tópico va retenido, un suscriptor que se
+reconecte puede recibir el estado de una sesión anterior. Quien se suscriba
+tiene que **ignorar el valor retenido si su `id` de sesión no coincide con la
+sesión actual**: si no, encendería el LED azul de una sesión ya terminada.
+
 ### 1.12 `aula/sistema/metricas`
 
 | | |
 |---|---|
-| **Dirección** | Publica la Orange Pi Zero 3W. Se suscribe Node-RED, que lo lleva a InfluxDB. |
+| **Dirección** | Publica el agente de métricas del sistema (rol `sistema`): un script que vive en el **host** de la Orange Pi y que se construirá en la Capa 3. Se suscribe Node-RED, que lo lleva a InfluxDB. |
 | **Payload** | `{"temp":52.1,"cpu":34,"ram":61}` |
 | **Campos** | `temp` (`float`, requerido): °C del SoC. `cpu` (`int`, requerido): % de uso. `ram` (`int`, requerido): % de uso. |
 | **Ejemplo** | `{"temp":52.1,"cpu":34,"ram":61}` |
@@ -364,7 +382,8 @@ wildcard solo se concede al rol de Node-RED y por escrito.
 | `xiao` | `aula/camara/pir`, `aula/camara/energia`, `aula/camara/estado`, `aula/actuador/estado` | `aula/actuador/cmd`, `aula/sesion/estado` | No |
 | `vision` | `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/embedding`, `aula/actuador/cmd` | `aula/camara/pir`, `aula/vision/cmd` | No |
 | `pantalla` | `aula/sesion/cmd` | `aula/vision/enrolamiento`, `aula/sesion/estado` | No |
-| `nodered` | `aula/vision/cmd`, `aula/actuador/cmd`, `aula/sesion/estado`, `aula/sistema/metricas` | `aula/#` | Sí |
+| `sistema` | `aula/sistema/metricas` | `aula/sesion/estado` | No |
+| `nodered` | `aula/vision/cmd`, `aula/actuador/cmd`, `aula/sesion/estado` | `aula/#` | Sí |
 
 Reglas de la ACL, tal y como van en el fichero de configuración del broker:
 
@@ -416,6 +435,15 @@ topic write aula/sesion/cmd
 topic read aula/vision/enrolamiento
 topic read aula/sesion/estado
 
+# --- Agente de metricas del sistema (rol sistema) ------------------------
+# Script del HOST de la Orange Pi que publica las metricas del borde (SoC).
+# Solo publica esas metricas y lee el estado de sesion, que necesita para
+# saber si hay clase en marcha. No lee el embedding ni escribe en ningun otro
+# topico.
+user sistema
+topic write aula/sistema/metricas
+topic read aula/sesion/estado
+
 # --- Node-RED (borde) ----------------------------------------------------
 # Es el unico que escribe en Postgres y el que consume todo el sistema, asi que
 # es el unico con lectura amplia: por eso es el unico que puede leer
@@ -429,11 +457,10 @@ user nodered
 topic write aula/vision/cmd
 topic write aula/actuador/cmd
 topic write aula/sesion/estado
-topic write aula/sistema/metricas
 topic read aula/#
 ```
 
-Tres reglas que se comprueban a ojo sobre esta ACL:
+Cuatro reglas que se comprueban a ojo sobre esta ACL:
 
 - **El frontend no escribe.** No tiene ni una línea de `topic write`, así que
   no puede publicar `aula/vision/embedding` (que suplantaría a otro alumno),
@@ -443,6 +470,9 @@ Tres reglas que se comprueban a ojo sobre esta ACL:
   roles no tienen permiso de lectura ni de escritura sobre ese tópico.
 - **La wildcard es solo de Node-RED.** Con `topic read aula/#` en el rol
   equivocado, la lectura del embedding vuelve a abrirse.
+- **Cada tópico tiene un solo publicador.** `aula/sistema/metricas` lo
+  publica el rol `sistema` (el agente de métricas del host de la Orange Pi) y
+  nadie más: por eso Node-RED lo lee, pero no lo escribe.
 
 ---
 
@@ -481,7 +511,7 @@ ejecutan nada. El frontend los llama desde el navegador del profesor, en la mism
 red.
 
 La API tiene **dos realms**, y no es un detalle: son dos conjuntos de
-credenciales distintos. Los seis endpoints que usa el frontend web están en el
+credenciales distintos. Los siete endpoints que usa el frontend web están en el
 realm `frontend`; `GET /api/galeria`, que es el único que devuelve embeddings,
 está en el realm `vision` (servicio), que el navegador no tiene.
 
@@ -493,16 +523,25 @@ está en el realm `vision` (servicio), que el navegador no tiene.
 | `POST` | `/api/enrolamiento/cancelar` | — | `{"cuenta":"320068234"}` | Confirmación de la cancelación del registro en curso. |
 | `POST` | `/api/enrolamiento/probar` | — | `{"cuenta":"320068234"}` | Confirmación del arranque de la prueba; el resultado y la confianza llegan por MQTT. |
 | `DELETE` | `/api/alumnos/:cuenta/rostro` | — | — | Confirmación del borrado: el embedding pasa a `NULL` y el consentimiento queda retirado. |
+| `POST` | `/api/actuadores` | — | `{"servo":"abrir","led":"verde","buzzer":1}` | Confirmación de que la orden salió hacia `aula/actuador/cmd`. |
 | `GET` | `/api/galeria` | — | — | Los embeddings de los alumnos con rostro, para que el servicio de visión sincronice su galería local. **Endpoint de servicio: realm `vision`, no el del navegador.** |
 
 Notas:
 
+- `POST /api/actuadores` es el **control manual del servo, los LEDs y el
+  buzzer** desde el frontend (plan, secciones 6.5 y 6.7). Los tres campos del
+  cuerpo son opcionales por separado, pero el cuerpo tiene que llevar al
+  menos uno. Node-RED lo publica en `aula/actuador/cmd`; el navegador nunca
+  publica en MQTT. Está en el realm del navegador.
+- El endpoint `/stream` (MJPEG en QVGA) **existe en el firmware de la XIAO,
+  pero la v1 no lo usa** (plan, secciones 6.1 y 6.7), así que no está en esta
+  tabla: esta tabla es solo la API HTTP de Node-RED.
 - `DELETE /api/alumnos/:cuenta/rostro` es la forma de **retirar el
   consentimiento**: borrar el embedding deja al alumno como pendiente de rostro
   y deja de reconocerse.
 - `GET /api/galeria` es la única respuesta que contiene embeddings. Es el
   caminho controlado entre el servicio de visión y Node-RED. Vive en un realm
-  de `httpNodeAuth` distinto del que usan los otros seis endpoints: el
+  de `httpNodeAuth` distinto del que usan los otros siete endpoints: el
   navegador tiene credenciales del realm del frontend, y esas credenciales no
   dan acceso a este endpoint. El servicio de visión se autentica con las
   credenciales de servicio del realm `vision`, que no están en el repo: en
@@ -548,12 +587,31 @@ contrato declara de forma explícita:
   a 5;
 - la longitud del vector de `embedding`, que tiene que ser `EMBEDDING_DIM` (la
   variable de entorno, 512 por defecto);
+- las reglas declaradas dentro de `items` (`enum`, `min`, `max` y `length`),
+  que se aplican a cada elemento del array;
 - que `aula/actuador/cmd` lleve al menos un campo;
 - las reglas condicionales: `aula/sesion/cmd` con `accion: iniciar` exige
   `materia`, `grupo` y `tol_min`.
 
 Si el contrato no declara una regla para un campo, el validador no la inventa:
 comprueba solo lo que dice [`mqtt-topics.json`](mqtt-topics.json).
+
+**El contrato se valida a sí mismo**, al cargarlo. Si el JSON está mal
+editado, el script aborta con **código 2** y un mensaje que dice qué entrada
+del JSON es la que está mal, en vez de reventar con una traza:
+
+- un `type` que no sea uno de los soportados (`int`, `float`, `string`, `bool`,
+  `object` y `array`): con un `type` desconocido, la comprobación de tipos se
+  desactivaría en silencio y dejaría pasar cualquier valor;
+- un campo declarado sin `name` o sin `type`;
+- un tópico que no empiece por el prefijo `base_topic` que declara el
+  contrato;
+- los ejemplos del propio contrato, que tienen que cumplir las reglas que el
+  contrato declara. El ejemplo del `embedding` va abreviado a 4 valores y solo
+  se acepta porque el JSON lo marca con `ejemplo_abreviado`.
+
+El código 2 es también el de una entrada ilegible o vacía: no hay mensajes que
+validar es un error de uso, no un payload válido.
 
 ---
 
@@ -573,6 +631,17 @@ escritos. Aunque el sistema está en la LAN del aula, sin cifrar:
   que sirve `httpStatic` desde `/data/public`, así que quien tenga acceso a la
   página puede extraerla. La ACL la limita a solo lectura, pero expone los
   nombres y los estados de la clase a quien tenga acceso a esa página.
+- **La ACL no filtra campos dentro de un tópico**: el rol `vision` tiene
+  permiso de escritura sobre `aula/actuador/cmd` **completo** —servo, LED y
+  buzzer—, no solo sobre el campo `luz` que le da el plan (§5.1), porque
+  Mosquitto no puede filtrar por campo. Es una limitación asumida de esta
+  capa, con la mitigación de que Node-RED valida y limita el alcance de lo que
+  reenvía a la XIAO.
+- **El frontend está en la ruta crítica del registro**: si el navegador no
+  arranca o se cae a mitad de un registro, el alta de rostro se queda parada.
+  Es el mismo riesgo que ya tiene el plan (§13) y aquí queda anotado: la
+  mitigación es probar los endpoints con `curl` desde temprano y tener la
+  herramienta de enrolamiento por lote como respaldo.
 
 Cada una de estas líneas es un trabajo pendiente de una capa posterior; aquí
 solo se dejan escritas para que no se pierdan.

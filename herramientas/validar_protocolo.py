@@ -22,14 +22,28 @@ o una lista de esos objetos. Se comprueba que:
 - el valor de los campos con 'enum' este entre los valores admitidos;
 - los campos numericos esten dentro de los limites 'min' y 'max';
 - los arrays con 'length' tengan la longitud que declara el contrato;
+- los elementos de un array cumplan las reglas que declare 'items' ('enum',
+  'min', 'max' y 'length');
 - el payload tenga al menos 'min_fields' campos, si el topico lo declara;
 - esten los campos que el topico exige con 'required_if'.
 
 El validador no inventa reglas: si el contrato no declara un limite para un
 campo, no lo comprueba.
 
-Los errores se escriben por stderr y el proceso sale con codigo 1 si hay
-alguno.
+El contrato tambien se valida a si mismo al cargarlo. Si esta mal editado, el
+script aborta con codigo 2 y un mensaje que dice que entrada del JSON es la
+que esta mal, en vez de reventar con una traza:
+
+- cada campo declarado tiene que tener 'name' y 'type';
+- cada 'type' declarado tiene que ser uno de los soportados;
+- cada topico tiene que empezar por el prefijo 'base_topic' del contrato;
+- los ejemplos del propio contrato tienen que cumplir las reglas que el
+  contrato declara. Un ejemplo abreviado solo se acepta si el propio JSON lo
+  declara con 'ejemplo_abreviado' en el campo.
+
+Los errores de validacion se escriben por stderr y el proceso sale con codigo
+1 si hay alguno. El codigo 2 es de uso: contrato ilegible o incoherente,
+entrada ilegible o vacia.
 """
 
 import argparse
@@ -45,6 +59,14 @@ RUTA_CONTRATO_POR_DEFECTO = os.path.join(
 
 TIPOS_SIMPLE = ("int", "float", "string", "bool")
 
+# Tipos que el validador sabe comprobar, ademas de los simples.
+TIPOS_ESTRUCTURA = ("object", "array")
+
+# Conjunto de tipos que puede declarar el contrato. Un type que no este aqui
+# haria que la comprobacion de tipos se desactivase en silencio, asi que el
+# contrato se rechaza al cargarlo.
+TIPOS_SOPORTADOS = TIPOS_SIMPLE + TIPOS_ESTRUCTURA
+
 # Tope de lo que se lee de un fichero o de la entrada estandar. Por encima de
 # esto ya no es un payload, y leerlo entero no aporta nada.
 LIMITE_ENTRADA = 16 * 1024 * 1024
@@ -53,20 +75,121 @@ LIMITE_ENTRADA = 16 * 1024 * 1024
 LIMITE_TEXTO = 200
 
 
+class ContratoInvalido(ValueError):
+    """El contrato JSON no cumple las reglas que el validador exige.
+
+    Es un problema del contrato, no de los payloads: se aborta con codigo 2.
+    """
+
+
+def comprobar_campos_declarados(campos, ruta):
+    """Comprueba que los campos declarados tengan 'name' y un 'type' soportado.
+
+    'ruta' dice que parte del JSON se esta mirando (el topico y, dentro de
+    el, el camino del campo), para que el error senale la entrada mala.
+    """
+    if not isinstance(campos, list):
+        raise ContratoInvalido("los campos de %s no son una lista" % ruta)
+
+    for campo in campos:
+        if not isinstance(campo, dict):
+            raise ContratoInvalido("un campo de %s no es un objeto" % ruta)
+
+        nombre = campo.get("name")
+        if not isinstance(nombre, str) or not nombre:
+            raise ContratoInvalido(
+                "un campo de %s no tiene 'name' (o no es una cadena no vacia)"
+                % ruta
+            )
+
+        tipo = campo.get("type")
+        if tipo not in TIPOS_SOPORTADOS:
+            raise ContratoInvalido(
+                "el campo '%s' de %s declara el tipo %s, que no es un tipo "
+                "soportado (valores admitidos: %s)"
+                % (
+                    nombre,
+                    ruta,
+                    texto_seguro(tipo),
+                    ", ".join(TIPOS_SOPORTADOS),
+                )
+            )
+
+        if tipo == "object":
+            comprobar_campos_declarados(
+                campo.get("fields", []), "%s.%s" % (ruta, nombre)
+            )
+        elif tipo == "array":
+            items = campo.get("items")
+            if items is None:
+                continue
+            if not isinstance(items, dict):
+                raise ContratoInvalido(
+                    "'items' del campo '%s' de %s no es un objeto" % (nombre, ruta)
+                )
+            tipo_item = items.get("type")
+            if tipo_item is not None and tipo_item not in TIPOS_SOPORTADOS:
+                raise ContratoInvalido(
+                    "los 'items' del campo '%s' de %s declaran el tipo %s, que "
+                    "no es un tipo soportado (valores admitidos: %s)"
+                    % (
+                        nombre,
+                        ruta,
+                        texto_seguro(tipo_item),
+                        ", ".join(TIPOS_SOPORTADOS),
+                    )
+                )
+
+
 def cargar_contrato(ruta):
-    """Carga el contrato y devuelve {topico: especificacion}."""
+    """Carga el contrato y devuelve {topico: especificacion}.
+
+    Comprueba que el contrato sea coherente consigo mismo. Si algo no lo es,
+    aborta con ContratoInvalido (codigo de salida 2) y un mensaje que dice
+    que entrada del JSON es la que esta mal.
+    """
     with open(ruta, encoding="utf-8") as fichero:
         datos = json.load(fichero)
 
-    topicos = datos.get("topics") if isinstance(datos, dict) else datos
+    if isinstance(datos, dict):
+        topicos = datos.get("topics")
+        prefijo = datos.get("base_topic")
+    else:
+        topicos = datos
+        prefijo = None
+
     if not isinstance(topicos, list):
-        raise ValueError("el contrato no contiene una lista 'topics'")
+        raise ContratoInvalido("el contrato no contiene una lista 'topics'")
+
+    if prefijo is not None and (not isinstance(prefijo, str) or not prefijo):
+        raise ContratoInvalido("'base_topic' no es una cadena no vacia")
 
     contrato = {}
     for entrada in topicos:
-        if "topic" not in entrada:
-            raise ValueError("una entrada del contrato no tiene 'topic'")
-        contrato[entrada["topic"]] = entrada
+        if not isinstance(entrada, dict) or "topic" not in entrada:
+            raise ContratoInvalido(
+                "una entrada de la lista 'topics' no tiene 'topic'"
+            )
+        topico = entrada["topic"]
+        if not isinstance(topico, str):
+            raise ContratoInvalido(
+                "el 'topic' de una entrada de la lista 'topics' no es una cadena"
+            )
+        if prefijo and not topico.startswith(prefijo + "/"):
+            raise ContratoInvalido(
+                "el topico %s no empieza por el prefijo '%s/' declarado en "
+                "'base_topic'" % (texto_seguro(topico), prefijo)
+            )
+        comprobar_campos_declarados(entrada.get("payload", []), topico)
+        contrato[topico] = entrada
+
+    errores = comprobar_ejemplos_del_contrato(contrato)
+    if errores:
+        raise ContratoInvalido(
+            "los ejemplos del contrato no cumplen sus propias reglas: %s"
+            % "; ".join(errores)
+        )
+
     return contrato
 
 
@@ -159,7 +282,9 @@ def valor_compatible(valor, tipo_esperado):
     if tipo_esperado == "array":
         return isinstance(valor, list)
 
-    return True
+    # Un type desconocido no llega aqui: el contrato se rechaza al cargarlo
+    # (ver comprobar_campos_declarados).
+    return False
 
 
 def tipo_real(valor):
@@ -263,10 +388,19 @@ def comprobar_limites(nombre, campo, valor, ruta_campo, errores):
         )
 
 
-def comprobar_longitud(nombre, campo, valor, ruta_campo, errores):
-    """Comprueba que el array tenga la longitud que declara el contrato."""
+def comprobar_longitud(nombre, campo, valor, ruta_campo, errores, abreviado=False):
+    """Comprueba que el array tenga la longitud que declara el contrato.
+
+    'abreviado' permite saltarse la comprobacion cuando el propio contrato
+    declara que ese ejemplo va abreviado ('ejemplo_abreviado'): asi el
+    ejemplo del embedding puede enseñar 4 valores en vez de 512 sin que el
+    validador lo de por malo.
+    """
     esperada = longitud_esperada(campo)
     if esperada is None:
+        return
+
+    if abreviado and campo.get("ejemplo_abreviado"):
         return
 
     if len(valor) != esperada:
@@ -276,7 +410,7 @@ def comprobar_longitud(nombre, campo, valor, ruta_campo, errores):
         )
 
 
-def validar_campos(campos, valores, ruta_campo, errores):
+def validar_campos(campos, valores, ruta_campo, errores, abreviado=False):
     """Valida un diccionario de valores contra una lista de campos del contrato."""
     por_nombre = {campo["name"]: campo for campo in campos}
 
@@ -311,6 +445,7 @@ def validar_campos(campos, valores, ruta_campo, errores):
                 valor,
                 "%s.%s" % (ruta_campo, nombre),
                 errores,
+                abreviado,
             )
 
         elif tipo_esperado == "array":
@@ -335,7 +470,19 @@ def validar_campos(campos, valores, ruta_campo, errores):
                                 tipo_item,
                             )
                         )
-            comprobar_longitud(nombre, campo, valor, ruta_campo, errores)
+            # Reglas declaradas dentro de 'items': se aplican a cada
+            # elemento del array.
+            for indice, elemento in enumerate(valor):
+                ruta_elemento = "%s[%d]" % (ruta_campo, indice)
+                comprobar_enum(nombre, item, elemento, ruta_elemento, errores)
+                comprobar_limites(nombre, item, elemento, ruta_elemento, errores)
+                if isinstance(elemento, list):
+                    comprobar_longitud(
+                        nombre, item, elemento, ruta_elemento, errores, abreviado
+                    )
+            comprobar_longitud(
+                nombre, campo, valor, ruta_campo, errores, abreviado
+            )
 
         comprobar_enum(nombre, campo, valor, ruta_campo, errores)
         comprobar_limites(nombre, campo, valor, ruta_campo, errores)
@@ -390,8 +537,12 @@ def comprobar_required_if(especificacion, payload, errores):
                 )
 
 
-def validar_mensaje(mensaje, contrato, origen, indice):
-    """Valida un mensaje. Devuelve la lista de errores encontrados."""
+def validar_mensaje(mensaje, contrato, origen, indice, abreviado=False):
+    """Valida un mensaje. Devuelve la lista de errores encontrados.
+
+    'abreviado' permite que un ejemplo declarado como abreviado en el
+    contrato se salte la regla de longitud del array.
+    """
     errores = []
 
     if not isinstance(mensaje, dict):
@@ -429,9 +580,32 @@ def validar_mensaje(mensaje, contrato, origen, indice):
         payload,
         "",
         errores,
+        abreviado,
     )
     comprobar_min_fields(especificacion, payload, errores)
     comprobar_required_if(especificacion, payload, errores)
+    return errores
+
+
+def comprobar_ejemplos_del_contrato(contrato):
+    """Comprueba que los ejemplos del contrato cumplan sus propias reglas.
+
+    Devuelve la lista de errores encontrados. Un ejemplo abreviado solo pasa
+    si el propio JSON lo declara con 'ejemplo_abreviado' en el campo.
+    """
+    errores = []
+    for topico, especificacion in contrato.items():
+        ejemplo = especificacion.get("example")
+        if ejemplo is None:
+            continue
+        for error in validar_mensaje(
+            {"topic": topico, "payload": ejemplo},
+            contrato,
+            "el ejemplo del topico %s" % topico,
+            1,
+            abreviado=True,
+        ):
+            errores.append("%s: %s" % (topico, error))
     return errores
 
 
@@ -464,7 +638,10 @@ def main(argv=None):
 
     try:
         contrato = cargar_contrato(argumentos.contrato)
-    except (OSError, ValueError, json.JSONDecodeError) as error:
+    except ContratoInvalido as error:
+        print("error: el contrato no es valido: %s" % error, file=sys.stderr)
+        return 2
+    except (OSError, ValueError, json.JSONDecodeError, KeyError) as error:
         print("error: no se pudo leer el contrato: %s" % error, file=sys.stderr)
         return 2
 
@@ -489,12 +666,12 @@ def main(argv=None):
         except (OSError, ValueError) as error:
             print("error: <stdin>: %s" % error, file=sys.stderr)
             return 2
-        if not mensajes:
-            print(
-                "error: no hay ficheros ni datos en la entrada estandar",
-                file=sys.stderr,
-            )
-            return 2
+
+    # Sin mensajes no hay nada que validar: es un uso incorrecto del script,
+    # tanto si viene por fichero como si viene por la entrada estandar.
+    if not mensajes:
+        print("error: no hay mensajes que validar", file=sys.stderr)
+        return 2
 
     total_errores = 0
     for indice, (origen, mensaje) in enumerate(mensajes, start=1):

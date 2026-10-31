@@ -2,7 +2,7 @@
   "version": 1,
   "base_topic": "aula",
   "source": "docs/HIGH-LEVEL-PLAN.md, seccion 7.1",
-  "note": "Los payloads son los fijados en la seccion 7.1 del plan. Los campos opcionales se marcan con required=false; los campos anidados describen sus subcampos en 'fields' y los arrays de escalares en 'items'. Ademas, un campo puede declarar 'enum' (valores admitidos), 'min' y 'max' (limites numericos), y 'length' (longitud esperada de un array). Un topico puede declarar 'min_fields' (numero minimo de campos del payload) y 'required_if' (campos obligatorios cuando otro campo vale un valor dado). El validador solo comprueba lo que aqui esta declarado.",
+  "note": "Los payloads son los fijados en la seccion 7.1 del plan. Los campos opcionales se marcan con required=false; los campos anidados describen sus subcampos en 'fields' y los arrays de escalares en 'items'. Ademas, un campo puede declarar 'enum' (valores admitidos), 'min' y 'max' (limites numericos), y 'length' (longitud esperada de un array). Las reglas de 'items' (enum, min, max y length) se aplican a cada elemento del array. Un campo puede declarar 'ejemplo_abreviado': su ejemplo va abreviado a proposito y el validador no le exige la longitud completa. Un topico puede declarar 'min_fields' (numero minimo de campos del payload) y 'required_if' (campos obligatorios cuando otro campo vale un valor dado). El validador solo comprueba lo que aqui esta declarado.",
   "topics": [
     {
       "topic": "aula/camara/pir",
@@ -196,7 +196,7 @@
         "led": "azul",
         "luz": 0
       },
-      "nota": "Estado real de los actuadores. Retained: un suscriptor tardio sabe como quedo el servo. Node-RED reacciona a este estado publicando un comando en aula/actuador/cmd."
+      "nota": "Estado real de los actuadores. Retained: un suscriptor tardio sabe como quedo el servo. Decision de diseno de este contrato (no esta en el plan): Node-RED reacciona a este estado publicando un comando en aula/actuador/cmd."
     },
     {
       "topic": "aula/vision/resultado",
@@ -413,7 +413,8 @@
           "length": {
             "env": "EMBEDDING_DIM",
             "default": 512
-          }
+          },
+          "ejemplo_abreviado": true
         }
       ],
       "example": {
@@ -504,12 +505,12 @@
         "activa": true,
         "id": 12
       },
-      "nota": "Estado de la sesion de clase. id es el identificador de la sesion en Postgres y va ausente o a null cuando no hay sesion activa. Retained: quien se suscriba despues sabe si hay sesion. La pantalla inicia y termina la sesion, asi que el topico se realimenta."
+      "nota": "Estado de la sesion de clase. id es el identificador de la sesion en Postgres, lo asigna Node-RED y va ausente cuando no hay sesion activa. Retained: quien se suscriba despues sabe si hay sesion, asi que un suscriptor que se reconecte tiene que ignorar el valor retenido si su id de sesion no coincide con la sesion actual. La pantalla inicia y termina la sesion, asi que el topico se realimenta."
     },
     {
       "topic": "aula/sistema/metricas",
       "dir": "pub",
-      "publisher": "Orange Pi Zero 3W",
+      "publisher": "sistema",
       "subscribers": [
         "Node-RED"
       ],
@@ -537,7 +538,7 @@
         "cpu": 34,
         "ram": 61
       },
-      "nota": "Metricas del sistema en el borde: temp en grados C del SoC, cpu y ram en porcentaje de uso."
+      "nota": "Metricas del sistema en el borde: temp en grados C del SoC, cpu y ram en porcentaje de uso. Las publica el agente de metricas del sistema (rol sistema), un script que vive en el host de la Orange Pi y se construye en la Capa 3."
     }
   ]
 }

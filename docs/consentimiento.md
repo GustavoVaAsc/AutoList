@@ -82,8 +82,8 @@ deliberada, pero un nodo `debug` de Node-RED sobre ese tópico las guardaría,
 así que el despliegue no debe llevar ese nodo.
 
 Además, y solo para el funcionamiento del aula, se registran la fecha y hora de
-cada registro de asistencia, el estado (presente, retardo o falta) y la
-confianza del reconocimiento.
+cada registro de asistencia, el estado (presente o retardo; la falta se deduce
+de la ausencia de registro en la sesión) y la confianza del reconocimiento.
 
 **La pantalla ILI9341 del aula muestra nombres y estados**: en la vista de
 sesión, el nombre y el estado del último registro; en la vista de lista, los
@@ -127,9 +127,15 @@ los nombres y los estados de la clase.
 
 ## Base legal y ética
 
-La base de la autorización es la **participación voluntaria** en una práctica
-académica de la materia **Fundamentos de Sistemas Embebidos 2027-1**, bajo la
-supervisión del profesor **Eduardo Fragoso Navarro**.
+La base de la autorización se entiende **provisionalmente** como la
+**participación voluntaria** en una práctica académica de la materia
+**Fundamentos de Sistemas Embebidos 2027-1**, bajo la supervisión del profesor
+**Eduardo Fragoso Navarro**.
+
+> **Provisional:** esta afirmación está pendiente de confirmar. El punto
+> **«Base legal»** de la lista de pendientes de arriba sigue abierto, así que
+> hasta que el profesor y la institución lo confirmen, este documento no se
+> entrega ni se firma.
 
 <!-- TODO: confirmar con el profesor y con la institución el marco exacto de
 protección de datos y si hace falta algún consentimiento institucional

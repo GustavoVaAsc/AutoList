@@ -283,6 +283,7 @@ POST   /api/enrolamiento            {"cuenta":"320068234","consentimiento":true}
 POST   /api/enrolamiento/cancelar
 POST   /api/enrolamiento/probar     reconocimiento de prueba
 DELETE /api/alumnos/:cuenta/rostro  borra el embedding (retira el consentimiento)
+POST   /api/actuadores              control manual del servo, los LEDs y el buzzer
 GET    /api/galeria                 embeddings para el servicio de visión (no lo usa el frontend)
 ```
 
@@ -294,7 +295,7 @@ GET    /api/galeria                 embeddings para el servicio de visión (no l
 aula/camara/pir          XIAO → borde            {"mov":1}
 aula/camara/energia      XIAO → borde            {"v":12.1,"i":0.85,"p":10.3}
 aula/camara/estado       XIAO → borde            {"rssi":-58,"heap":120000,"temp":48}
-aula/actuador/cmd        borde → XIAO            {"servo":"abrir","led":"verde","buzzer":1,"luz":0}
+aula/actuador/cmd        borde, visión → XIAO    {"servo":"abrir","led":"verde","buzzer":1,"luz":0}
 aula/actuador/estado     XIAO → borde            {"servo":"cerrado","led":"azul","luz":0}
 aula/vision/resultado    visión → Node-RED       {"cuenta":"320068234","conf":0.78,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
 aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234"}   (enrolar, cancelar, probar)
