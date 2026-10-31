@@ -1,0 +1,62 @@
+[
+  {
+    "topic": "aula/camara/pir",
+    "payload": { "mov": 1 }
+  },
+  {
+    "topic": "aula/camara/energia",
+    "payload": { "v": 12.1, "i": 0.85, "p": 10.3 }
+  },
+  {
+    "topic": "aula/camara/estado",
+    "payload": { "rssi": -58, "heap": 120000, "temp": 48 }
+  },
+  {
+    "topic": "aula/actuador/cmd",
+    "payload": { "servo": "abrir", "led": "verde", "buzzer": 1, "luz": 0 }
+  },
+  {
+    "topic": "aula/actuador/estado",
+    "payload": { "servo": "cerrado", "led": "azul", "luz": 0 }
+  },
+  {
+    "topic": "aula/vision/resultado",
+    "payload": {
+      "cuenta": "320068234",
+      "conf": 0.78,
+      "lat_ms": { "cap": 180, "det": 12, "emb": 6, "total": 240 }
+    }
+  },
+  {
+    "topic": "aula/vision/cmd",
+    "payload": { "accion": "enrolar", "cuenta": "320068234" }
+  },
+  {
+    "topic": "aula/vision/enrolamiento",
+    "payload": {
+      "cuenta": "320068234",
+      "paso": 3,
+      "total": 5,
+      "pose": "izquierda",
+      "estado": "rechazada",
+      "motivo": "borrosa",
+      "miniatura": "<base64>"
+    }
+  },
+  {
+    "topic": "aula/vision/embedding",
+    "payload": { "cuenta": "320068234", "embedding": [0.0123, -0.0456, 0.0789, -0.0321] }
+  },
+  {
+    "topic": "aula/sesion/cmd",
+    "payload": { "accion": "iniciar", "materia": "FSE", "grupo": "1", "tol_min": 10 }
+  },
+  {
+    "topic": "aula/sesion/estado",
+    "payload": { "activa": true, "id": 12 }
+  },
+  {
+    "topic": "aula/sistema/metricas",
+    "payload": { "temp": 52.1, "cpu": 34, "ram": 61 }
+  }
+]

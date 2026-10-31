@@ -1,0 +1,503 @@
+{
+  "version": 1,
+  "base_topic": "aula",
+  "source": "docs/HIGH-LEVEL-PLAN.md, seccion 7.1",
+  "note": "Los payloads son los fijados en la seccion 7.1 del plan. Los campos opcionales se marcan con required=false; los campos anidados describen sus subcampos en 'fields' y los arrays de escalares en 'items'.",
+  "topics": [
+    {
+      "topic": "aula/camara/pir",
+      "dir": "pub",
+      "publisher": "XIAO ESP32S3 Sense",
+      "subscribers": [
+        "servicio de vision (NPU)",
+        "Node-RED"
+      ],
+      "qos": 1,
+      "retained": false,
+      "payload": [
+        {
+          "name": "mov",
+          "type": "int",
+          "required": true
+        }
+      ],
+      "example": {
+        "mov": 1
+      },
+      "nota": "mov=1 indica movimiento detectado por el PIR HC-SR501. Es el disparo de la captura."
+    },
+    {
+      "topic": "aula/camara/energia",
+      "dir": "pub",
+      "publisher": "XIAO ESP32S3 Sense",
+      "subscribers": [
+        "Node-RED"
+      ],
+      "qos": 0,
+      "retained": false,
+      "payload": [
+        {
+          "name": "v",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "i",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "p",
+          "type": "float",
+          "required": true
+        }
+      ],
+      "example": {
+        "v": 12.1,
+        "i": 0.85,
+        "p": 10.3
+      },
+      "nota": "v en voltios, i en amperios y p en vatios, medidos por el INA219 en la entrada de 12 V (consumo total del sistema)."
+    },
+    {
+      "topic": "aula/camara/estado",
+      "dir": "pub",
+      "publisher": "XIAO ESP32S3 Sense",
+      "subscribers": [
+        "Node-RED"
+      ],
+      "qos": 0,
+      "retained": false,
+      "payload": [
+        {
+          "name": "rssi",
+          "type": "int",
+          "required": true
+        },
+        {
+          "name": "heap",
+          "type": "int",
+          "required": true
+        },
+        {
+          "name": "temp",
+          "type": "int",
+          "required": true
+        }
+      ],
+      "example": {
+        "rssi": -58,
+        "heap": 120000,
+        "temp": 48
+      },
+      "nota": "rssi en dBm (negativo), heap en bytes de heap libre y temp en grados C del SoC de la ESP32-S3."
+    },
+    {
+      "topic": "aula/actuador/cmd",
+      "dir": "sub",
+      "publisher": "Node-RED, servicio de vision y frontend web",
+      "subscribers": [
+        "XIAO ESP32S3 Sense"
+      ],
+      "qos": 1,
+      "retained": false,
+      "payload": [
+        {
+          "name": "servo",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "abrir",
+            "cerrar"
+          ]
+        },
+        {
+          "name": "led",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "verde",
+            "rojo",
+            "azul",
+            "ambar"
+          ]
+        },
+        {
+          "name": "buzzer",
+          "type": "int",
+          "required": false,
+          "enum": [
+            0,
+            1
+          ]
+        },
+        {
+          "name": "luz",
+          "type": "int",
+          "required": false,
+          "enum": [
+            0,
+            1
+          ]
+        }
+      ],
+      "example": {
+        "servo": "abrir",
+        "led": "verde",
+        "buzzer": 1,
+        "luz": 0
+      },
+      "nota": "Bus de comandos a los actuadores: cada campo es opcional por separado y el payload lleva al menos uno. El servo gira 90 grados, espera 3 s y vuelve. El comando se puede repetir: el suscriptor tiene que ser idempotente."
+    },
+    {
+      "topic": "aula/actuador/estado",
+      "dir": "pub-sub",
+      "publisher": "XIAO ESP32S3 Sense",
+      "subscribers": [
+        "Node-RED",
+        "pantalla ILI9341",
+        "frontend web"
+      ],
+      "qos": 1,
+      "retained": true,
+      "payload": [
+        {
+          "name": "servo",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "abierto",
+            "cerrado"
+          ]
+        },
+        {
+          "name": "led",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "verde",
+            "rojo",
+            "azul",
+            "ambar"
+          ]
+        },
+        {
+          "name": "luz",
+          "type": "int",
+          "required": true,
+          "enum": [
+            0,
+            1
+          ]
+        }
+      ],
+      "example": {
+        "servo": "cerrado",
+        "led": "azul",
+        "luz": 0
+      },
+      "nota": "Estado real de los actuadores. Retained: un suscriptor tardio sabe como quedo el servo. Node-RED reacciona a este estado publicando un comando en aula/actuador/cmd."
+    },
+    {
+      "topic": "aula/vision/resultado",
+      "dir": "pub",
+      "publisher": "servicio de vision (NPU)",
+      "subscribers": [
+        "Node-RED"
+      ],
+      "qos": 1,
+      "retained": false,
+      "payload": [
+        {
+          "name": "cuenta",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "conf",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "lat_ms",
+          "type": "object",
+          "required": true,
+          "fields": [
+            {
+              "name": "cap",
+              "type": "int",
+              "required": true
+            },
+            {
+              "name": "det",
+              "type": "int",
+              "required": true
+            },
+            {
+              "name": "emb",
+              "type": "int",
+              "required": true
+            },
+            {
+              "name": "total",
+              "type": "int",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "motivo",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "imagen_insuficiente",
+            "desconocido",
+            "duplicado"
+          ]
+        }
+      ],
+      "example": {
+        "cuenta": "320068234",
+        "conf": 0.78,
+        "lat_ms": {
+          "cap": 180,
+          "det": 12,
+          "emb": 6,
+          "total": 240
+        }
+      },
+      "nota": "conf es la similitud coseno, entre 0 y 1. cuenta va vacia cuando no se reconoce a nadie. motivo aparece cuando el intento no produce un registro valido."
+    },
+    {
+      "topic": "aula/vision/cmd",
+      "dir": "pub",
+      "publisher": "Node-RED",
+      "subscribers": [
+        "servicio de vision (NPU)"
+      ],
+      "qos": 1,
+      "retained": false,
+      "payload": [
+        {
+          "name": "accion",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "enrolar",
+            "cancelar",
+            "probar"
+          ]
+        },
+        {
+          "name": "cuenta",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "example": {
+        "accion": "enrolar",
+        "cuenta": "320068234"
+      },
+      "nota": "Ordenes al servicio de vision. cuenta es obligatoria en enrolar y probar y opcional en cancelar. Mientras hay un registro en curso, el servicio de vision ignora el PIR."
+    },
+    {
+      "topic": "aula/vision/enrolamiento",
+      "dir": "pub",
+      "publisher": "servicio de vision (NPU)",
+      "subscribers": [
+        "frontend web",
+        "pantalla ILI9341"
+      ],
+      "qos": 1,
+      "retained": false,
+      "payload": [
+        {
+          "name": "cuenta",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "paso",
+          "type": "int",
+          "required": true
+        },
+        {
+          "name": "total",
+          "type": "int",
+          "required": true
+        },
+        {
+          "name": "pose",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "frente",
+            "izquierda",
+            "derecha",
+            "arriba"
+          ]
+        },
+        {
+          "name": "estado",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "motivo",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "miniatura",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "example": {
+        "cuenta": "320068234",
+        "paso": 3,
+        "total": 5,
+        "pose": "izquierda",
+        "estado": "rechazada",
+        "motivo": "borrosa",
+        "miniatura": "<base64>"
+      },
+      "nota": "Progreso del registro de rostro: 5 poses (frente, izquierda, derecha, arriba y frente otra vez). motivo explica un rechazo y miniatura es el JPEG en base64 que solo ve el navegador. La pantalla usa paso y pose; el frontend recibe el payload completo."
+    },
+    {
+      "topic": "aula/vision/embedding",
+      "dir": "pub",
+      "publisher": "servicio de vision (NPU)",
+      "subscribers": [
+        "Node-RED"
+      ],
+      "qos": 1,
+      "retained": false,
+      "payload": [
+        {
+          "name": "cuenta",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "embedding",
+          "type": "array",
+          "required": true,
+          "items": {
+            "type": "float"
+          }
+        }
+      ],
+      "example": {
+        "cuenta": "320068234",
+        "embedding": [0.0123, -0.0456, 0.0789, -0.0321]
+      },
+      "nota": "Vector de identidad facial ya promediado y normalizado. Su longitud es EMBEDDING_DIM (512 por defecto). En el plan el ejemplo aparece truncado; aqui se recortan los 512 valores. El frontend nunca se suscribe a este topico."
+    },
+    {
+      "topic": "aula/sesion/cmd",
+      "dir": "pub",
+      "publisher": "pantalla ILI9341",
+      "subscribers": [
+        "Node-RED"
+      ],
+      "qos": 1,
+      "retained": false,
+      "payload": [
+        {
+          "name": "accion",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "iniciar",
+            "terminar"
+          ]
+        },
+        {
+          "name": "materia",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "grupo",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "tol_min",
+          "type": "int",
+          "required": false
+        }
+      ],
+      "example": {
+        "accion": "iniciar",
+        "materia": "FSE",
+        "grupo": "1",
+        "tol_min": 10
+      },
+      "nota": "Inicio y fin de sesion desde la pantalla. En iniciar son necesarios materia, grupo y tol_min; en terminar solo accion. Si falta tol_min se usa TOLERANCIA_MIN."
+    },
+    {
+      "topic": "aula/sesion/estado",
+      "dir": "pub-sub",
+      "publisher": "Node-RED",
+      "subscribers": [
+        "XIAO ESP32S3 Sense",
+        "pantalla ILI9341",
+        "frontend web"
+      ],
+      "qos": 1,
+      "retained": true,
+      "payload": [
+        {
+          "name": "activa",
+          "type": "bool",
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "int",
+          "required": false
+        }
+      ],
+      "example": {
+        "activa": true,
+        "id": 12
+      },
+      "nota": "Estado de la sesion de clase. id es el identificador de la sesion en Postgres y va ausente o a null cuando no hay sesion activa. Retained: quien se suscriba despues sabe si hay sesion. La pantalla inicia y termina la sesion, asi que el topico se realimenta."
+    },
+    {
+      "topic": "aula/sistema/metricas",
+      "dir": "pub",
+      "publisher": "Orange Pi Zero 3W",
+      "subscribers": [
+        "Node-RED"
+      ],
+      "qos": 0,
+      "retained": false,
+      "payload": [
+        {
+          "name": "temp",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "cpu",
+          "type": "int",
+          "required": true
+        },
+        {
+          "name": "ram",
+          "type": "int",
+          "required": true
+        }
+      ],
+      "example": {
+        "temp": 52.1,
+        "cpu": 34,
+        "ram": 61
+      },
+      "nota": "Metricas del sistema en el borde: temp en grados C del SoC, cpu y ram en porcentaje de uso."
+    }
+  ]
+}

@@ -101,5 +101,9 @@ Orange Pi; los modelos `.nb` convertidos no se versionan.
 
 - [Plan en alto nivel](docs/HIGH-LEVEL-PLAN.md) — fuente de verdad del proyecto.
 - [Índice de `docs/`](docs/README.md).
+- [Contrato de telemetría](docs/protocolos.md) — tópicos MQTT, ACL, API HTTP y
+  latencias.
+- [Tabla de tópicos MQTT en JSON](docs/mqtt-topics.json) — la misma lista, legible
+  por máquina.
 - [Consentimiento de participantes](docs/consentimiento.md) — borrador para
   revisión del profesor.

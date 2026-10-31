@@ -1,0 +1,38 @@
+[
+  {
+    "topic": "aula/camara/pir",
+    "payload": { "mov": "1" }
+  },
+  {
+    "topic": "aula/vision/resultado",
+    "payload": {
+      "conf": 0.78,
+      "lat_ms": { "cap": 180, "det": 12, "emb": 6, "total": 240 }
+    }
+  },
+  {
+    "topic": "aula/vision/resultado",
+    "payload": {
+      "cuenta": "320068234",
+      "conf": 0.78,
+      "lat_ms": { "cap": 180, "det": 12, "emb": 6, "total": 240 },
+      "foto": "<base64>"
+    }
+  },
+  {
+    "topic": "aula/sesion/estado",
+    "payload": { "activa": 1, "id": 12 }
+  },
+  {
+    "topic": "aula/vision/embedding",
+    "payload": { "cuenta": "320068234", "embedding": "no-es-un-vector" }
+  },
+  {
+    "topic": "aula/topico/que/no/existe",
+    "payload": { "mov": 1 }
+  },
+  {
+    "topic": "aula/vision/cmd",
+    "payload": { "cuenta": "320068234" }
+  }
+]
