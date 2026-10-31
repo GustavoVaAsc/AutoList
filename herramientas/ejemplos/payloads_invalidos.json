@@ -1,7 +1,7 @@
 [
   {
     "topic": "aula/camara/pir",
-    "payload": { "mov": "1" }
+    "payload": {"mov": "1"}
   },
   {
     "topic": "aula/vision/resultado",
@@ -21,18 +21,117 @@
   },
   {
     "topic": "aula/sesion/estado",
-    "payload": { "activa": 1, "id": 12 }
+    "payload": {"activa": 1, "id": 12}
   },
   {
     "topic": "aula/vision/embedding",
-    "payload": { "cuenta": "320068234", "embedding": "no-es-un-vector" }
+    "payload": {"cuenta": "320068234", "embedding": "no-es-un-vector"}
   },
   {
     "topic": "aula/topico/que/no/existe",
-    "payload": { "mov": 1 }
+    "payload": {"mov": 1}
   },
   {
     "topic": "aula/vision/cmd",
-    "payload": { "cuenta": "320068234" }
+    "payload": {"cuenta": "320068234"}
+  },
+  {
+    "topic": "aula/camara/pir",
+    "payload": "mov"
+  },
+  {
+    "topic": "aula/vision/cmd",
+    "payload": {"accion": "borratodos", "cuenta": "320068234"}
+  },
+  {
+    "topic": "aula/vision/cmd",
+    "payload": {"accion": "enrolar"}
+  },
+  {
+    "topic": "aula/actuador/cmd",
+    "payload": {"led": "morado"}
+  },
+  {
+    "topic": "aula/actuador/cmd",
+    "payload": {"servo": "abierto"}
+  },
+  {
+    "topic": "aula/actuador/cmd",
+    "payload": {"buzzer": 2}
+  },
+  {
+    "topic": "aula/vision/enrolamiento",
+    "payload": {
+      "cuenta": "320068234",
+      "paso": 3,
+      "total": 5,
+      "pose": "detras",
+      "estado": "aceptada"
+    }
+  },
+  {
+    "topic": "aula/vision/resultado",
+    "payload": {
+      "cuenta": "320068234",
+      "conf": 0.78,
+      "lat_ms": { "cap": 180, "det": 12, "emb": 6, "total": 240 },
+      "motivo": "sin_motivo"
+    }
+  },
+  {
+    "topic": "aula/vision/resultado",
+    "payload": {
+      "cuenta": "320068234",
+      "conf": 1.4,
+      "lat_ms": { "cap": 180, "det": 12, "emb": 6, "total": 240 }
+    }
+  },
+  {
+    "topic": "aula/vision/resultado",
+    "payload": {
+      "cuenta": "320068234",
+      "conf": -0.1,
+      "lat_ms": { "cap": 180, "det": 12, "emb": 6, "total": 240 }
+    }
+  },
+  {
+    "topic": "aula/vision/enrolamiento",
+    "payload": {
+      "cuenta": "320068234",
+      "paso": 6,
+      "total": 5,
+      "pose": "frente",
+      "estado": "aceptada"
+    }
+  },
+  {
+    "topic": "aula/vision/enrolamiento",
+    "payload": {
+      "cuenta": "320068234",
+      "paso": 3,
+      "total": 4,
+      "pose": "frente",
+      "estado": "aceptada"
+    }
+  },
+  {
+    "topic": "aula/vision/embedding",
+    "payload": {"cuenta": "320068234", "embedding": [0.0123, -0.0456, 0.0789, -0.0321]}
+  },
+  {
+    "topic": "aula/actuador/cmd",
+    "payload": {}
+  },
+  {
+    "topic": "aula/sesion/cmd",
+    "payload": {"accion": "iniciar", "materia": "FSE"}
+  },
+  {
+    "topic": "aula/vision/cmd",
+    "payload": {"accion": "probar"}
+  },
+  {
+    "topic": "aula/\u001b[31mvision/cmd",
+    "payload": {"accion": "enrolar", "cuenta": "320068234"}
   }
 ]

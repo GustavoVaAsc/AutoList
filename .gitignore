@@ -4,6 +4,8 @@ docs/SPEC.md
 
 # Credenciales: solo se versiona .env.example
 .env
+.env.*
+!.env.example
 
 # Modelos y datasets: fuera de git, van en releases o en una carpeta compartida
 *.nb
@@ -53,8 +55,31 @@ pc/grafana/data/
 *.db-shm
 
 # Secretos y claves privadas
-*.pem
-*.key
-id_rsa*
 secrets/
 *.secret
+id_rsa*
+!id_rsa.pub
+id_ed25519*
+id_nodered*
+*.ppk
+*.p12
+*.pfx
+
+# TLS: *.key y *.pem son material de clave y nunca se versionan; *.crt es un
+# certificado y puede versionarse.
+*.pem
+*.key
+
+# Credenciales del broker Mosquitto: se crean con "mosquitto passwd -c" y son
+# las contrasenas del broker en claro, asi que no se versionan.
+mosquitto/passwd
+mosquitto/passwd.bak
+
+# Copias de la base de datos
+*.dump
+*.backup
+pg_dump*
+dump.sql
+
+# docker-compose.override.yml NO se ignora: queda pendiente de decidir en la
+# Capa 3 si se versiona.

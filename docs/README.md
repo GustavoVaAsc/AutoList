@@ -13,6 +13,11 @@
 ## Documentos que no se versionan
 
 El documento interno del equipo (notas de trabajo, registro de decisiones,
-estado del proyecto y desglose semanal) **no se versiona**: está en
-`.gitignore` y solo lo ve el equipo. Lo que ve el profesor es
+estado del proyecto y desglose semanal) **no se versiona desde el commit
+`664bc8c`**: está en `.gitignore` y ya no está en la versión actual del
+repositorio. Lo que ve el profesor es
 [HIGH-LEVEL-PLAN.md](HIGH-LEVEL-PLAN.md).
+
+Ojo: **el fichero sigue en el historial de git** (está, entre otros, en los
+commits `8183e5c` y `01689e0`), donde se puede leer. Purgarlo del historial
+del repositorio queda pendiente.

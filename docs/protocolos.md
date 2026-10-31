@@ -65,7 +65,7 @@ temperatura se disparan cuando la XIAO se cuelga o se calienta.
 
 | | |
 |---|---|
-| **Dirección** | Publican Node-RED, el servicio de visión y el frontend web. Se suscribe la XIAO ESP32S3 Sense. |
+| **Dirección** | Publican Node-RED y el servicio de visión. Se suscribe la XIAO ESP32S3 Sense. |
 | **Payload** | `{"servo":"abrir","led":"verde","buzzer":1,"luz":0}` |
 | **Campos** | `servo` (`string`, opcional): `abrir` o `cerrar`. `led` (`string`, opcional): `verde`, `rojo`, `azul` o `ambar`. `buzzer` (`int`, opcional): 0 o 1. `luz` (`int`, opcional): 0 o 1. |
 | **Ejemplo** | `{"servo":"abrir","led":"verde","buzzer":1,"luz":0}` |
@@ -79,6 +79,10 @@ sola orden. El servo gira 90° (abierto), espera 3 s y regresa; los patrones de
 LED son los del proyecto previo (azul: sesión activa, verde: registrado, rojo:
 error, ámbar: zona gris).
 
+El frontend no publica aquí: no tiene permiso de escritura (sección 3). Su
+control manual del servo, los LEDs y el buzzer llega a la XIAO a través de
+Node-RED, que es el único rol con permiso de escritura amplio.
+
 **Retained no:** un comando retenido se reentregaría al reconectar la XIAO y
 volvería a abrir el servo sin motivo.
 
@@ -86,7 +90,7 @@ volvería a abrir el servo sin motivo.
 
 | | |
 |---|---|
-| **Dirección** | Publica la XIAO ESP32S3 Sense. Se suscriben Node-RED, la pantalla y el frontend web. |
+| **Dirección** | Publica la XIAO ESP32S3 Sense. Se suscriben Node-RED y el frontend web. |
 | **Payload** | `{"servo":"cerrado","led":"azul","luz":0}` |
 | **Campos** | `servo` (`string`, requerido): `abierto` o `cerrado`. `led` (`string`, requerido): `verde`, `rojo`, `azul` o `ambar`. `luz` (`int`, requerido): 0 o 1. |
 | **Ejemplo** | `{"servo":"cerrado","led":"azul","luz":0}` |
@@ -218,9 +222,11 @@ Semántica: métricas del borde para los paneles de Grafana.
 
 ### 2.1 Prefijo `aula/`
 
-Todos los tópicos empiezan por `aula/`. El prefijo sale de `MQTT_BASE_TOPIC`
-en el `.env`, de modo que el broker de pruebas puede usar otro prefijo sin
-tocar el código.
+Todos los tópicos empiezan por `aula/`. En la v1 el prefijo **no es
+configurable**: está fijado en la ACL del broker (sección 3) y en
+[`mqtt-topics.json`](mqtt-topics.json). `MQTT_BASE_TOPIC` aparece en el `.env`
+como documentación del valor, no como una opción: cambiarlo obligaría a
+regenerar la ACL y el contrato JSON a la vez.
 
 ### 2.2 Reconexión y backoff
 
@@ -273,57 +279,170 @@ sin internet, el desfase queda documentado como limitación.
 ### 2.5 `aula/vision/embedding` nunca es legible para el frontend
 
 **El embedding no llega nunca al navegador.** El frontend web se suscribe a
-`aula/vision/enrolamiento` y `aula/sesion/estado`, y a ningún otro tópico del
-sistema. `aula/vision/embedding` lo lee solo Node-RED, que es el único que
-escribe en Postgres.
+`aula/vision/enrolamiento`, `aula/sesion/estado` y `aula/actuador/estado`, y a
+ningún otro tópico del sistema. `aula/vision/embedding` lo lee solo Node-RED,
+que es el único que escribe en Postgres.
 
-La regla se aplica en dos capas independientes:
+La regla se apoya en dos controles, y conviene decir con exactitud qué es cada
+uno, porque los dos son de **acceso** y ninguno es una convención:
 
 1. **ACL del broker** (sección 3): el usuario del frontend no tiene permiso de
-   lectura sobre `aula/vision/embedding`.
-2. **API HTTP** (sección 5): `httpNodeAuth` protege todos los endpoints, y
-   `GET /api/galeria` —el único que devuelve embeddings— no lo usa el frontend.
+   lectura sobre `aula/vision/embedding`. Solo `nodered` lo lee, porque es el
+   único que hace el `UPDATE alumnos SET embedding`.
+2. **Realm de la API HTTP** (sección 5): `GET /api/galeria` —el único endpoint
+   que devuelve embeddings— **no está en el realm del navegador**. Vive en un
+   realm de `httpNodeAuth` distinto, con credenciales de servicio propias del
+   servicio de visión, que el navegador no tiene. `httpNodeAuth` protege todos
+   los endpoints, pero protegerlos no basta: los que el navegador puede
+   llamar tienen que estar en un realm que el navegador no comparta.
 
-Las fotos nunca se guardan: se descartan tras calcular el embedding y solo
-circulan miniaturas en base64 durante el registro.
+El frontend tampoco escribe: no tiene ningún permiso de escritura en el broker
+(sección 3), así que no puede publicar un embedding suplantando a otro alumno.
+Todo lo que el frontend escribe pasa por la API HTTP de Node-RED.
+
+Las fotos de la captura no se guardan: se descartan en cuanto se calcula el
+embedding. Lo que sí circula es la **miniatura en base64** de cada pose,
+durante el registro: viaja en claro por MQTT en `aula/vision/enrolamiento` y la
+reciben el frontend y la pantalla.
 
 ---
 
 ## 3. ACL de Mosquitto
 
-El broker Mosquitto de la Orange Pi va con usuario, password y ACL. El usuario
-del frontend es un usuario aparte del broker, no un cliente anónimo.
+El broker Mosquitto de la Orange Pi va con usuario, password y ACL. Hay **un
+usuario por rol del sistema** y ninguno es anónimo: el usuario del frontend es
+un usuario del broker, no un cliente anónimo, y no comparte credenciales con
+nadie.
 
-| Permiso | Usuario del frontend | Resto de módulos |
-|---|---|---|
-| Publicar en los tópicos de telemetría | Sí | Sí |
-| Suscribirse a `aula/vision/enrolamiento` | Sí | Sí |
-| Suscribirse a `aula/sesion/estado` | Sí | Sí |
-| **Leer `aula/vision/embedding`** | **No** | Solo Node-RED |
+### 3.1 Configuración de referencia del broker
+
+Para que la ACL signifique algo, el broker tiene que aplicarla. Esta es la
+configuración de referencia (la Capa 3 la monta en el `docker-compose.yml` de la
+Orange Pi):
+
+```
+# mosquitto.conf
+
+# Sin clientes anonimos: sin esta linea el broker acepta escritura anonima y
+# el sistema es forjable sin credenciales.
+allow_anonymous false
+
+# Credenciales y ACL. En el host viven en mosquitto/ y se montan en
+# /mosquitto/config dentro del contenedor.
+password_file /mosquitto/config/passwd
+acl_file /mosquitto/config/acl
+
+# Sin persistencia: los embeddings y las miniaturas no deben quedar guardados
+# en mosquitto.db.
+persistence false
+
+# Cota de tamano de mensaje (Mosquitto la aplica a los clientes MQTT v5).
+# 1 MiB es el techo de una miniatura JPEG en base64 (unos 750 KiB de JPEG).
+max_message_size 1048576
+```
+
+Los usuarios del broker se crean con:
+
+```
+mosquitto passwd -c mosquitto/passwd <usuario>
+```
+
+Con `-c` se crea el fichero; sin `-c` se añade un usuario al que ya existe.
+**El fichero `mosquitto/passwd` no se versiona**: son las contraseñas del broker
+en claro, y está en el `.gitignore`. El fichero de ACL sí puede versionarse,
+porque no lleva contraseñas.
+
+### 3.2 Permisos por rol
+
+Mosquitto deniega por defecto: lo que no aparece en la ACL, no se puede hacer.
+Un `topic read aula/#` de más reabre la lectura del embedding, así que la
+wildcard solo se concede al rol de Node-RED y por escrito.
+
+| Rol | Publica | Se suscribe a | Lee `aula/vision/embedding` |
+|---|---|---|---|
+| `frontend` | — | `aula/vision/enrolamiento`, `aula/sesion/estado`, `aula/actuador/estado` | No |
+| `xiao` | `aula/camara/pir`, `aula/camara/energia`, `aula/camara/estado`, `aula/actuador/estado` | `aula/actuador/cmd`, `aula/sesion/estado` | No |
+| `vision` | `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/embedding`, `aula/actuador/cmd` | `aula/camara/pir`, `aula/vision/cmd` | No |
+| `pantalla` | `aula/sesion/cmd` | `aula/vision/enrolamiento`, `aula/sesion/estado` | No |
+| `nodered` | `aula/vision/cmd`, `aula/actuador/cmd`, `aula/sesion/estado`, `aula/sistema/metricas` | `aula/#` | Sí |
 
 Reglas de la ACL, tal y como van en el fichero de configuración del broker:
 
 ```
-# Usuario del frontend (solo publica y lee lo que necesita)
+# ACL de Mosquitto (mosquitto/acl)
+
+# --- Frontend web (navegador del profesor) -------------------------------
+# Solo lectura, y de tres topicos. El frontend no publica por MQTT: usa la API
+# HTTP de Node-RED para todo lo que escribe y MQTT solo para RECIBIR el
+# progreso del registro (mqtt.js sobre WebSocket, puerto 9001). El trigger del
+# registro lo publica Node-RED, no el navegador.
+#
+# El permiso de escritura es lo que hace fiable un "UPDATE alumnos SET
+# embedding"; por eso el usuario del frontend no lo tiene, aunque su credencial
+# viva en el navegador.
 user frontend
-topic write aula/#
+topic read aula/vision/enrolamiento
+topic read aula/sesion/estado
+topic read aula/actuador/estado
+
+# --- XIAO ESP32S3 Sense (nodo de campo) ---------------------------------
+user xiao
+topic write aula/camara/pir
+topic write aula/camara/energia
+topic write aula/camara/estado
+topic write aula/actuador/estado
+topic read aula/actuador/cmd
+topic read aula/sesion/estado
+
+# --- Servicio de vision (NPU) --------------------------------------------
+# Publica los tres topicos de vision y lee el disparo del PIR y las ordenes de
+# enrolar. Tambien escribe en aula/actuador/cmd, con topico exacto y sin
+# wildcard: el plan (seccion 5.1) enciende la tira LED desde aqui ({"luz":1})
+# para que la cara quede iluminada antes de la captura.
+user vision
+topic write aula/vision/resultado
+topic write aula/vision/enrolamiento
+topic write aula/vision/embedding
+topic write aula/actuador/cmd
+topic read aula/camara/pir
+topic read aula/vision/cmd
+
+# --- Pantalla ILI9341 ----------------------------------------------------
+# Inicia y termina la sesion y sigue el progreso del registro. No toca los
+# actuadores: el control manual del servo, los LEDs y el buzzer pasa por
+# Node-RED (seccion 6.5 del plan).
+user pantalla
+topic write aula/sesion/cmd
 topic read aula/vision/enrolamiento
 topic read aula/sesion/estado
 
-# El servicio de vision publica el embedding; solo Node-RED lo lee
-user vision
-topic write aula/vision/#
-topic read aula/sesion/estado
-
+# --- Node-RED (borde) ----------------------------------------------------
+# Es el unico que escribe en Postgres y el que consume todo el sistema, asi que
+# es el unico con lectura amplia: por eso es el unico que puede leer
+# aula/vision/embedding, que es justo el vector que guarda con "UPDATE alumnos
+# SET embedding". Ningun otro rol lo necesita.
+#
+# Escribe en los topicos de orden y de estado, no en los de telemetria de los
+# sensores (aula/camara/*) ni en los de vision (aula/vision/enrolamiento,
+# aula/vision/embedding), que solo los publica quien los produce.
 user nodered
-topic write aula/#
+topic write aula/vision/cmd
+topic write aula/actuador/cmd
+topic write aula/sesion/estado
+topic write aula/sistema/metricas
 topic read aula/#
 ```
 
-La diferencia entre `topic write aula/#` para el frontend y `topic read
-aula/vision/embedding` ausente es justamente lo que impide que un embedding
-llegue al navegador: el permiso de lectura es explícito, no se concede por
-omisión.
+Tres reglas que se comprueban a ojo sobre esta ACL:
+
+- **El frontend no escribe.** No tiene ni una línea de `topic write`, así que
+  no puede publicar `aula/vision/embedding` (que suplantaría a otro alumno),
+  ni `aula/vision/resultado` (que falsearía una asistencia), ni
+  `aula/actuador/cmd` (que movería el servo).
+- **El embedding solo lo escribe `vision` y solo lo lee `nodered`.** Los demás
+  roles no tienen permiso de lectura ni de escritura sobre ese tópico.
+- **La wildcard es solo de Node-RED.** Con `topic read aula/#` en el rol
+  equivocado, la lectura del embedding vuelve a abrirse.
 
 ---
 
@@ -361,6 +480,11 @@ Todos los endpoints de la API de Node-RED están protegidos con `httpNodeAuth`
 ejecutan nada. El frontend los llama desde el navegador del profesor, en la misma
 red.
 
+La API tiene **dos realms**, y no es un detalle: son dos conjuntos de
+credenciales distintos. Los seis endpoints que usa el frontend web están en el
+realm `frontend`; `GET /api/galeria`, que es el único que devuelve embeddings,
+está en el realm `vision` (servicio), que el navegador no tiene.
+
 | Método | Ruta | Query | Cuerpo | Respuesta |
 |---|---|---|---|---|
 | `GET` | `/api/alumnos` | `grupo` (obligatorio): el grupo a listar | — | Lista de alumnos del grupo con su estado de rostro (pendiente o registrado), su consentimiento y su número de cuenta. |
@@ -369,7 +493,7 @@ red.
 | `POST` | `/api/enrolamiento/cancelar` | — | `{"cuenta":"320068234"}` | Confirmación de la cancelación del registro en curso. |
 | `POST` | `/api/enrolamiento/probar` | — | `{"cuenta":"320068234"}` | Confirmación del arranque de la prueba; el resultado y la confianza llegan por MQTT. |
 | `DELETE` | `/api/alumnos/:cuenta/rostro` | — | — | Confirmación del borrado: el embedding pasa a `NULL` y el consentimiento queda retirado. |
-| `GET` | `/api/galeria` | — | — | Los embeddings de los alumnos con rostro, para que el servicio de visión sincronice su galería local. **No lo usa el frontend.** |
+| `GET` | `/api/galeria` | — | — | Los embeddings de los alumnos con rostro, para que el servicio de visión sincronice su galería local. **Endpoint de servicio: realm `vision`, no el del navegador.** |
 
 Notas:
 
@@ -377,8 +501,23 @@ Notas:
   consentimiento**: borrar el embedding deja al alumno como pendiente de rostro
   y deja de reconocerse.
 - `GET /api/galeria` es la única respuesta que contiene embeddings. Es el
-  caminho controlado entre el servicio de visión y Node-RED; por eso está
-  detrás de `httpNodeAuth` y no se expone al frontend.
+  caminho controlado entre el servicio de visión y Node-RED. Vive en un realm
+  de `httpNodeAuth` distinto del que usan los otros seis endpoints: el
+  navegador tiene credenciales del realm del frontend, y esas credenciales no
+  dan acceso a este endpoint. El servicio de visión se autentica con las
+  credenciales de servicio del realm `vision`, que no están en el repo: en
+  Node-RED van cifradas en los bloques `creds` de `nodered/flows.json` y la
+  copia que usa el servicio de visión está en el `.env` de la Orange Pi
+  (`MQTT_USER_VISION` y `MQTT_PASSWORD_VISION` para el broker).
+- En Node-RED esto se documenta con un grupo de nodos `httpIn` por realm: cada
+  grupo lleva su propio nodo `httpNodeAuth`, con su `realm` y sus
+  credenciales. La credencial del realm `frontend` viaja en el bundle JS que
+  sirve `httpStatic` desde `/data/public`, de modo que cualquiera que abra la
+  página puede extraerla: por eso ese realm no puede incluir la galería.
+- El `credentialSecret` de Node-RED sale de la variable de entorno
+  `NODERED_CREDENTIAL_SECRET`, que solo existe en el `.env` de la Orange Pi.
+  `nodered/flows.json` sí se versiona, pero sus bloques `creds` van cifrados
+  con ese secreto: sin el secreto en el repo no son descifrables.
 - La importación del CSV de la lista maestra se hace con `curl` contra
   `POST /api/alumnos/importar`, sin vista propia en el frontend: el profesor la
   ejecuta una vez por grupo.
@@ -399,3 +538,41 @@ python3 herramientas/validar_protocolo.py --lista
 
 El script usa solo la biblioteca estándar de Python 3. Los errores salen por
 stderr y el proceso sale con código 1 si hay alguno.
+
+Además del tipo y los campos requeridos, el validador comprueba lo que el
+contrato declara de forma explícita:
+
+- los valores `enum` de cada campo (la acción de `aula/vision/cmd` y de
+  `aula/sesion/cmd`, el LED, el servo, la pose, el motivo, el buzzer y la luz);
+- los límites numéricos: `conf` entre 0 y 1, `paso` entre 1 y 5 y `total` igual
+  a 5;
+- la longitud del vector de `embedding`, que tiene que ser `EMBEDDING_DIM` (la
+  variable de entorno, 512 por defecto);
+- que `aula/actuador/cmd` lleve al menos un campo;
+- las reglas condicionales: `aula/sesion/cmd` con `accion: iniciar` exige
+  `materia`, `grupo` y `tol_min`.
+
+Si el contrato no declara una regla para un campo, el validador no la inventa:
+comprueba solo lo que dice [`mqtt-topics.json`](mqtt-topics.json).
+
+---
+
+## 7. Limitaciones conocidas de esta capa
+
+Esta capa no resuelve los riesgos de la sección 13 del plan, los deja
+escritos. Aunque el sistema está en la LAN del aula, sin cifrar:
+
+- **Mosquitto sin TLS** (1883 y 9001): las credenciales del broker, los
+  embeddings y las miniaturas viajan **en claro** por la LAN. Cualquiera que
+  escuche la red los lee.
+- **Postgres y Grafana sin cifrar** en la LAN: el tráfico entre la Orange Pi y
+  la PC, con los embeddings y los registros de asistencia, va en claro.
+- **API HTTP de Node-RED con Basic auth sobre HTTP plano**: el usuario y la
+  contraseña de la API viajan en claro en cada petición.
+- **La credencial del frontend vive en el navegador**: viaja en el bundle JS
+  que sirve `httpStatic` desde `/data/public`, así que quien tenga acceso a la
+  página puede extraerla. La ACL la limita a solo lectura, pero expone los
+  nombres y los estados de la clase a quien tenga acceso a esa página.
+
+Cada una de estas líneas es un trabajo pendiente de una capa posterior; aquí
+solo se dejan escritas para que no se pierdan.

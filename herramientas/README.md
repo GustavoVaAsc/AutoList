@@ -46,6 +46,27 @@ python3 herramientas/validar_protocolo.py --contrato otro_contrato.json mensajes
 - Que los tipos coincidan: un entero vale donde se pide un flotante, pero un
   booleano no vale como entero.
 - Que no aparezcan campos que no estén en el contrato.
+- Que el valor de los campos con `enum` esté entre los admitidos: la acción de
+  `aula/vision/cmd` y de `aula/sesion/cmd`, el LED, el servo, la pose, el
+  motivo, el buzzer y la luz.
+- Que los campos numéricos estén dentro de los límites que declara el
+  contrato: `conf` entre 0 y 1, `paso` entre 1 y 5 y `total` igual a 5.
+- Que el vector de `embedding` tenga la longitud que declara el contrato:
+  `EMBEDDING_DIM` (512 por defecto), que se lee de la variable de entorno.
+- Que `aula/actuador/cmd` lleve al menos un campo.
+- Que se cumplan las reglas condicionales: `aula/sesion/cmd` con
+  `accion: iniciar` exige `materia`, `grupo` y `tol_min`, y `aula/vision/cmd`
+  con `accion: enrolar` o `accion: probar` exige `cuenta`.
+
+El validador **no inventa reglas**: si el contrato no declara un límite, un
+`enum` o una condición para un campo, no lo comprueba. Las reglas viven en
+[`docs/mqtt-topics.json`](../docs/mqtt-topics.json), con `enum`, `min`, `max`,
+`length`, `min_fields` y `required_if`.
+
+Además, el script es defensivo con la entrada: no lee más de 16 MiB de un
+fichero ni de la entrada estándar (si se pasa de ahí, avisa y sale con código
+2) y sanea lo que imprime, así que un tópico con secuencias de escape ANSI no
+redibuja la terminal y los valores se truncan a 200 caracteres.
 
 Los errores se escriben por stderr y el proceso sale con código 1 si hay
 algún error, 0 si todo está bien y 2 si el contrato o la entrada no se pueden
@@ -55,10 +76,16 @@ leer.
 
 En [`ejemplos/`](ejemplos/) hay dos ficheros:
 
-- `payloads_validos.json`: un mensaje válido por cada tópico del contrato.
+- `payloads_validos.json`: un mensaje válido por cada tópico del contrato,
+  más los casos límite de las reglas nuevas (`conf` en 0 y en 1, `paso` en 1 y
+  en 5, un `aula/actuador/cmd` con un solo campo, un `aula/sesion/cmd` de
+  `terminar` y el vector de `embedding` con los 512 valores).
 - `payloads_invalidos.json`: mensajes con un tipo incorrecto, un campo
-  requerido que falta, un campo desconocido, un tópico inexistente y un
-  `payload` que no es un objeto.
+  requerido que falta, un campo desconocido, un tópico inexistente, un
+  `payload` que no es un objeto, un valor fuera de un `enum`, un `conf` o un
+  `paso` fuera de rango, un `total` que no es 5, un `embedding` corto, un
+  `aula/actuador/cmd` sin campos, una regla condicional que no se cumple y un
+  tópico con escapes ANSI.
 
 ```bash
 python3 herramientas/validar_protocolo.py ejemplos/payloads_validos.json

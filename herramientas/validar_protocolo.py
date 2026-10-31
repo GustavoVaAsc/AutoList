@@ -18,7 +18,15 @@ o una lista de esos objetos. Se comprueba que:
 - no falte ningun campo marcado como requerido;
 - los tipos de los campos coincidan (un entero es valido donde se pide un
   flotante, pero un booleano no vale como entero);
-- no aparezcan campos que no esten en el contrato.
+- no aparezcan campos que no esten en el contrato;
+- el valor de los campos con 'enum' este entre los valores admitidos;
+- los campos numericos esten dentro de los limites 'min' y 'max';
+- los arrays con 'length' tengan la longitud que declara el contrato;
+- el payload tenga al menos 'min_fields' campos, si el topico lo declara;
+- esten los campos que el topico exige con 'required_if'.
+
+El validador no inventa reglas: si el contrato no declara un limite para un
+campo, no lo comprueba.
 
 Los errores se escriben por stderr y el proceso sale con codigo 1 si hay
 alguno.
@@ -36,6 +44,13 @@ RUTA_CONTRATO_POR_DEFECTO = os.path.join(
 )
 
 TIPOS_SIMPLE = ("int", "float", "string", "bool")
+
+# Tope de lo que se lee de un fichero o de la entrada estandar. Por encima de
+# esto ya no es un payload, y leerlo entero no aporta nada.
+LIMITE_ENTRADA = 16 * 1024 * 1024
+
+# Longitud maxima de los textos que se imprimen en los mensajes de error.
+LIMITE_TEXTO = 200
 
 
 def cargar_contrato(ruta):
@@ -55,11 +70,54 @@ def cargar_contrato(ruta):
     return contrato
 
 
-def cargar_mensajes(ruta):
-    """Lee un fichero de mensajes y devuelve una lista de (origen, objeto)."""
-    with open(ruta, encoding="utf-8") as fichero:
-        contenido = fichero.read()
+def texto_seguro(valor, limite=LIMITE_TEXTO):
+    """Convierte un valor en texto apto para imprimir.
 
+    Usa repr() para que los caracteres de control salgan escapados (un escape
+    ANSI en un topico no puede redibujar la terminal) y trunca a 200
+    caracteres para que un valor enorme no llene la salida.
+    """
+    limpio = "".join(
+        caracter if caracter.isprintable() else "?" for caracter in repr(valor)
+    )
+    if len(limpio) > limite:
+        limpio = limpio[:limite] + "..."
+    return limpio
+
+
+def leer_texto(ruta):
+    """Lee un fichero entero como texto, con un tope de tamano."""
+    with open(ruta, "rb") as fichero:
+        datos = fichero.read(LIMITE_ENTRADA + 1)
+
+    if len(datos) > LIMITE_ENTRADA:
+        raise ValueError(
+            "el fichero supera el tope de %d bytes" % LIMITE_ENTRADA
+        )
+
+    try:
+        return datos.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("el fichero no es UTF-8 valido: %s" % error)
+
+
+def leer_texto_entrada_estandar():
+    """Lee la entrada estandar entera, con un tope de tamano."""
+    datos = sys.stdin.buffer.read(LIMITE_ENTRADA + 1)
+
+    if len(datos) > LIMITE_ENTRADA:
+        raise ValueError(
+            "la entrada estandar supera el tope de %d bytes" % LIMITE_ENTRADA
+        )
+
+    try:
+        return datos.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("la entrada estandar no es UTF-8 valido: %s" % error)
+
+
+def cargar_mensajes_desde_texto(contenido, origen):
+    """Convierte un texto JSON en una lista de (origen, mensaje)."""
     try:
         datos = json.loads(contenido)
     except json.JSONDecodeError as error:
@@ -70,7 +128,12 @@ def cargar_mensajes(ruta):
     if not isinstance(datos, list):
         raise ValueError("se esperaba un objeto o una lista de objetos")
 
-    return [(ruta, mensaje) for mensaje in datos]
+    return [(origen, mensaje) for mensaje in datos]
+
+
+def cargar_mensajes(ruta):
+    """Lee un fichero de mensajes y devuelve una lista de (origen, objeto)."""
+    return cargar_mensajes_desde_texto(leer_texto(ruta), ruta)
 
 
 def valor_compatible(valor, tipo_esperado):
@@ -118,6 +181,101 @@ def tipo_real(valor):
     return type(valor).__name__
 
 
+def longitud_esperada(campo):
+    """Longitud que el contrato exige a un array, o None si no la declara.
+
+    La regla 'length' puede ser un numero o un objeto con la variable de
+    entorno de la que sale (EMBEDDING_DIM) y su valor por defecto.
+    """
+    regla = campo.get("length")
+    if regla is None:
+        return None
+
+    if isinstance(regla, bool):
+        return None
+
+    if isinstance(regla, int):
+        return regla
+
+    if isinstance(regla, dict):
+        variable = regla.get("env")
+        if variable:
+            valor = os.environ.get(variable)
+            if valor is not None:
+                try:
+                    return int(valor)
+                except ValueError:
+                    print(
+                        "aviso: la variable de entorno %s no es un entero; "
+                        "se usa el valor por defecto" % variable,
+                        file=sys.stderr,
+                    )
+        return regla.get("default")
+
+    return None
+
+
+def comprobar_enum(nombre, campo, valor, ruta_campo, errores):
+    """Comprueba que el valor este entre los admitidos, si el contrato dice."""
+    if "enum" not in campo:
+        return
+
+    admitidos = campo["enum"]
+    if valor in admitidos:
+        return
+
+    errores.append(
+        "el campo %s%s vale %s y se esperaba uno de: %s"
+        % (
+            texto_seguro(nombre),
+            ruta_campo,
+            texto_seguro(valor),
+            ", ".join(texto_seguro(opcion) for opcion in admitidos),
+        )
+    )
+
+
+def comprobar_limites(nombre, campo, valor, ruta_campo, errores):
+    """Comprueba los limites 'min' y 'max' declarados por el contrato."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return
+
+    if "min" in campo and valor < campo["min"]:
+        errores.append(
+            "el campo %s%s vale %s y el minimo del contrato es %s"
+            % (
+                texto_seguro(nombre),
+                ruta_campo,
+                texto_seguro(valor),
+                texto_seguro(campo["min"]),
+            )
+        )
+
+    if "max" in campo and valor > campo["max"]:
+        errores.append(
+            "el campo %s%s vale %s y el maximo del contrato es %s"
+            % (
+                texto_seguro(nombre),
+                ruta_campo,
+                texto_seguro(valor),
+                texto_seguro(campo["max"]),
+            )
+        )
+
+
+def comprobar_longitud(nombre, campo, valor, ruta_campo, errores):
+    """Comprueba que el array tenga la longitud que declara el contrato."""
+    esperada = longitud_esperada(campo)
+    if esperada is None:
+        return
+
+    if len(valor) != esperada:
+        errores.append(
+            "el array %s%s tiene %d elemento(s) y el contrato exige %d"
+            % (texto_seguro(nombre), ruta_campo, len(valor), esperada)
+        )
+
+
 def validar_campos(campos, valores, ruta_campo, errores):
     """Valida un diccionario de valores contra una lista de campos del contrato."""
     por_nombre = {campo["name"]: campo for campo in campos}
@@ -126,7 +284,7 @@ def validar_campos(campos, valores, ruta_campo, errores):
         if nombre not in valores:
             if campo.get("required", False):
                 errores.append(
-                    "falta el campo requerido '%s'%s" % (nombre, ruta_campo)
+                    "falta el campo requerido %s%s" % (texto_seguro(nombre), ruta_campo)
                 )
             continue
 
@@ -136,16 +294,16 @@ def validar_campos(campos, valores, ruta_campo, errores):
         if tipo_esperado in TIPOS_SIMPLE:
             if not valor_compatible(valor, tipo_esperado):
                 errores.append(
-                    "el campo '%s'%s es de tipo %s y se esperaba %s"
-                    % (nombre, ruta_campo, tipo_real(valor), tipo_esperado)
+                    "el campo %s%s es de tipo %s y se esperaba %s"
+                    % (texto_seguro(nombre), ruta_campo, tipo_real(valor), tipo_esperado)
                 )
                 continue
 
         elif tipo_esperado == "object":
             if not isinstance(valor, dict):
                 errores.append(
-                    "el campo '%s'%s es de tipo %s y se esperaba object"
-                    % (nombre, ruta_campo, tipo_real(valor))
+                    "el campo %s%s es de tipo %s y se esperaba object"
+                    % (texto_seguro(nombre), ruta_campo, tipo_real(valor))
                 )
                 continue
             validar_campos(
@@ -158,8 +316,8 @@ def validar_campos(campos, valores, ruta_campo, errores):
         elif tipo_esperado == "array":
             if not isinstance(valor, list):
                 errores.append(
-                    "el campo '%s'%s es de tipo %s y se esperaba array"
-                    % (nombre, ruta_campo, tipo_real(valor))
+                    "el campo %s%s es de tipo %s y se esperaba array"
+                    % (texto_seguro(nombre), ruta_campo, tipo_real(valor))
                 )
                 continue
             item = campo.get("items", {})
@@ -168,22 +326,68 @@ def validar_campos(campos, valores, ruta_campo, errores):
                 for indice, elemento in enumerate(valor):
                     if not valor_compatible(elemento, tipo_item):
                         errores.append(
-                            "el elemento %d de '%s'%s es de tipo %s y se esperaba %s"
+                            "el elemento %d de %s%s es de tipo %s y se esperaba %s"
                             % (
                                 indice,
-                                nombre,
+                                texto_seguro(nombre),
                                 ruta_campo,
                                 tipo_real(elemento),
                                 tipo_item,
                             )
                         )
+            comprobar_longitud(nombre, campo, valor, ruta_campo, errores)
+
+        comprobar_enum(nombre, campo, valor, ruta_campo, errores)
+        comprobar_limites(nombre, campo, valor, ruta_campo, errores)
 
     conocidos = set(por_nombre)
     for nombre in valores:
         if nombre not in conocidos:
             errores.append(
-                "campo desconocido '%s'%s" % (nombre, ruta_campo)
+                "campo desconocido %s%s" % (texto_seguro(nombre), ruta_campo)
             )
+
+
+def comprobar_min_fields(especificacion, payload, errores):
+    """Comprueba el numero minimo de campos del payload, si el topico lo dice."""
+    minimo = especificacion.get("min_fields")
+    if minimo is None:
+        return
+
+    if len(payload) < minimo:
+        errores.append(
+            "el payload lleva %d campo(s) y el contrato exige al menos %d"
+            % (len(payload), minimo)
+        )
+
+
+def comprobar_required_if(especificacion, payload, errores):
+    """Comprueba las reglas condicionales declaradas por el topico."""
+    for regla in especificacion.get("required_if", []):
+        condicion = regla.get("when", {})
+        se_cumple = True
+
+        for campo, valor in condicion.items():
+            if campo not in payload or payload[campo] != valor:
+                se_cumple = False
+                break
+
+        if not se_cumple:
+            continue
+
+        for nombre in regla.get("require", []):
+            if nombre not in payload:
+                errores.append(
+                    "falta el campo requerido %s cuando %s"
+                    % (
+                        texto_seguro(nombre),
+                        ", ".join(
+                            "%s vale %s"
+                            % (texto_seguro(campo), texto_seguro(valor))
+                            for campo, valor in condicion.items()
+                        ),
+                    )
+                )
 
 
 def validar_mensaje(mensaje, contrato, origen, indice):
@@ -205,7 +409,8 @@ def validar_mensaje(mensaje, contrato, origen, indice):
 
     if topico not in contrato:
         return [
-            "topico desconocido '%s' en el mensaje %d de %s" % (topico, indice, origen)
+            "topico desconocido %s en el mensaje %d de %s"
+            % (texto_seguro(topico), indice, origen)
         ]
 
     if "payload" not in mensaje:
@@ -217,12 +422,16 @@ def validar_mensaje(mensaje, contrato, origen, indice):
             "el 'payload' del mensaje %d de %s no es un objeto" % (indice, origen)
         ]
 
+    especificacion = contrato[topico]
+
     validar_campos(
-        contrato[topico].get("payload", []),
+        especificacion.get("payload", []),
         payload,
         "",
         errores,
     )
+    comprobar_min_fields(especificacion, payload, errores)
+    comprobar_required_if(especificacion, payload, errores)
     return errores
 
 
@@ -273,27 +482,19 @@ def main(argv=None):
                 print("error: %s: %s" % (ruta, error), file=sys.stderr)
                 return 2
     else:
-        contenido = sys.stdin.read()
-        if not contenido.strip():
+        try:
+            mensajes = cargar_mensajes_desde_texto(
+                leer_texto_entrada_estandar(), "<stdin>"
+            )
+        except (OSError, ValueError) as error:
+            print("error: <stdin>: %s" % error, file=sys.stderr)
+            return 2
+        if not mensajes:
             print(
                 "error: no hay ficheros ni datos en la entrada estandar",
                 file=sys.stderr,
             )
             return 2
-        try:
-            datos = json.loads(contenido)
-        except json.JSONDecodeError as error:
-            print("error: JSON invalido en la entrada estandar: %s" % error, file=sys.stderr)
-            return 2
-        if isinstance(datos, dict):
-            datos = [datos]
-        if not isinstance(datos, list):
-            print(
-                "error: se esperaba un objeto o una lista de objetos",
-                file=sys.stderr,
-            )
-            return 2
-        mensajes = [("<stdin>", mensaje) for mensaje in datos]
 
     total_errores = 0
     for indice, (origen, mensaje) in enumerate(mensajes, start=1):

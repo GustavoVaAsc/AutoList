@@ -2,7 +2,7 @@
   "version": 1,
   "base_topic": "aula",
   "source": "docs/HIGH-LEVEL-PLAN.md, seccion 7.1",
-  "note": "Los payloads son los fijados en la seccion 7.1 del plan. Los campos opcionales se marcan con required=false; los campos anidados describen sus subcampos en 'fields' y los arrays de escalares en 'items'.",
+  "note": "Los payloads son los fijados en la seccion 7.1 del plan. Los campos opcionales se marcan con required=false; los campos anidados describen sus subcampos en 'fields' y los arrays de escalares en 'items'. Ademas, un campo puede declarar 'enum' (valores admitidos), 'min' y 'max' (limites numericos), y 'length' (longitud esperada de un array). Un topico puede declarar 'min_fields' (numero minimo de campos del payload) y 'required_if' (campos obligatorios cuando otro campo vale un valor dado). El validador solo comprueba lo que aqui esta declarado.",
   "topics": [
     {
       "topic": "aula/camara/pir",
@@ -95,7 +95,8 @@
     {
       "topic": "aula/actuador/cmd",
       "dir": "sub",
-      "publisher": "Node-RED, servicio de vision y frontend web",
+      "min_fields": 1,
+      "publisher": "Node-RED y servicio de vision",
       "subscribers": [
         "XIAO ESP32S3 Sense"
       ],
@@ -155,7 +156,6 @@
       "publisher": "XIAO ESP32S3 Sense",
       "subscribers": [
         "Node-RED",
-        "pantalla ILI9341",
         "frontend web"
       ],
       "qos": 1,
@@ -216,7 +216,9 @@
         {
           "name": "conf",
           "type": "float",
-          "required": true
+          "required": true,
+          "min": 0,
+          "max": 1
         },
         {
           "name": "lat_ms",
@@ -271,6 +273,24 @@
     {
       "topic": "aula/vision/cmd",
       "dir": "pub",
+      "required_if": [
+        {
+          "when": {
+            "accion": "enrolar"
+          },
+          "require": [
+            "cuenta"
+          ]
+        },
+        {
+          "when": {
+            "accion": "probar"
+          },
+          "require": [
+            "cuenta"
+          ]
+        }
+      ],
       "publisher": "Node-RED",
       "subscribers": [
         "servicio de vision (NPU)"
@@ -319,12 +339,16 @@
         {
           "name": "paso",
           "type": "int",
-          "required": true
+          "required": true,
+          "min": 1,
+          "max": 5
         },
         {
           "name": "total",
           "type": "int",
-          "required": true
+          "required": true,
+          "min": 5,
+          "max": 5
         },
         {
           "name": "pose",
@@ -385,6 +409,10 @@
           "required": true,
           "items": {
             "type": "float"
+          },
+          "length": {
+            "env": "EMBEDDING_DIM",
+            "default": 512
           }
         }
       ],
@@ -392,11 +420,23 @@
         "cuenta": "320068234",
         "embedding": [0.0123, -0.0456, 0.0789, -0.0321]
       },
-      "nota": "Vector de identidad facial ya promediado y normalizado. Su longitud es EMBEDDING_DIM (512 por defecto). En el plan el ejemplo aparece truncado; aqui se recortan los 512 valores. El frontend nunca se suscribe a este topico."
+      "nota": "Vector de identidad facial ya promediado y normalizado. Su longitud es EMBEDDING_DIM (512 por defecto) y el validador lo comprueba. El ejemplo de arriba esta abreviado a 4 valores: el vector real tiene EMBEDDING_DIM elementos. El frontend nunca se suscribe a este topico."
     },
     {
       "topic": "aula/sesion/cmd",
       "dir": "pub",
+      "required_if": [
+        {
+          "when": {
+            "accion": "iniciar"
+          },
+          "require": [
+            "materia",
+            "grupo",
+            "tol_min"
+          ]
+        }
+      ],
       "publisher": "pantalla ILI9341",
       "subscribers": [
         "Node-RED"
