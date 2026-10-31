@@ -19,3 +19,42 @@ web/build/
 .DS_Store
 Thumbs.db
 *.swp
+
+# Builds de firmware (PlatformIO y Arduino)
+firmware/**/build/
+firmware/**/.pio/
+*.elf
+*.bin
+*.hex
+*.map
+
+# Build de C++ del servicio de vision
+cmake-build*/
+build/
+*.o
+*.so
+*.a
+
+# Python de la pantalla y de las herramientas
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Web: cache del bundler
+.vite/
+
+# Datos de runtime: no se versionan, se regeneran
+nodered/data/
+pc/grafana/data/
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Secretos y claves privadas
+*.pem
+*.key
+id_rsa*
+secrets/
+*.secret

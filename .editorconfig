@@ -1,0 +1,29 @@
+# Convenciones de edicion del repositorio.
+# Se respeta el formato ya existente en los archivos versionados (docs/*.md):
+# UTF-8, LF, sin tabuladores y con indentacion por espacios.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{json,yml,yaml,md,ts,tsx}]
+indent_size = 2
+
+[*.{c,cc,cpp,cxx,h,hpp,py}]
+indent_size = 4
+
+[*.{sh,bash}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+[*.{elf,bin,hex,map,o,so,a,nb,onnx,tflite}]
+insert_final_newline = unset
+trim_trailing_whitespace = unset

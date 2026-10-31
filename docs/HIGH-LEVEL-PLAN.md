@@ -5,7 +5,7 @@
 **Equipo:** Gustavo · Yordi · Arnau
 **Plataforma Edge AI:** Orange Pi Zero 3W (Allwinner A733, NPU de 3 TOPS, 4 GB de RAM)
 
-> Documento vivo. Si una decisión cambia, actualízala aquí; en el [registro de decisiones del documento interno](SPEC.md#2-registro-de-decisiones) solo se anota cuando la decisión en sí cambia.
+> Documento vivo. Si una decisión cambia, actualízala aquí; el registro de decisiones vive en el documento interno del equipo, que no se versiona, y ahí solo se anota cuando la decisión en sí cambia.
 
 ---
 
