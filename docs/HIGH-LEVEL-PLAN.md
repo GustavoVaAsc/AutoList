@@ -243,7 +243,7 @@ sequenceDiagram
 
 ### 6.5 Pantalla ILI9341 (`orangepi/pantalla`, Python, táctil XPT2046)
 
-- Programa Python ejecutado en el host por systemd. La pantalla y el táctil XPT2046 comparten el bus SPI, con dos líneas CS distintas, y el RTC DS3231 va por I²C: el proceso necesita permisos de `spi`, `gpio` e `i2c`. Lo mantiene Gustavo, junto al servicio de visión.
+- Programa Python ejecutado en el host por systemd. La pantalla y el táctil XPT2046 comparten el bus SPI, con dos líneas CS distintas, y el RTC DS3231 va por I²C: el proceso necesita permisos de `spi`, `gpio` e `i2c`. Lo mantiene Arnau, junto al firmware de la XIAO.
 
 | Pantalla | Contenido |
 |---|---|
@@ -456,17 +456,17 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 
 ## 12. Roles y plan semanal
 
-El trabajo se reparte en dos carriles: **visión** (Gustavo) y **campo, borde y frontend** (Yordi). Cada hito es un miércoles y cada carril presenta un avance verificable ese día. La sección 12.3 lista las dependencias entre tareas: lo que no depende de nadie arranca de inmediato y lo que sí, espera.
+El trabajo se reparte en tres carriles: **visión** (Gustavo), **campo, pantalla y Grafana** (Arnau) y **borde, datos y frontend** (Yordi). Cada hito es un miércoles y cada carril presenta un avance verificable ese día. La sección 12.3 lista las dependencias entre tareas: lo que no depende de nadie arranca de inmediato y lo que sí, espera.
 
 ### 12.1 Hitos
 
-| Fecha | Hito | Gustavo | Yordi |
-|---|---|---|---|
-| **28 oct** | Proyecto y planeación | Especificación y exposición | Repo y estructura |
-| **4 nov** | Primer avance | Armbian y `/dev/vipcore`; toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb`; overlays de SPI y unidad systemd de la pantalla | Compose de la Orange Pi y la PC; esquema de Postgres; ingesta a Influx; primer panel de energía |
-| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses | Flujos de pase de lista y de sesiones; nodo `exec` por SSH; reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; MOSFET y tira LED de 12 V; orquestación luz–captura |
-| **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E3; umbral con LFW; pantalla completa con las 3 vistas | Grafana completo; frontend de registro completo; E4–E5 |
-| **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | Pulido del frontend; `httpNodeAuth` y ACL de Mosquitto; E6 |
+| Fecha | Hito | Gustavo | Arnau | Yordi |
+|---|---|---|---|---|
+| **28 oct** | Proyecto y planeación | Especificación y exposición | Lista de compras | Repo y estructura |
+| **4 nov** | Primer avance | Armbian y `/dev/vipcore`; toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb` | XIAO: `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura); overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi y la PC; esquema de Postgres; ingesta a Influx; primer panel de energía |
+| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses | MOSFET y tira LED de 12 V; orquestación luz–captura; menú base de la pantalla (sesión, lista y guía de registro) | Flujos de pase de lista y de sesiones; nodo `exec` por SSH; reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend |
+| **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E3; umbral con LFW | Pantalla completa con sus 3 vistas; Grafana completo; E4–E5 | Frontend de registro completo |
+| **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend; `httpNodeAuth` y ACL de Mosquitto; E6 |
 
 La fila del 25 de noviembre es de integración: el comprimido de código lo aporta todo el equipo.
 
@@ -476,8 +476,9 @@ El desglose de la semana del 4 de noviembre, con el orden de las tareas y lo que
 
 | Persona | Rol | Módulos |
 |---|---|---|
-| **Gustavo** | Visión y pantalla | Servicio de visión en la NPU, conversión de modelos, mejora de imagen, antifraude, E1–E3, calibración LFW, pantalla ILI9341 y su unidad systemd |
-| **Yordi** | Campo, borde y frontend | Firmware de la XIAO (cámara, sensores y actuadores), etapa de potencia, pruebas unitarias, Docker, Node-RED, Postgres, InfluxDB, Grafana, API HTTP, frontend web de registro, E4–E6 |
+| **Gustavo** | Visión | Servicio de visión en la NPU, conversión de modelos, mejora de imagen, antifraude, E1–E3, calibración LFW |
+| **Arnau** | Campo, pantalla y Grafana | Firmware de la XIAO (sensores y actuadores), etapa de potencia, pruebas unitarias, pantalla ILI9341, paneles de Grafana, E4–E5 |
+| **Yordi** | Borde, datos y frontend | Docker, Node-RED, Postgres, InfluxDB, API HTTP, frontend web de registro, E6 |
 
 ### 12.3 Dependencias entre tareas
 
@@ -486,6 +487,10 @@ El desglose de la semana del 4 de noviembre, con el orden de las tareas y lo que
 | Armbian y verificación de `/dev/vipcore` | Gustavo | — | El ejemplo de detección en la NPU |
 | Toolchain Pegasus en la PC | Gustavo | — | La conversión del modelo a `.nb` |
 | Modelo convertido a `.nb` | Gustavo | El toolchain Pegasus | La detección y el embedding en la NPU |
+| Captura, PIR e INA219 por MQTT en la XIAO | Arnau | La compra del INA219 y el PIR | La ingesta de energía a InfluxDB |
+| Servo y LEDs por MQTT | Arnau | La compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
+| Prueba de servo y captura simultáneas | Arnau | El servo y el firmware de la XIAO | — |
+| Overlays de SPI y unidad systemd | Arnau | — | La pantalla en la Orange Pi |
 | Detección, alineación y embedding en la NPU | Gustavo | El modelo `.nb` y `/dev/vipcore` | La galería y la publicación del resultado |
 | Galería y publicación del resultado | Gustavo | La detección en la NPU | El pase de lista y las reglas de sesión |
 | Orden de enrolar con captura de 5 poses | Gustavo | La galería | El registro de alumnos en el frontend |
@@ -498,17 +503,16 @@ El desglose de la semana del 4 de noviembre, con el orden de las tareas y lo que
 | Nodo `exec` por SSH y reporte CSV | Yordi | El compose | La pantalla y el reporte final |
 | Frontend de registro completo | Yordi | La API de alumnos y el orden de enrolar | — |
 | `httpNodeAuth` y ACL de Mosquitto | Yordi | Los flujos de Node-RED | El despliegue seguro |
-| Pantalla ILI9341 con sus 3 vistas | Gustavo | Los overlays de SPI y la unidad systemd | — |
-| Overlays de SPI y unidad systemd | Gustavo | — | La pantalla en la Orange Pi |
+| Pantalla ILI9341 con sus 3 vistas | Arnau | Los overlays de SPI y la unidad systemd | — |
 
 ### 12.4 Equipos compartidos
 
-La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así que las tareas que los ocupan se turnan. El turno de cada equipo se acuerda al inicio de cada hito, y el miércoles por la mañana se reserva como franja de demostraciones: la Orange Pi se enciende y cada carril muestra lo que trae.
+La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así que las tareas que los ocupan se turnan. El turno de cada equipo se acuerda al inicio de cada hito, y el miércoles por la mañana se reserva como franja de demostraciones: la Orange Pi se enciende y cada carril muestra lo que trae. Con tres personas, la Orange Pi se reparte entre Gustavo para la NPU, Arnau para los overlays de SPI y la unidad systemd, y Yordi para el stack de Docker.
 
 | Equipo | Tareas que lo ocupan | Quién lo usa |
 |---|---|---|
-| Orange Pi Zero 3W | Armbian y NPU; overlays de SPI y unidad systemd; stack de Docker | Gustavo y Yordi |
-| XIAO ESP32S3 Sense | Firmware de captura y sensores; etapa de potencia | Yordi |
+| Orange Pi Zero 3W | Armbian y NPU; overlays de SPI y unidad systemd; stack de Docker | Gustavo, Arnau y Yordi |
+| XIAO ESP32S3 Sense | Firmware de captura y sensores; etapa de potencia | Arnau y Yordi |
 
 ## 13. Riesgos
 
@@ -517,7 +521,7 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así 
 | La NPU no funciona en Armbian | En la imagen de Armbian de la Zero 3W el nodo `/dev/vipcore` aparece, pero la aceleración es opt-in: hay que instalar los blobs del fabricante. Plan B: imagen oficial de Orange Pi (kernel de fabricante 6.6) |
 | Conversión de modelos difícil | Empezar por los ejemplos del ai-sdk de Radxa para el A733; los modelos de rostro son CNN estándar |
 | El servo, el buzzer y los LEDs RGB tienen que repartirse los 4 timers LEDC del ESP32-S3 | Cada timer fija la frecuencia de sus dos canales y todos los timers comparten reloj: el servo (50 Hz) necesita un timer propio, el buzzer otro, y los tres LEDs RGB pueden ocupar los dos que quedan. Repartir con `ledcAttach`/`ledcWrite` de Arduino 3.x, no con `ledcSetup`, y comprobar en la semana 1 que el servo se mueve mientras la cámara captura. La cámara no consume canal LEDC: en el ESP32-S3 el XCLK lo genera el periférico LCD_CAM |
-| El trabajo son dos personas y las compras aún no están hechas | Arnau no cuenta para el resto del proyecto, así que el firmware de la XIAO, la etapa de potencia, la pantalla y el frontend caen sobre dos personas. El plan está recortado para que quepa y las compras son el camino crítico: pedirlas el lunes y no contar con el servo ni el INA219 hasta que lleguen |
+| Las compras del material aún no están hechas | El servo, el INA219, el PIR, el MOSFET y la tira LED de 12 V bloquean el firmware de la XIAO, la etapa de potencia y la lectura de energía. Son el camino crítico de las tres primeras semanas: pedirlas el lunes y no contar con el servo ni el INA219 hasta que lleguen |
 | El INA219 y la SCCB de la cámara pueden terminar en el mismo puerto I2C | La SCCB de la cámara usa el puerto I2C0 con los pines GPIO39 y GPIO40 de la placa Sense, y el INA219 en D4/D5 (GPIO5 y GPIO6) también es I2C0. La forma más simple de separarlos es poner el INA219 en `Wire1` (I2C1) con los pines explícitos, `Wire1.begin(5, 6)`. La otra vía es que la cámara use un puerto ya inicializado, pero para eso el driver exige dejar `pin_sccb_sda` y `pin_sccb_scl` a -1 y pasar el número de puerto en `sccb_i2c_port`. Verificar en la semana 1 que la cámara sigue detectando el sensor con el INA219 conectado |
 | Un solo microcontrolador concentra sensores y actuadores: si la XIAO se cuelga, se cae todo el nodo de campo | Watchdog y reconexión automática a Wi-Fi y MQTT; plan B: una ESP32-C3 económica solo para actuadores |
 | El profesor exige MariaDB | Esquema portable (sección 7.2) |
@@ -533,3 +537,4 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así 
 | Un registro dispara el pase de lista | El servicio de visión ignora el PIR mientras hay un registro en curso |
 | El firmware y la visión son un solo punto de fallo | Un mismo error de protocolo MQTT rompe a la vez el pase de lista, la ingesta de energía y los flujos de Node-RED. Fijar los payloads de los tópicos en el repositorio antes de escribir el firmware, y probar el broker con un cliente de línea de comandos antes de encadenar el resto |
 | D2 (GPIO3) es un pin de strapping del ESP32-S3 | En el arranque elige el origen de las señales JTAG y por defecto está flotante. El pull-down de la compuerta del MOSFET lo fija a 0, así que hay que verificar en la semana 1 que el USB Serial/JTAG sigue funcionando: es la vía de consola y de programación de la placa |
+| El avance del 4 de noviembre depende de un carril que no está disponible | Arnau tiene asignada su parte del plan, pero esta semana solo se trabaja con Gustavo y Yordi. El desglose de la semana en el documento interno asume que su carril no avanza, y el hito del 4 de noviembre se demuestra con los entregables de los otros dos |
