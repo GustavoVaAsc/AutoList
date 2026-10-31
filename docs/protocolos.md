@@ -470,9 +470,12 @@ Cuatro reglas que se comprueban a ojo sobre esta ACL:
   roles no tienen permiso de lectura ni de escritura sobre ese tópico.
 - **La wildcard es solo de Node-RED.** Con `topic read aula/#` en el rol
   equivocado, la lectura del embedding vuelve a abrirse.
-- **Cada tópico tiene un solo publicador.** `aula/sistema/metricas` lo
-  publica el rol `sistema` (el agente de métricas del host de la Orange Pi) y
-  nadie más: por eso Node-RED lo lee, pero no lo escribe.
+- **Cada tópico tiene un solo publicador, salvo `aula/actuador/cmd`.** Ese lo
+  publican Node-RED y el servicio de visión, que lo usa para encender la tira
+  LED antes de capturar. El resto son de un solo publicador:
+  `aula/sistema/metricas` lo publica el rol `sistema` (el agente de métricas
+  del host de la Orange Pi) y nadie más: por eso Node-RED lo lee, pero no lo
+  escribe.
 
 ---
 
