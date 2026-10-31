@@ -1,6 +1,7 @@
 # Documento interno del equipo: notas de trabajo, estado y pendientes.
 # No se versiona; lo que ve el profesor es docs/HIGH-LEVEL-PLAN.md.
 docs/SPEC.md
+docs/PODA.md
 
 # Credenciales: solo se versiona .env.example
 .env

@@ -5,7 +5,7 @@
 **Equipo:** Gustavo · Yordi · Arnau
 **Plataforma Edge AI:** Orange Pi Zero 3W (Allwinner A733, NPU de 3 TOPS, 4 GB de RAM)
 
-> Documento vivo. Si una decisión cambia, actualízala aquí; en el [registro de decisiones del documento interno](SPEC.md#2-registro-de-decisiones) solo se anota cuando la decisión en sí cambia.
+> Documento vivo. Si una decisión cambia, actualízala aquí.
 
 ---
 
@@ -25,7 +25,8 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 - Reglas heredadas del proyecto previo: lista maestra y anti-doble registro.
 - Retroalimentación física: servo como puerta simulada, LEDs RGB y buzzer.
 - Etapa de potencia: MOSFET que enciende una tira LED de 12 V para iluminar la cara.
-- Almacenamiento en InfluxDB y Postgres, visualización en Grafana y en la ILI9341.
+- Almacenamiento en Postgres, visualización en la pestaña de métricas del frontend y en la ILI9341.
+- Flujo inverso desde la pantalla: la vista de Sesión de la ILI9341 tiene los botones táctiles "Abrir puerta" y "Probar luz LED", que publican por MQTT hacia la XIAO.
 - Mejora de imagen para la cámara.
 - Medición de consumo energético.
 
@@ -45,11 +46,11 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 |---|---|
 | 1–2. Campo de aplicación con los elementos de la Fig. 1 | Pase de lista verificable en el aula |
 | 3. La ESP32 lee los sensores y los envía a la Orange Pi | La XIAO ESP32S3 lee cámara, PIR e INA219 y los envía por HTTP y MQTT; además maneja los actuadores |
-| 4. Docker: Mosquitto, InfluxDB y Node-RED en la Orange Pi; base de datos y Grafana en la PC | `orangepi/docker-compose.yml` y `pc/docker-compose.yml` (Postgres con pgvector en lugar de MariaDB) |
-| 5. Node-RED redistribuye a InfluxDB y a la base de datos, con un nodo que ejecuta el Python de la pantalla | Flujos de ingesta y pase de lista, más un nodo `exec` que reinicia la pantalla por SSH |
+| 4. Docker: Mosquitto, Node-RED y base de datos en la Orange Pi | Todo el stack vive en `orangepi/docker-compose.yml`: Mosquitto, Node-RED, Postgres con pgvector y Portainer. Las *Notas* del PDF permiten instalar todos los contenedores en la Orange Pi; Grafana no es obligatorio (las gráficas están en el frontend) e InfluxDB se sustituye por la tabla `metricas_energia` de Postgres, un desvío consciente de los puntos 4 y 5 |
+| 5. Node-RED redistribuye a la base de datos, con un nodo que ejecuta el Python de la pantalla | Flujos de ingesta y pase de lista hacia Postgres; un nodo `exec` que ejecuta el programa de Python del reporte CSV, y el reinicio de la pantalla por MQTT |
 | 6. Programa de Python para la ILI9341 con menú | `orangepi/pantalla/`, complementado con el frontend web de registro (`web/`), que corresponde a la opción "HTML" de la Fig. 1 |
-| 7. Base de datos y Grafana en la PC | Postgres con pgvector y paneles de Grafana |
-| Nota: flujo inverso hasta el actuador, con etapa de potencia | Pantalla → MQTT → XIAO ESP32S3 → servo, LEDs y MOSFET con tira LED de 12 V |
+| 7. Base de datos del sistema | Postgres con pgvector en la Orange Pi y las gráficas en la pestaña de métricas del frontend (nota de la fila 4) |
+| Nota: flujo inverso hasta el actuador, con etapa de potencia | Pantalla → MQTT → XIAO ESP32S3 → servo, LEDs y MOSFET con tira LED de 12 V; la pantalla tiene los botones táctiles "Abrir puerta" y "Probar luz LED", y el control completo también está en el frontend web |
 | Entregables: reporte con costo y consumo | Experimentos E5 y análisis de costo (sección 10) |
 
 ## 4. Arquitectura
@@ -63,12 +64,9 @@ flowchart LR
     VIS["Servicio de visión C++<br/>NPU"]
     MQ["Mosquitto"]
     NR["Node-RED"]
-    IF["InfluxDB"]
-    LCD["Pantalla ILI9341<br/>Python (systemd)"]
-  end
-  subgraph PC
     PG[("Postgres + pgvector")]
-    GF["Grafana"]
+    POR["Portainer CE"]
+    LCD["Pantalla ILI9341<br/>Python (systemd)"]
   end
   WEB["Frontend web de registro<br/>Vite + React"]
 
@@ -76,13 +74,11 @@ flowchart LR
   ESP -->|MQTT pir y energía| MQ
   VIS <-->|MQTT| MQ
   MQ <-->|MQTT| NR
-  NR --> IF
   NR --> PG
-  NR -->|exec ssh| LCD
+  POR -.->|administra| NR
+  NR -->|MQTT reinicio| LCD
   LCD <-->|MQTT| MQ
   MQ -->|MQTT cmd| ESP
-  GF --> IF
-  GF --> PG
   WEB -->|HTTP API| NR
   WEB <-->|MQTT WebSocket| MQ
 ```
@@ -90,16 +86,15 @@ flowchart LR
 | Capa | Dispositivo | Responsabilidad |
 |---|---|---|
 | Campo | XIAO ESP32S3 Sense | Fotos bajo demanda (HTTP); PIR e INA219 (MQTT); servo, LEDs RGB, buzzer y MOSFET de la tira LED de 12 V (MQTT) |
-| Borde | Orange Pi Zero 3W | Servicio de visión (NPU), Docker (Mosquitto, Node-RED, InfluxDB), pantalla ILI9341, RTC DS3231, frontend web (servido por Node-RED) |
-| Almacenamiento | PC | Docker (Postgres con pgvector, Grafana) |
-| Administración | Navegador de la laptop del profesor | Frontend web de registro de alumnos |
+| Borde | Orange Pi Zero 3W | Servicio de visión (NPU), Docker (Mosquitto, Node-RED, Postgres con pgvector y Portainer), pantalla ILI9341, RTC DS3231, frontend web (servido por Node-RED) |
+| Administración | Navegador de la laptop del profesor | Frontend web de registro de alumnos; la laptop solo abre el navegador |
 
 **Protocolos:**
 - **HTTP:** imágenes de la cámara.
 - **MQTT:** telemetría, resultados y comandos.
 - **MQTT sobre WebSocket (puerto 9001):** progreso del registro en el frontend.
 - **HTTP (Node-RED):** frontend estático y API de alumnos y registro.
-- **SQL por LAN:** de Node-RED a Postgres.
+- **SQL por localhost:** de Node-RED a Postgres, en la misma Orange Pi.
 
 ## 5. Flujos
 
@@ -110,7 +105,7 @@ sequenceDiagram
   participant X as XIAO (cámara y actuadores)
   participant V as Visión (NPU)
   participant N as Node-RED
-  participant D as Postgres / Influx
+  participant D as Postgres
   participant L as Pantalla
 
   X->>V: aula/camara/pir
@@ -133,7 +128,7 @@ sequenceDiagram
    - el alumno está en la lista del grupo;
    - no está ya registrado en la sesión;
    - se clasifica como presente o retardo según la tolerancia.
-7. Node-RED guarda en Postgres e InfluxDB y manda la retroalimentación:
+7. Node-RED guarda en Postgres y manda la retroalimentación:
    - **verde:** registrado, y el servo abre;
    - **rojo:** desconocido o ya registrado;
    - **ámbar:** zona gris de confianza; se repite la captura y, si persiste, el profesor lo marca manualmente desde la pantalla.
@@ -141,7 +136,8 @@ sequenceDiagram
 ### 5.2 Control (flujo inverso)
 
 - **Automático:** Node-RED → `aula/actuador/cmd` → XIAO ESP32S3.
-- **Manual:** desde la pantalla se puede abrir el servo, probar LEDs y buzzer, e iniciar o terminar la sesión.
+- **Manual desde la pantalla:** la vista de Sesión de la ILI9341 tiene los botones táctiles **Abrir puerta** (servo) y **Probar luz LED**, que publican por MQTT hacia la XIAO. Es el flujo inverso de la Fig. 1, de la pantalla hasta el actuador. Desde la misma vista se inicia o termina la sesión.
+- **Manual desde el frontend:** el control completo (servo, LEDs y buzzer) está en el frontend web, junto con la sesión y el registro.
 
 ### 5.3 Sesión de clase
 
@@ -220,7 +216,7 @@ sequenceDiagram
 - **Detección:** SCRFD o RetinaFace en versión mobile, con entrada fija.
 - **Reconocimiento:** MobileFaceNet o ArcFace, con entrada de 112×112.
 - **Conversión:** ONNX → Pegasus/Acuity → cuantización uint8 con imágenes de calibración → `.nb`. Referencia: ejemplos del ai-sdk de Radxa para el A733.
-- **Galería local** en SQLite, sincronizada desde Postgres (`GET /api/galeria` al arrancar).
+- **Galería en RAM:** `std::vector` con los embeddings (unos 80 KB para 40 alumnos), cargada al arrancar con `GET /api/galeria` y actualizada con los mensajes `aula/vision/embedding`. Sin base de datos local.
 - **Registro:** atiende las órdenes `enrolar`, `cancelar` y `probar`; publica el progreso en `aula/vision/enrolamiento` y el embedding final en `aula/vision/embedding`. Mientras registra, ignora el PIR.
 - **Mejora de imagen:** CLAHE y gamma en CPU (OpenCV). Como experimento: Zero-DCE y superresolución del recorte facial en la NPU.
 - **Publica:** número de cuenta, confianza y latencias (captura, detección, embedding, total).
@@ -228,39 +224,41 @@ sequenceDiagram
 ### 6.3 Docker en la Orange Pi (`orangepi/docker-compose.yml`)
 - Mosquitto, con listener en 1883 y WebSocket en 9001 (para el frontend), y usuario y contraseña. Con ACL, el usuario del frontend no puede leer `aula/vision/embedding`.
 - Node-RED.
-- InfluxDB.
-- **La pantalla no corre en Docker.** Es el único componente que necesita SPI, GPIO e I²C, así que se ejecuta en el host como unidad systemd (`orangepi/systemd/orangepi-pantalla.service`), con el usuario del servicio en los grupos `spi`, `gpio` e `i2c`. Node-RED la reinicia desde un nodo `exec` que corre por SSH contra el host. Así los permisos de `/dev/spidev*` y `/dev/i2c-*` los resuelve el host con sus reglas de udev, sin mapear dispositivos al contenedor, y la pantalla sobrevive a un reinicio de Node-RED.
-- La imagen de Node-RED necesita `openssh-client` y una clave restringida montada en `/data`. El arranque y la supervisión reales los hace systemd con `Restart=always`: el nodo `exec` sirve para reiniciar la pantalla a mano, no para vigilarla.
+- Postgres con la imagen `pgvector/pgvector`: sesiones, alumnos, asistencias y la tabla `metricas_energia`.
+- Portainer CE (`portainer/portainer-ce`), el bloque que aparece en la Fig. 1: se administra desde el navegador.
+- **La pantalla no corre en Docker.** Es el único componente que necesita SPI, GPIO e I²C, así que se ejecuta en el host como unidad systemd (`orangepi/systemd/orangepi-pantalla.service`), con el usuario del servicio en los grupos `spi`, `gpio` e `i2c`. Así los permisos de `/dev/spidev*` y `/dev/i2c-*` los resuelve el host con sus reglas de udev, sin mapear dispositivos al contenedor, y la pantalla sobrevive a un reinicio de Node-RED.
+- **El reinicio de la pantalla va por MQTT.** Node-RED publica un mensaje de reinicio y el script de Python hace `sys.exit(0)`; systemd, con `Restart=always`, lo vuelve a levantar. El arranque y la supervisión reales los hace systemd, no Node-RED.
 
 ### 6.4 Node-RED (`nodered/flows.json`)
-1. **Ingesta:** MQTT → InfluxDB (energía, métricas, latencias).
+1. **Ingesta:** MQTT → tabla `metricas_energia` de Postgres (energía, latencias y temperatura).
 2. **Pase de lista:** resultado → reglas → Postgres, actuador y pantalla.
 3. **Sesiones:** iniciar, terminar y generar el reporte CSV.
-4. **Pantalla:** nodo `exec` que reinicia por SSH la unidad systemd de la ILI9341 (`systemctl restart orangepi-pantalla`). Con la pantalla, Node-RED habla solo por MQTT.
-5. **Métricas del sistema:** temperatura del SoC, CPU y RAM → InfluxDB.
+4. **Pantalla:** reinicio por MQTT (el script de Python hace `sys.exit(0)` y systemd lo levanta) y un nodo `exec` que ejecuta el programa de Python que genera el reporte CSV. Con la pantalla, Node-RED habla solo por MQTT.
+5. **Métricas del sistema:** temperatura del SoC, CPU y RAM → Postgres.
 6. **Registro:** importación de la lista maestra, órdenes de registro y guardado del embedding que llega por `aula/vision/embedding`.
 7. **API HTTP y frontend:** endpoints del frontend (ver frontend web) y archivos estáticos de `web/` servidos con `httpStatic` desde `/data/public`. Todo protegido con `httpNodeAuth`.
 
 ### 6.5 Pantalla ILI9341 (`orangepi/pantalla`, Python, táctil XPT2046)
 
-- Programa Python ejecutado en el host por systemd. La pantalla y el táctil XPT2046 comparten el bus SPI, con dos líneas CS distintas, y el RTC DS3231 va por I²C: el proceso necesita permisos de `spi`, `gpio` e `i2c`. Lo mantiene Arnau, junto al firmware de la XIAO.
+- Programa Python ejecutado en el host por systemd. La pantalla y el táctil XPT2046 comparten el bus SPI, con dos líneas CS distintas, y el RTC DS3231 va por I²C: el proceso necesita permisos de `spi`, `gpio` e `i2c`. La pantalla (interfaz y programa Python) la mantiene Yordi, junto con el frontend; el hardware de la pantalla (overlays de SPI, unidad systemd y RTC DS3231) lo mantiene Arnau.
 
 | Pantalla | Contenido |
 |---|---|
-| Sesión | Sesión activa, último registro (nombre y estado), contador de presentes; iniciar o terminar, materia, grupo y tolerancia |
+| Sesión | Sesión activa, último registro (nombre y estado), contador de presentes; iniciar o terminar, materia, grupo y tolerancia; botones táctiles "Abrir puerta" (servo) y "Probar luz LED" |
 | Lista | Presentes, retardos y faltantes |
 | Guía de registro | Se activa sola durante un registro: nombre del alumno, pose a adoptar y progreso (3/5). El registro se controla desde el frontend |
 
-El control manual del servo, los LEDs y el buzzer pasa al frontend web, que ya tiene la sesión y el registro. Las vistas de imagen y de sistema se quedan fuera: la información vive en Grafana.
+La pantalla conserva los botones "Abrir puerta" y "Probar luz LED" porque el PDF exige el flujo inverso, de la pantalla hasta el actuador. El control completo del servo, los LEDs y el buzzer vive además en el frontend web, que ya tiene la sesión y el registro. Las vistas de imagen y de sistema quedan fuera de la pantalla: esa información vive en la pestaña de métricas del frontend.
 
-### 6.6 PC (`pc/docker-compose.yml`)
-- Postgres con la imagen `pgvector/pgvector`.
-- Grafana con datasources de PostgreSQL e InfluxDB.
-- **Paneles de Grafana:**
+### 6.6 Almacenamiento y gráficas (en la Orange Pi)
+- Postgres con la imagen `pgvector/pgvector`: alumnos, sesiones, asistencias e intentos, más la tabla `metricas_energia` con las lecturas del INA219, las latencias y la temperatura del SoC.
+- Los promedios del reporte salen de consultas SQL sobre esa tabla.
+- **Las gráficas están en el frontend**, en la tercera pestaña, "Métricas y Asistencia", que consume la API de Node-RED:
   - asistencia por sesión;
   - latencia de inferencia;
   - potencia;
   - confianza.
+- La laptop del profesor solo abre el navegador: no corre ningún contenedor.
 
 ### 6.7 Frontend web de registro (`web/`, Vite + React + TypeScript)
 - Lo usa el profesor desde el navegador de su laptop, en la misma red. Se compila y Node-RED lo sirve desde la Orange Pi (`httpStatic`).
@@ -269,10 +267,11 @@ El control manual del servo, los LEDs y el buzzer pasa al frontend web, que ya t
 
 | Vista | Contenido |
 |---|---|
-| Alumnos | Lista por grupo con estado (pendiente o registrado), búsqueda, re-registrar y borrar rostro |
+| Alumnos | Lista por grupo con estado (pendiente o registrado), búsqueda, re-registrar y borrar rostro; importación del CSV de la lista maestra |
 | Registro | Consentimiento, iniciar o cancelar, miniaturas de las 5 poses con estado y motivo, advertencia de parecido, resultado, prueba inmediata y control manual del servo, los LEDs y el buzzer |
+| Métricas y Asistencia | Asistencia por sesión, latencia de inferencia, potencia y confianza, con los datos de la API de Node-RED |
 
-La importación del CSV de la lista maestra se hace con `curl` contra `POST /api/alumnos/importar`, sin vista propia: el profesor la ejecuta una vez por grupo.
+La importación del CSV de la lista maestra se hace desde la vista de Alumnos, con un `<input type="file" accept=".csv">` que sube el archivo a `POST /api/alumnos/importar`. El profesor la ejecuta una vez por grupo.
 
 **Endpoints (Node-RED, protegidos con `httpNodeAuth`):**
 
@@ -294,20 +293,21 @@ GET    /api/galeria                 embeddings para el servicio de visión (no l
 aula/camara/pir          XIAO → borde            {"mov":1}
 aula/camara/energia      XIAO → borde            {"v":12.1,"i":0.85,"p":10.3}
 aula/camara/estado       XIAO → borde            {"rssi":-58,"heap":120000,"temp":48}
-aula/actuador/cmd        borde → XIAO            {"servo":"abrir","led":"verde","buzzer":1,"luz":0}
+aula/actuador/cmd        borde → XIAO            {"servo":"abrir","led":"verde","buzzer":1,"luz":0}   (Node-RED o pantalla)
 aula/actuador/estado     XIAO → borde            {"servo":"cerrado","led":"azul","luz":0}
 aula/vision/resultado    visión → Node-RED       {"cuenta":"320068234","conf":0.78,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
 aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234"}   (enrolar, cancelar, probar)
 aula/vision/enrolamiento visión → frontend, LCD  {"cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
 aula/vision/embedding    visión → Node-RED       {"cuenta":"320068234","embedding":[...]}
 aula/sesion/cmd          pantalla → Node-RED     {"accion":"iniciar","materia":"FSE","grupo":"1","tol_min":10}
+aula/pantalla/reinicio   Node-RED → pantalla     {"reiniciar":1}
 aula/sesion/estado       Node-RED → todos        {"activa":true,"id":12}
 aula/sistema/metricas    Orange Pi → Node-RED    {"temp":52.1,"cpu":34,"ram":61}
 ```
 
 > Los valores de ejemplo son ilustrativos, no mediciones.
 
-### 7.2 Esquema de Postgres (`pc/sql/schema.sql`, borrador)
+### 7.2 Esquema de Postgres (`orangepi/sql/schema.sql`, borrador)
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -348,6 +348,20 @@ CREATE TABLE intentos (
   confianza_max REAL,
   motivo        TEXT,                    -- desconocido, imagen_insuficiente, duplicado
   embedding     vector(512)
+);
+
+CREATE TABLE metricas_energia (
+  id            SERIAL PRIMARY KEY,
+  origen        TEXT        NOT NULL,     -- ina219, npu, sistema
+  v             REAL,                     -- voltaje del INA219
+  i             REAL,                     -- corriente del INA219
+  p             REAL,                     -- potencia del INA219
+  lat_cap_ms    INT,                      -- latencia de captura
+  lat_det_ms    INT,                      -- latencia de detección
+  lat_emb_ms    INT,                      -- latencia de embedding
+  lat_total_ms  INT,                      -- latencia total de inferencia
+  temp_soC      REAL,                     -- temperatura del SoC
+  hora          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
@@ -395,7 +409,7 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 
 **Notas de alimentación:**
 - El servo se alimenta del buck de 5 V, nunca del pin de 3.3 V. Tierra común en todo el sistema.
-- Con el INA219 en la entrada de 12 V se mide el consumo total del sistema (sin la PC), que es lo que necesita la estimación de batería.
+- Con el INA219 en la entrada de 12 V se mide el consumo total del sistema (sin la laptop, que solo abre el navegador), que es lo que necesita la estimación de batería.
 - Un brownout causado por el servo reinicia también la cámara, así que el capacitor de 470 µF va junto al servo.
 - La compuerta del MOSFET lleva una resistencia de pull-down para que la tira quede apagada mientras la XIAO arranca.
 
@@ -433,13 +447,10 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
   /vision                servicio C++, scripts de conversión (.nb fuera de git)
   /pantalla              programa Python de la ILI9341
   /systemd               unidad systemd de la pantalla (orangepi-pantalla.service)
-  docker-compose.yml
+  /sql/schema.sql        esquema de Postgres (alumnos, sesiones, asistencias, metricas_energia)
+  docker-compose.yml     Mosquitto, Node-RED, Postgres y Portainer
 /nodered
   flows.json
-/pc
-  docker-compose.yml
-  /sql/schema.sql
-  /grafana/dashboards
 /web                     frontend de registro (Vite + React + TypeScript)
 /herramientas            enrolamiento por lote (experimentos), calibración LFW, reporte CSV
 /docs                    diagramas, mediciones, consentimiento, reporte
@@ -448,7 +459,7 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 
 **Convenciones:**
 - Una rama por módulo (`firmware/xiao`, `vision/npu`, `borde/nodered`, etc.) y merge a `main` cuando funcione.
-- Exportar `flows.json` y los dashboards de Grafana al repo después de cada cambio.
+- Exportar `flows.json` al repo después de cada cambio.
 - Modelos `.nb` y datasets fuera de git: usar releases o una carpeta compartida.
 - No subir fotos de personas al repo.
 - Las pruebas unitarias cubren la cámara, el INA219 y el servo: lo que no se prueba en la placa no se prueba en ninguna parte.
@@ -456,29 +467,27 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 
 ## 12. Roles y plan semanal
 
-El trabajo se reparte en tres carriles: **visión** (Gustavo), **campo, pantalla y Grafana** (Arnau) y **borde, datos y frontend** (Yordi). Cada hito es un miércoles y cada carril presenta un avance verificable ese día. La sección 12.3 lista las dependencias entre tareas: lo que no depende de nadie arranca de inmediato y lo que sí, espera.
+El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardware de la pantalla** (Arnau) y **borde, datos, frontend y pantalla** (Yordi). Cada hito es un miércoles y cada carril presenta un avance verificable ese día. La sección 12.3 lista las dependencias entre tareas: lo que no depende de nadie arranca de inmediato y lo que sí, espera.
 
 ### 12.1 Hitos
 
 | Fecha | Hito | Gustavo | Arnau | Yordi |
 |---|---|---|---|---|
 | **28 oct** | Proyecto y planeación | Especificación y exposición | Lista de compras | Repo y estructura |
-| **4 nov** | Primer avance | Armbian y `/dev/vipcore`; toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb` | XIAO: `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura); overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi y la PC; esquema de Postgres; ingesta a Influx; primer panel de energía |
-| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses | MOSFET y tira LED de 12 V; orquestación luz–captura; menú base de la pantalla (sesión, lista y guía de registro) | Flujos de pase de lista y de sesiones; nodo `exec` por SSH; reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend |
-| **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E3; umbral con LFW | Pantalla completa con sus 3 vistas; Grafana completo; E4–E5 | Frontend de registro completo |
-| **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend; `httpNodeAuth` y ACL de Mosquitto; E6 |
+| **4 nov** | Primer avance | Armbian y `/dev/vipcore`; toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb`; XIAO: `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | Overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; ingesta a `metricas_energia`; primer gráfico de energía; arranque del esqueleto del frontend |
+| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro) |
+| **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E5; umbral con LFW | — | Frontend de registro completo, con la pestaña de Métricas y Asistencia; pantalla completa con sus 3 vistas y los botones de control |
+| **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend y de la pantalla; `httpNodeAuth` y ACL de Mosquitto; E6 |
 
 La fila del 25 de noviembre es de integración: el comprimido de código lo aporta todo el equipo.
-
-El desglose de la semana del 4 de noviembre, con el orden de las tareas y lo que entrega cada persona el miércoles, está en el documento interno del equipo, sección 4.
 
 ### 12.2 Reparto
 
 | Persona | Rol | Módulos |
 |---|---|---|
-| **Gustavo** | Visión | Servicio de visión en la NPU, conversión de modelos, mejora de imagen, antifraude, E1–E3, calibración LFW |
-| **Arnau** | Campo, pantalla y Grafana | Firmware de la XIAO (sensores y actuadores), etapa de potencia, pruebas unitarias, pantalla ILI9341, paneles de Grafana, E4–E5 |
-| **Yordi** | Borde, datos y frontend | Docker, Node-RED, Postgres, InfluxDB, API HTTP, frontend web de registro, E6 |
+| **Gustavo** | Visión y campo | Servicio de visión en la NPU, conversión de modelos, mejora de imagen, antifraude, firmware de la XIAO (sensores y actuadores), etapa de potencia, pruebas unitarias, E1–E5, calibración LFW |
+| **Arnau** | Hardware de la pantalla y documentación | Overlays de SPI, unidad systemd de la pantalla (`orangepi-pantalla.service`), RTC DS3231, y documentación y presentaciones del proyecto (con la colaboración de todo el equipo) |
+| **Yordi** | Borde, datos, frontend y pantalla | Docker, Node-RED, Postgres, API HTTP, frontend web de registro con las gráficas de métricas y asistencia, pantalla ILI9341 (3 vistas y botones), E6 |
 
 ### 12.3 Dependencias entre tareas
 
@@ -487,9 +496,9 @@ El desglose de la semana del 4 de noviembre, con el orden de las tareas y lo que
 | Armbian y verificación de `/dev/vipcore` | Gustavo | — | El ejemplo de detección en la NPU |
 | Toolchain Pegasus en la PC | Gustavo | — | La conversión del modelo a `.nb` |
 | Modelo convertido a `.nb` | Gustavo | El toolchain Pegasus | La detección y el embedding en la NPU |
-| Captura, PIR e INA219 por MQTT en la XIAO | Arnau | La compra del INA219 y el PIR | La ingesta de energía a InfluxDB |
-| Servo y LEDs por MQTT | Arnau | La compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
-| Prueba de servo y captura simultáneas | Arnau | El servo y el firmware de la XIAO | — |
+| Captura, PIR e INA219 por MQTT en la XIAO | Gustavo | La compra del INA219 y el PIR | La ingesta de energía a Postgres |
+| Servo y LEDs por MQTT | Gustavo | La compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
+| Prueba de servo y captura simultáneas | Gustavo | El servo y el firmware de la XIAO | — |
 | Overlays de SPI y unidad systemd | Arnau | — | La pantalla en la Orange Pi |
 | Detección, alineación y embedding en la NPU | Gustavo | El modelo `.nb` y `/dev/vipcore` | La galería y la publicación del resultado |
 | Galería y publicación del resultado | Gustavo | La detección en la NPU | El pase de lista y las reglas de sesión |
@@ -497,22 +506,22 @@ El desglose de la semana del 4 de noviembre, con el orden de las tareas y lo que
 | Filtro de calidad, mejora de imagen y antifraude | Gustavo | El embedding en la NPU | E1–E3 y el umbral con LFW |
 | Umbral con LFW | Gustavo | El embedding en la NPU | E1–E3 |
 | Esquema de Postgres con pgvector | Yordi | La dimensión del embedding que fija Gustavo | La API de alumnos y la galería local |
-| Ingesta MQTT → InfluxDB y primer panel de energía | Yordi | El compose y la publicación MQTT de la XIAO | E5 de consumo |
+| Ingesta MQTT → `metricas_energia` y primer gráfico de energía | Yordi | El compose y la publicación MQTT de la XIAO | E5 de consumo |
 | Flujos de pase de lista y de sesiones | Yordi | La publicación del resultado de la visión | La asistencia en Postgres |
 | API de alumnos e importación de CSV | Yordi | El esquema de Postgres | El frontend de registro |
-| Nodo `exec` por SSH y reporte CSV | Yordi | El compose | La pantalla y el reporte final |
+| Reinicio por MQTT y reporte CSV | Yordi | El compose | La pantalla y el reporte final |
 | Frontend de registro completo | Yordi | La API de alumnos y el orden de enrolar | — |
 | `httpNodeAuth` y ACL de Mosquitto | Yordi | Los flujos de Node-RED | El despliegue seguro |
-| Pantalla ILI9341 con sus 3 vistas | Arnau | Los overlays de SPI y la unidad systemd | — |
+| Pantalla ILI9341 con sus 3 vistas | Yordi | Los overlays de SPI y la unidad systemd | — |
 
 ### 12.4 Equipos compartidos
 
-La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así que las tareas que los ocupan se turnan. El turno de cada equipo se acuerda al inicio de cada hito, y el miércoles por la mañana se reserva como franja de demostraciones: la Orange Pi se enciende y cada carril muestra lo que trae. Con tres personas, la Orange Pi se reparte entre Gustavo para la NPU, Arnau para los overlays de SPI y la unidad systemd, y Yordi para el stack de Docker.
+La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así que las tareas que los ocupan se turnan. El turno de cada equipo se acuerda al inicio de cada hito, y el miércoles por la mañana se reserva como franja de demostraciones: la Orange Pi se enciende y cada carril muestra lo que trae. Con tres personas, la Orange Pi se reparte entre Gustavo para la NPU, Arnau para los overlays de SPI y la unidad systemd, y Yordi para el stack de Docker y la pantalla.
 
 | Equipo | Tareas que lo ocupan | Quién lo usa |
 |---|---|---|
 | Orange Pi Zero 3W | Armbian y NPU; overlays de SPI y unidad systemd; stack de Docker | Gustavo, Arnau y Yordi |
-| XIAO ESP32S3 Sense | Firmware de captura y sensores; etapa de potencia | Arnau y Yordi |
+| XIAO ESP32S3 Sense | Firmware de captura y sensores; etapa de potencia | Gustavo |
 
 ## 13. Riesgos
 
@@ -529,12 +538,12 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así 
 | La XIAO se calienta | Sin streaming continuo, solo captura bajo demanda |
 | Suplantación con foto | Detección de vida por parpadeo entre cuadros (opcional) o documentarlo como limitación |
 | Privacidad de datos biométricos | Consentimiento, solo embeddings, sin fotos en el repo |
-| La pantalla necesita SPI, GPIO e I²C | Corre en el host como servicio systemd, fuera de Docker; Node-RED la reinicia por SSH |
+| La pantalla necesita SPI, GPIO e I²C | Corre en el host como servicio systemd, fuera de Docker; Node-RED la reinicia por MQTT: el script de Python hace `sys.exit(0)` y systemd, con `Restart=always`, lo levanta |
+| Todo el stack concentrado en la Orange Pi (4 GB de RAM) | Vigilar la RAM con las métricas del SoC y dejar margen para el servicio de visión y el frontend; a cambio, la laptop dejó de ser una dependencia del sistema |
 | Los overlays de SPI no exponen `/dev/spidev*` | Verificar en la semana 1 con `ls /dev/spidev*` y `armbian-config`; plan B: imagen oficial del fabricante |
 | Hora incorrecta sin internet | RTC DS3231 en la Orange Pi |
-| El frontend queda en la ruta crítica del registro | Probar los endpoints con `curl` desde la semana 2; la herramienta de enrolamiento por lote sirve de respaldo |
+| El frontend queda en la ruta crítica del registro | Probar los endpoints desde la semana 2 con un cliente HTTP; la herramienta de enrolamiento por lote sirve de respaldo |
 | Acceso no autorizado a datos biométricos desde el frontend | `httpNodeAuth` en Node-RED y ACL en Mosquitto; los embeddings nunca llegan al navegador |
 | Un registro dispara el pase de lista | El servicio de visión ignora el PIR mientras hay un registro en curso |
-| El firmware y la visión son un solo punto de fallo | Un mismo error de protocolo MQTT rompe a la vez el pase de lista, la ingesta de energía y los flujos de Node-RED. Fijar los payloads de los tópicos en el repositorio antes de escribir el firmware, y probar el broker con un cliente de línea de comandos antes de encadenar el resto |
+| El firmware y la visión son un solo punto de fallo | Un mismo error de protocolo MQTT rompe a la vez el pase de lista, la ingesta de energía y los flujos de Node-RED. Fijar los payloads de los tópicos en el repositorio antes de escribir el firmware, y probar el broker con un cliente de línea de comandos antes de encadenar el resto. Ahora los dos los escribe la misma persona (Gustavo), lo que da coherencia al contrato MQTT, pero concentra la carga |
 | D2 (GPIO3) es un pin de strapping del ESP32-S3 | En el arranque elige el origen de las señales JTAG y por defecto está flotante. El pull-down de la compuerta del MOSFET lo fija a 0, así que hay que verificar en la semana 1 que el USB Serial/JTAG sigue funcionando: es la vía de consola y de programación de la placa |
-| El avance del 4 de noviembre depende de un carril que no está disponible | Arnau tiene asignada su parte del plan, pero esta semana solo se trabaja con Gustavo y Yordi. El desglose de la semana en el documento interno asume que su carril no avanza, y el hito del 4 de noviembre se demuestra con los entregables de los otros dos |
