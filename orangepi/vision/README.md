@@ -15,6 +15,7 @@ include/vision/
   mqtt_bus.hpp        MosquittoBus: MessageBus real sobre libmosquitto
   httplib_client.hpp  HttplibClient: HttpClient real sobre cpp-httplib
   gallery_store.hpp   GalleryStore: la galería en RAM alimentada por el borde
+  process_config.hpp  la configuración del proceso (archivo JSON) y su mapeo a ServiceConfig
   face_detector.hpp   interfaz FaceDetector (imagen -> bbox, score, 5 landmarks)
   face_embedder.hpp   interfaz FaceEmbedder (recorte 112x112 -> vector<float>)
   clock.hpp           Clock inyectable (now / sleep_for)
@@ -28,18 +29,28 @@ include/vision/
   fakes.hpp           dobles en memoria: bus, HTTP, detector, embedder, relojes
 src/
   json_payload.cpp    implementación de la capa JSON
+  process_config.cpp  análisis del archivo JSON de configuración
   wall_clock.cpp      implementación del reloj de pared
   mqtt_bus.cpp        implementación del bus MQTT
   httplib_client.cpp  implementación del cliente HTTP
   gallery_store.cpp   implementación del store de la galería
-  main.cpp            recorrido en seco con los dobles (no es el binario de producción)
-apps/npu_smoke.cpp    carga un .nb, corre N inferencias y mide
+  main.cpp            el proceso de producción (binario `vision_service`)
+  dry_run.cpp         recorrido en seco con los dobles (binario `vision_dry_run`)
+apps/
+  camara_falsa.cpp    servidor de prueba: una JPEG sintética en GET /capture
+  mqtt_probe.cpp      sonda MQTT: publica y/o escucha un tópico
+  npu_smoke.cpp       carga un .nb, corre N inferencias y mide
+tools/
+  humo.sh             prueba de humo de punta a punta (broker propio, cámara falsa, PIR)
 tests/
   minitest.hpp             mini-runner propio
   test_json_payload.cpp    la capa JSON del contrato
+  test_process_config.cpp  la configuración del proceso
   test_httplib_client.cpp  el cliente HTTP (servidor httplib en el propio proceso)
   test_gallery_store.cpp   la galería en RAM
   test_mqtt_bus.cpp        el bus MQTT (integración contra un broker real)
+vision.conf.example  ejemplo del archivo de configuración (sin secretos)
+vision.env.example   ejemplo del archivo de credenciales (con placeholders)
 ```
 
 ### Las tres bibliotecas
@@ -122,9 +133,186 @@ build/npu_smoke /opt/vpm_run/network_binary.nb /opt/vpm_run/input_0.dat 200
 
 Imprime los tensores (forma `w x h x c x n`, formato, cuantización) y el tiempo promedio de copia de entrada, ejecución y lectura de salida. El archivo de entrada debe medir exactamente lo que ocupa el tensor. Los `.nb` no se versionan (plan, sección 11).
 
+## El proceso de producción
+
+`build/vision_service` es el binario de producción: el proceso que corre en la Orange Pi, el que lanza systemd y el que se comunica con el broker y con la cámara. `build/vision_dry_run` es el recorrido en seco (ver la sección siguiente).
+
+El proceso (plan 6.2, un solo hilo de trabajo):
+
+- **Configuración**: lee el archivo JSON (por omisión `/etc/pase-lista/vision.conf`, o el que se pase con `--config`). Si el archivo no existe, arranca con los valores por omisión y lo avisa por stderr, para poder probarlo sin instalar nada. Un archivo inválido (un tipo equivocado, un valor fuera de rango o una clave desconocida) hace fallar el arranque.
+- **Credenciales**: la contraseña del broker y el token de la galería se leen de variables de entorno, nunca del archivo de configuración (ver "La configuración").
+- **Bus MQTT**: `MosquittoBus` contra el broker del borde. El proceso se suscribe a `aula/camara/pir` y `aula/vision/cmd` (lo hace la propia `VisionService`) y además a `aula/vision/galeria/alta` y `aula/vision/galeria/baja` (las suscripciones las hace el proceso, no el servicio).
+- **Galería**: al arrancar y en cada reconexión al broker, el proceso recarga la galería completa con `GalleryStore::reload()` (lo dice el contrato v0.3, sección 4). El aviso de conexión lo da el bus (`MosquittoBus::set_connect_listener`); el manejador solo marca una bandera y la recarga se hace en el hilo de trabajo, no en el hilo de red del bus. Si la recarga falla, se registra en stderr y el servicio sigue: se reintenta en la próxima reconexión. Las altas y las bajas que llegan por MQTT también se aplican en el hilo de trabajo (la galería en RAM la lee el servicio en ese hilo y no debe cambiar mientras la lee).
+- **Bucle**: `VisionService::poll()` cada `poll_ms` (20 ms por omisión) y una espera corta entre llamadas. Todo el trabajo ocurre en el hilo que llama a `poll()`; el hilo de red de libmosquitto solo encola mensajes.
+- **Señales**: `SIGINT` y `SIGTERM` paran el bucle. El manejador solo pone una bandera (`volatile std::sig_atomic_t`): no hace trabajo bloqueante ni lanza.
+- **Salida ordenada**: al parar, el proceso publica `aula/vision/estado` con `en_linea: false` (retenido) y cierra el bus en orden. Así el frontend no se queda con el servicio "en línea" y el Will no hace falta en la salida ordenada (sigue puesto para la caída sin cerrar limpio).
+- **Detector y embedder**: hoy son los dobles en memoria de `fakes.hpp`, así que el proceso solo arranca en `--dry-run` (ver "Probar sin modelos"). Cuando existan los modelos `.nb`, se enchufan en `src/main.cpp`, donde ya está el punto de extensión.
+
+```bash
+build/vision_service --config /etc/pase-lista/vision.conf
+build/vision_service --help
+```
+
+Sin `--dry-run`, si no encuentra los modelos, el proceso **no arranca** y lo dice claro por stderr:
+
+```
+[vision] faltan los modelos .nb (/opt/autolist/models/detector.nb, /opt/autolist/models/w600k_mbf-uint8-v1.nb); usa --dry-run para verificar el cableado
+```
+
+Las rutas de los modelos son fijas: `/opt/autolist/models/detector.nb` y `/opt/autolist/models/<servicio.modelo>.nb` (el nombre del modelo sale de la configuración). Los `.nb` no se versionan (plan, sección 11).
+
+## La configuración
+
+El archivo de configuración es JSON, con las claves en español como el resto del proyecto. El ejemplo completo está en `vision.conf.example`:
+
+```json
+{
+  "mqtt": {"host": "127.0.0.1", "port": 1883, "usuario": "vision", "clave_env": "MQTT_PASSWORD", "client_id": "vision"},
+  "captura": {"url": "http://192.168.1.50/capture", "rafaga": 4, "espera_luz_ms": 300, "http_timeout_ms": 2000, "max_body_bytes": 2097152},
+  "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN", "timeout_ms": 5000},
+  "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45},
+  "servicio": {"poll_ms": 20, "max_inbox_events": 16, "modelo": "w600k_mbf-uint8-v1", "acepta_png": false},
+  "http": {"allow_invalid_certificates": false}
+}
+```
+
+| Bloque | Clave | Qué es | Omisión |
+|---|---|---|---|
+| `mqtt` | `host`, `port` | broker MQTT | `127.0.0.1`, `1883` |
+| | `usuario` | usuario MQTT (`""` = sin usuario) | `vision` |
+| | `clave_env` | **nombre** de la variable de entorno con la contraseña | `MQTT_PASSWORD` |
+| | `client_id` | id de cliente MQTT | `vision` |
+| `captura` | `url` | GET que devuelve la foto | `http://192.168.1.50/capture` |
+| | `rafaga` | fotos por intento | `4` |
+| | `espera_luz_ms` | espera tras encender la luz | `300` |
+| | `http_timeout_ms` | plazo de la petición de foto | `2000` |
+| | `max_body_bytes` | tope del cuerpo de la respuesta | `2097152` |
+| `galeria` | `url` | `GET /api/galeria` de Node-RED | `https://127.0.0.1:1880/api/galeria` |
+| | `token_env` | **nombre** de la variable de entorno con el token | `GALERIA_TOKEN` |
+| | `timeout_ms` | plazo de la petición de la galería | `5000` |
+| `umbrales` | `min_sharpness` | varianza mínima del Laplaciano | `0.0` |
+| | `min_recognized_score` | umbral de "reconocido" | `0.6` |
+| | `min_dudoso_score` | umbral de "dudoso" | `0.45` |
+| `servicio` | `poll_ms` | periodo del bucle | `20` |
+| | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
+| | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
+| | `acepta_png` | aceptar PNG además de JPEG (pruebas) | `false` |
+| `http` | `allow_invalid_certificates` | aceptar el certificado autofirmado de Node-RED | `false` |
+
+El mapeo a `ServiceConfig` está en `ProcessConfig::to_service_config()` (`src/process_config.cpp`).
+
+### Dónde están las credenciales
+
+**El archivo de configuración no es un secreto.** Solo lleva el *nombre* de las variables de entorno donde están las credenciales:
+
+- `mqtt.clave_env` (por omisión `MQTT_PASSWORD`): la contraseña del usuario MQTT.
+- `galeria.token_env` (por omisión `GALERIA_TOKEN`): el token del encabezado `X-Galeria-Token`.
+
+Si la variable no está, el proceso **arranca igual** y lo avisa por stderr: el broker de pruebas acepta clientes anónimos y la galería se pide sin token. Si hay usuario MQTT pero no hay contraseña, se conecta sin usuario (un usuario sin contraseña no pasa la autenticación del broker).
+
+El archivo de credenciales de la instalación real es `/etc/pase-lista/vision.env` (permisos 600), que systemd pasa al proceso con `EnvironmentFile`. El ejemplo con placeholders está en `vision.env.example`.
+
+### El certificado autofirmado
+
+`http.allow_invalid_certificates` viene en `false` por omisión: **no** se acepta ningún certificado inválido. El certificado de Node-RED es autofirmado, así que con `false` la conexión a `https://127.0.0.1:1880` se rechaza y la galería no carga. Hay que ponerlo en `true` a mano hasta que haya un certificado válido. Es un riesgo conocido y aceptado (ver "Limitaciones conocidas"), no un olvido.
+
 ## Recorrido en seco
 
-`build/vision_service` es un arnés de recorrido en seco sobre los dobles, no el binario de producción: cablea la máquina de estados real con los dobles en memoria y reproduce un pase de lista y un registro. No hay broker, cámara ni modelos. Los adaptadores reales ya existen (`MosquittoBus`, `HttplibClient`, `GalleryStore`), pero el `main.cpp` sigue cableando los dobles: lo que falta es el proceso de producción (bucle, configuración, señales) y el detector y el embedder sobre la NPU.
+`build/vision_dry_run` es un arnés de recorrido en seco sobre los dobles: cablea la máquina de estados real con los dobles en memoria y reproduce un pase de lista y un registro. No hay broker, cámara ni modelos. Los adaptadores reales ya existen (`MosquittoBus`, `HttplibClient`, `GalleryStore`) y el proceso de producción los usa; lo que sigue sin existir es el detector y el embedder sobre la NPU.
+
+## La unidad systemd
+
+La unidad del servicio de visión es `orangepi/systemd/orangepi-vision.service` (la de la pantalla, que es de otro carril, todavía no existe). La instala **una persona** (el agente no usa `sudo`):
+
+```bash
+cd orangepi/vision
+cmake -S . -B build && cmake --build build -j4
+
+# 1. El binario
+sudo install -m 0755 build/vision_service /usr/local/bin/vision_service
+
+# 2. La configuración y las credenciales
+sudo install -d -m 0755 /etc/pase-lista
+sudo install -m 0644 vision.conf.example /etc/pase-lista/vision.conf
+sudo install -m 0600 vision.env.example /etc/pase-lista/vision.env
+sudoedit /etc/pase-lista/vision.conf   # la IP de la XIAO y el certificado autofirmado
+sudoedit /etc/pase-lista/vision.env    # MQTT_PASSWORD y GALERIA_TOKEN de verdad
+
+# 3. La unidad
+sudo install -m 0644 ../systemd/orangepi-vision.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now orangepi-vision.service
+
+# 4. Ver el log
+journalctl -u orangepi-vision.service -f
+```
+
+Notas:
+
+- `WorkingDirectory=/var/lib/autolist`: el servicio no escribe nada, pero queda en un directorio propio (por debajo de `/var`, que con `ProtectSystem=full` sigue siendo escribible). Si no existe, `sudo install -d -o orangepi -g orangepi -m 0755 /var/lib/autolist`.
+- El usuario `orangepi` tiene que poder abrir `/dev/vipcore` (la NPU): `ls -l /dev/vipcore`. La unidad **no** lleva reglas de dispositivo a propósito (ni `ProtectSystem=strict`), para no impedirle el acceso a la NPU.
+- El endurecimiento es moderado: `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectHome=yes` y `ProtectSystem=full`. Con `ProtectSystem=full`, `/usr`, `/boot` y `/etc` son de solo lectura: el servicio lee su configuración de ahí y no necesita escribir nada.
+- `EnvironmentFile=/etc/pase-lista/vision.env` tiene que existir: si falta, systemd no arranca la unidad. Para probarlo sin credenciales, se puede dejar el archivo con los placeholders.
+- `Restart=on-failure` y `RestartSec=5`: el servicio vuelve a levantarse solo si se cae. La salida por `SIGTERM` (código 0) no lo rearranca.
+- Sin los modelos `.nb`, el servicio arranca, avisa por stderr y sale: es lo esperado hasta que existan (ver "Lo que falta"). Con `--dry-run` en el `ExecStart` se puede verificar el cableado sin modelos.
+
+## Las herramientas de prueba
+
+### `mqtt_probe`: hacer sonar el broker a mano
+
+En la placa no hay `mosquitto_pub` ni `mosquitto_sub`: la sonda `build/mqtt_probe` (libmosquitto) publica y escucha.
+
+```bash
+# Publicar un PIR (lo que hace la XIAO)
+build/mqtt_probe --host 127.0.0.1 --puerto 1883 --publicar aula/camara/pir '{"mov":1}'
+
+# Escuchar el resultado del pase de lista durante 10 s
+build/mqtt_probe --host 127.0.0.1 --puerto 1883 --escuchar aula/vision/resultado --segundos 10
+
+# Con usuario (el broker real no acepta anónimos)
+build/mqtt_probe --usuario vision --clave "$MQTT_PASSWORD" --escuchar aula/vision/estado
+```
+
+Cada mensaje que llega se imprime como `fecha tópico cuerpo`. Con `--publicar` y `--escuchar` a la vez, se suscribe primero y después publica.
+
+### `camara_falsa`: la cámara sintética
+
+`build/camara_falsa` es un servidor httplib que devuelve una JPEG sintética (ruido y bordes, generada con OpenCV) en `GET /capture`. Simula a la XIAO sin la placa de campo:
+
+```bash
+build/camara_falsa --puerto 18080
+# camara falsa escuchando en http://127.0.0.1:18080/capture
+```
+
+En la configuración del servicio, `captura.url` apunta a `http://127.0.0.1:18080/capture`.
+
+### `tools/humo.sh`: la prueba de humo de punta a punta
+
+```bash
+cd orangepi/vision
+tools/humo.sh
+```
+
+La prueba:
+
+1. levanta su **propio** broker MQTT de pruebas (contenedor `eclipse-mosquitto:2`, puerto 1884, con su propio archivo de configuración en `/tmp` y `allow_anonymous true`); si el puerto 1884 ya está ocupado, reutiliza el broker de pruebas que haya y no lo borra al salir, y si lo que lo ocupa no es un broker de pruebas, falla con un mensaje claro;
+2. levanta la cámara falsa en el puerto 18080;
+3. arranca `build/vision_service --dry-run` con una configuración temporal que apunta a ese broker y a esa cámara;
+4. se suscribe a `aula/vision/resultado` con `mqtt_probe` y publica un PIR en `aula/camara/pir`;
+5. espera el resultado y lo imprime;
+6. limpia todo lo que levantó (la cámara, el servicio, la sonda y su broker), aunque falle.
+
+No toca los contenedores del proyecto `pase-lista`: el broker real corre en el 1883 y ahí no se entra. Sale con código 0 si llegó el resultado y con código distinto de cero si no.
+
+### Probar el servicio sin modelos
+
+`--dry-run` usa el bus MQTT **real** y el cliente HTTP **real**, pero con el detector y el embedder falsos: verifica el cableado completo (broker, cámara, galería, contrato MQTT) sin los `.nb`.
+
+```bash
+build/vision_service --dry-run --config /tmp/vision-prueba.conf
+```
+
+Es lo que usa `tools/humo.sh`.
 
 ## El contrato y la capa JSON
 
@@ -214,11 +402,8 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 
 ## Lo que falta
 
-- Proceso de producción: bucle principal (`poll()` periódico), configuración desde archivo o línea de comandos y manejo de señales. El `main.cpp` actual sigue siendo el recorrido en seco con los dobles, no el binario de producción.
-- Unidad systemd del servicio de visión.
-- Scripts de prueba en la placa (broker de pruebas propio, arranque y parada del servicio).
-- Detector y embedder concretos sobre la NPU (decodificación de salidas, preproceso, `.nb`). Se construyen sobre `npu::Network`.
-- Carga de la galería en el arranque: `GalleryStore` ya sabe recargar (`GET /api/galeria`) y aplicar las altas y las bajas, pero el proceso de producción todavía no lo llama al arrancar ni en cada reconexión al broker.
+- Detector y embedder concretos sobre la NPU (decodificación de salidas, preproceso, `.nb`). Se construyen sobre `npu::Network`; el punto de extensión está en `src/main.cpp`, donde hoy van los dobles en memoria. Sin ellos, el proceso de producción solo arranca en `--dry-run`.
+- Scripts de prueba en la placa (broker de pruebas propio, arranque y parada del servicio) más allá de `tools/humo.sh` y `mqtt_probe`.
 - Miniaturas en el progreso del registro.
 - Chequeo antifraude y descarte de outliers.
 - Validaciones por pose del registro (rostro único, tamaño, giro).

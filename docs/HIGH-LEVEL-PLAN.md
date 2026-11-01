@@ -488,7 +488,9 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 /orangepi
   /vision                servicio C++, scripts de conversión (.nb fuera de git)
   /pantalla              programa Python de la ILI9341
-  /systemd               unidad systemd de la pantalla (orangepi-pantalla.service)
+  /systemd               unidades systemd del host
+    orangepi-vision.service  unidad systemd del servicio de visión
+    (la unidad de la pantalla, orangepi-pantalla.service, sigue sin crearse)
   /sql/schema.sql        esquema de Postgres (alumnos, sesiones, asistencias, metricas_energia)
   /sql/roles.sh         rol de Node-RED en Postgres (privilegios mínimos)
   docker-compose.yml     Mosquitto, Node-RED, Postgres y Portainer
@@ -525,6 +527,8 @@ El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardwar
 
 La fila del 25 de noviembre es de integración: el comprimido de código lo aporta todo el equipo.
 
+> **Adelantado del hito del 11 de noviembre.** Los adaptadores reales de MQTT y HTTP del servicio de visión (`MosquittoBus`, `HttplibClient` y `GalleryStore`), el proceso de producción (bucle, configuración, señales, recarga de la galería) y su unidad systemd se adelantaron al 11 de noviembre. La razón es que dependían del toolchain de modelos, que todavía no está: esperarlos solo para poder hacerlos evitaba un bloque de trabajo que no depende de él. Lo que sí sigue atado al toolchain es la detección y el embedding en la NPU, y con ellos el primer pase de lista real.
+
 ### 12.2 Reparto
 
 | Persona | Rol | Módulos |
@@ -540,6 +544,8 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 | Verificación de la NPU en la imagen oficial (hecho) | Gustavo | — | El ejemplo de detección en la NPU |
 | Toolchain Pegasus en la PC | Gustavo | — | La conversión del modelo a `.nb` |
 | Modelo convertido a `.nb` | Gustavo | El toolchain Pegasus | La detección y el embedding en la NPU |
+| Adaptadores reales de MQTT y HTTP (adelantado) | Gustavo | Las interfaces del núcleo (`MessageBus`, `HttpClient`) y el contrato MQTT v0.3 | El proceso de producción y la prueba de humo |
+| Proceso de producción y unidad systemd (adelantado) | Gustavo | Los adaptadores reales | El primer pase de lista real en la placa |
 | Captura, PIR e INA219 por MQTT en la XIAO (11 nov) | Gustavo | La llegada de la XIAO y la compra del INA219 y el PIR | La ingesta de energía real a Postgres |
 | Servo y LEDs por MQTT (11 nov) | Gustavo | La llegada de la XIAO y la compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
 | Prueba de servo y captura simultáneas (11 nov) | Gustavo | El servo y el firmware de la XIAO | — |

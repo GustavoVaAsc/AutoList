@@ -41,7 +41,7 @@ Tópicos MQTT y esquema de la base: [sección 7](docs/HIGH-LEVEL-PLAN.md#7-datos
 | Componente | Tecnología | Carpeta | Estado |
 |---|---|---|---|
 | Stack de borde | Docker: Mosquitto, Node-RED (HTTPS), Postgres + pgvector, Portainer | `orangepi/`, `nodered/` | Funcionando: ingesta y API de energía |
-| Servicio de visión | C++20 nativo con systemd, NPU (VIPLite), OpenCV 4.6 | `orangepi/vision` | Esqueleto con pruebas; faltan modelos y adaptadores reales |
+| Servicio de visión | C++20 nativo con systemd, NPU (VIPLite), OpenCV 4.6 | `orangepi/vision` | Proceso de producción y adaptadores reales listos; faltan los modelos, el detector y el embedder |
 | Firmware de campo | XIAO ESP32S3 Sense, Arduino C++, MQTT y HTTP | `firmware/xiao` | Sin iniciar (la XIAO llega la semana del 4 nov) |
 | Pantalla | Python en el host (systemd), ILI9341 + táctil XPT2046, RTC DS3231 | `orangepi/pantalla`, `orangepi/systemd` | Sin iniciar |
 | Frontend web | Vite + React + TypeScript, servido por Node-RED | `web/` | Sin iniciar |
@@ -96,7 +96,7 @@ Fechas tentativas tomadas del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#121-
 | Entregable | Estado | Evidencia |
 |---|---|---|
 | Detección, alineación y embedding en la NPU | 🟡 | Alineación a 112×112 implementada y probada; faltan el detector y el embedder sobre la NPU |
-| Galería y publicación del resultado | 🟡 | Galería en RAM con similitud coseno y contrato MQTT tipado; falta el adaptador MQTT real |
+| Galería y publicación del resultado | 🟡 | Galería en RAM con similitud coseno, contrato MQTT tipado, adaptadores reales de MQTT y HTTP y proceso de producción (bucle, configuración, señales) |
 | Orden de enrolar con captura de 5 poses | 🟡 | Máquina de estados del registro probada con dobles en memoria |
 | MOSFET y tira LED de 12 V; orquestación luz–captura | ⬜ | |
 | XIAO: `/capture`, PIR e INA219 por MQTT; servo y LEDs por MQTT | ⬜ | La XIAO llega la semana del 4 nov |
@@ -142,7 +142,7 @@ Fechas tentativas tomadas del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#121-
 - Arrancar el esqueleto del frontend.
 - Escribir las ACL de Mosquitto y los usuarios por rol.
 
-**Después, en orden de dependencia:** modelos `.nb` → detector y embedder en la NPU → adaptadores reales de MQTT y HTTP en la visión → flujos de pase de lista y de registro → frontend de registro. El firmware de la XIAO arranca en cuanto llegue la placa. Dependencias completas: [sección 12.3](docs/HIGH-LEVEL-PLAN.md#123-dependencias-entre-tareas).
+**Después, en orden de dependencia:** modelos `.nb` → detector y embedder en la NPU → primer pase de lista real → flujos de pase de lista y de registro → frontend de registro. Los adaptadores reales de MQTT y HTTP y el proceso de producción ya están (se adelantaron al hito del 11 de noviembre: dependían del toolchain de modelos, que no está). El firmware de la XIAO arranca en cuanto llegue la placa. Dependencias completas: [sección 12.3](docs/HIGH-LEVEL-PLAN.md#123-dependencias-entre-tareas).
 
 ## Riesgos abiertos
 
@@ -203,7 +203,12 @@ cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ```
 
-Hoy `build/vision_service` es un recorrido en seco con dobles en memoria, y `build/npu_smoke` mide una inferencia en la NPU. Los modelos `.nb` no se versionan.
+`build/vision_service` es el binario de producción (el que lanza systemd): lee su configuración de `/etc/pase-lista/vision.conf` y se conecta al broker y a la cámara. `build/vision_dry_run` es el recorrido en seco con dobles en memoria. `build/npu_smoke` mide una inferencia en la NPU. Los modelos `.nb` no se versionan.
+
+```bash
+# Verificar el cableado completo (broker, cámara, contrato MQTT) sin los modelos
+tools/humo.sh
+```
 
 ### Por definir
 

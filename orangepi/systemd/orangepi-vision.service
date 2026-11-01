@@ -1,0 +1,35 @@
+[Unit]
+Description=Servicio de vision de AutoList (pase de lista con reconocimiento facial)
+Documentation=file:///opt/autolist/vision/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+# Directorio de trabajo: el servicio no escribe nada, pero queda en un sitio propio
+# (por debajo de /var, que con ProtectSystem=full sigue siendo escribible).
+WorkingDirectory=/var/lib/autolist
+# Las credenciales (contrasena del broker y token de la galeria) van aqui, no en el
+# archivo de configuracion: este lo puede leer cualquiera.
+EnvironmentFile=/etc/pase-lista/vision.env
+ExecStart=/usr/local/bin/vision_service --config /etc/pase-lista/vision.conf
+# SIGTERM: el servicio para el bucle, publica el estado final (en_linea false) y sale
+# con codigo 0. TimeoutStopSec le da margen para esa salida ordenada.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+# Endurecimiento moderado: el servicio solo necesita leer su configuracion y abrir la
+# NPU (/dev/vipcore). No se usa ProtectSystem=strict ni reglas de dispositivo, para no
+# impedirle el acceso a /dev/vipcore.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

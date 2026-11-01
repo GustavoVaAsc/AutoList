@@ -44,6 +44,7 @@ add_library(vision_core STATIC
   src/gallery.cpp
   src/image_header.cpp
   src/json_payload.cpp
+  src/process_config.cpp
   src/sharpness.cpp
   src/tensor.cpp
   src/vision_service.cpp
@@ -73,8 +74,23 @@ target_link_libraries(vision_transport PUBLIC
   Threads::Threads)
 
 # --- Ejecutables ------------------------------------------------------------
+# El proceso de produccion: bus MQTT real, cliente HTTP real y galeria real. Solo
+# vision_transport (los adaptadores reales); el recorrido en seco se queda en
+# vision_core (los dobles en memoria no necesitan red).
 add_executable(vision_service src/main.cpp)
-target_link_libraries(vision_service PRIVATE vision_core)
+target_link_libraries(vision_service PRIVATE vision_transport)
+
+# Recorrido en seco: la maquina de estados real con los dobles en memoria.
+add_executable(vision_dry_run src/dry_run.cpp)
+target_link_libraries(vision_dry_run PRIVATE vision_core)
+
+# Herramientas de prueba en la placa.
+add_executable(camara_falsa apps/camara_falsa.cpp)
+target_link_libraries(camara_falsa PRIVATE PkgConfig::OPENCV PkgConfig::CPPHTTPLIB
+                      Threads::Threads)
+
+add_executable(mqtt_probe apps/mqtt_probe.cpp)
+target_link_libraries(mqtt_probe PRIVATE PkgConfig::MOSQUITTO Threads::Threads)
 
 add_executable(npu_smoke apps/npu_smoke.cpp)
 target_link_libraries(npu_smoke PRIVATE vision_npu)
@@ -88,6 +104,7 @@ add_executable(test_core
   tests/test_gallery.cpp
   tests/test_image_header.cpp
   tests/test_json_payload.cpp
+  tests/test_process_config.cpp
   tests/test_sharpness.cpp
   tests/test_tensor.cpp)
 target_link_libraries(test_core PRIVATE vision_core minitest_main)

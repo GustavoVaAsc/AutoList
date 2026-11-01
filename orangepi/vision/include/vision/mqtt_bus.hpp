@@ -10,6 +10,7 @@
 // Vida: el bus se destruye despues de sus suscripciones (la Subscription debe quedar
 // dada de baja antes que el bus).
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -90,6 +91,14 @@ class MosquittoBus final : public MessageBus {
   // Se suscribe a un topico del contrato. Los manejadores se invocan desde el hilo de
   // red. La Subscription devuelta es la unica forma de darse de baja.
   [[nodiscard]] Subscription subscribe(std::string_view topic, MessageHandler handler) override;
+
+  // Aviso de conexion: el manejador se invoca en CADA conexion al broker, incluida la
+  // primera. El contrato exige recargar la galeria completa al arrancar y en cada
+  // reconexion (docs/contrato-mqtt.md, seccion 4).
+  //
+  // El manejador corre en el hilo de red de libmosquitto: que no haga trabajo bloqueante
+  // (el proceso solo marca una bandera y recarga en su hilo de trabajo).
+  void set_connect_listener(std::function<void()> listener);
 
  private:
   struct Impl;

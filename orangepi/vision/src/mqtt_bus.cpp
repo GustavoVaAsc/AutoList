@@ -129,6 +129,8 @@ struct MosquittoBus::Impl {
   bool started = false;
   bool stopped = false;
   int connections = 0;  // conexiones hechas (la primera, las reconexiones)
+  // Manejador de conexion (ver set_connect_listener). Se invoca en el hilo de red.
+  std::function<void()> connect_listener;
 
   // Da de alta un manejador para el topico. Si hay conexion, se suscribe en el broker;
   // si no, la suscripcion se hara en el proximo callback de conexion.
@@ -422,6 +424,11 @@ Subscription MosquittoBus::subscribe(std::string_view topic, MessageHandler hand
   });
 }
 
+void MosquittoBus::set_connect_listener(std::function<void()> listener) {
+  std::lock_guard lock(impl_->mutex);
+  impl_->connect_listener = std::move(listener);
+}
+
 void MosquittoBus::handle_connect(struct mosquitto*, void* obj, int rc) {
   Impl* impl = static_cast<Impl*>(obj);
   if (rc != 0) {
@@ -440,6 +447,23 @@ void MosquittoBus::handle_connect(struct mosquitto*, void* obj, int rc) {
   }
   // La sesion es limpia: hay que volver a suscribirse.
   impl->resubscribe_all();
+
+  // El aviso de conexion (la recarga de la galeria) va despues de resuscribir: el
+  // manejador ve el bus ya en su estado final.
+  std::function<void()> listener;
+  {
+    std::lock_guard lock(impl->mutex);
+    listener = impl->connect_listener;
+  }
+  if (listener) {
+    try {
+      listener();
+    } catch (const std::exception& error) {
+      std::cerr << "[vision] fallo el manejador de conexion: " << error.what() << '\n';
+    } catch (...) {
+      std::cerr << "[vision] fallo el manejador de conexion: excepcion desconocida\n";
+    }
+  }
 }
 
 void MosquittoBus::handle_disconnect(struct mosquitto*, void* obj, int rc) {
