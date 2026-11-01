@@ -1,0 +1,188 @@
+# Stack de la Orange Pi (plan, secciones 4 y 6.3):
+#   Mosquitto, Node-RED, Postgres con pgvector y Portainer CE.
+#
+# Uso, desde orangepi/:
+#   cp .env.example .env     (y cambiar las contraseñas)
+#   docker compose up -d
+#
+# Variables: orangepi/.env es el único .env y está ignorado por git (solo se
+# versiona .env.example). Compose lo lee solo, al estar junto a este archivo, para
+# sustituir ${VAR}; cada servicio recibe únicamente las variables que necesita en
+# su bloque "environment". El nombre fijo del proyecto evita choques con los
+# otros stacks que comparten esta placa.
+#
+# Volumen de datos ya existente: los scripts de initdb de Postgres (rol de
+# Node-RED e índice) solo corren al crear el volumen. Para aplicarlos sin borrar
+# datos, con el stack arriba y desde orangepi/:
+#   docker compose exec postgres sh /docker-entrypoint-initdb.d/02-roles.sh
+#   docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "CREATE INDEX IF NOT EXISTS metricas_energia_origen_hora_idx ON metricas_energia (origen, hora DESC, id DESC)"'
+# (02-roles.sh se puede repetir: crea el rol si falta y actualiza su contraseña.)
+# La alternativa es "docker compose down -v", que borra TODOS los datos.
+#
+# Falla con un mensaje claro si falta PORTAINER_ADMIN_PASSWORD (un secreto con
+# origen "environment" no admite ${VAR:?} y sin esto Compose no avisa). Ojo:
+# "docker compose config" muestra ese valor, igual que las demás contraseñas.
+x-portainer-clave-obligatoria: ${PORTAINER_ADMIN_PASSWORD:?falta PORTAINER_ADMIN_PASSWORD en orangepi/.env}
+#
+# Imágenes fijadas por digest. Para actualizar una, cambiar etiqueta y digest.
+# La de Node-RED se construye aquí: tras cambiar nodered/settings.js,
+# nodered/Dockerfile o el lock, subir el sufijo de la etiqueta (5.0.9-1, -2...)
+# y ejecutar "docker compose up -d --build".
+name: pase-lista
+
+# Rotación de logs de Docker para todos los servicios: 3 archivos de 1 MiB por
+# contenedor, para no llenar la microSD.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "1m"
+    max-file: "3"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2@sha256:860aeb5d63ce509508f6dcfb2bc8a1c1dd2bc60555b562b45ce90e52d8dabb0f
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      MQTT_USER: ${MQTT_USER:?falta MQTT_USER en orangepi/.env}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?falta MQTT_PASSWORD en orangepi/.env}
+    # entrypoint.sh crea el archivo de contraseñas desde MQTT_USER y
+    # MQTT_PASSWORD y luego arranca el broker (command).
+    entrypoint: ["/bin/sh", "/mosquitto/entrypoint.sh"]
+    command: ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
+    ports:
+      - "1883:1883"   # MQTT
+      - "9001:9001"   # MQTT sobre WebSocket (frontend)
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/entrypoint.sh:/mosquitto/entrypoint.sh:ro
+      - mosquitto_data:/mosquitto/data
+    healthcheck:
+      # Cliente "healthcheck" para reconocerlo en el log del broker.
+      test: ["CMD-SHELL", "mosquitto_sub -i healthcheck -h localhost -u \"$$MQTT_USER\" -P \"$$MQTT_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 5 >/dev/null"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    mem_limit: 64m
+
+  postgres:
+    image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
+    restart: unless-stopped
+    logging: *logging
+    # POSTGRES_* y NODERED_DB_* solo se leen al crear el volumen pgdata por
+    # primera vez; cambiarlos después exige ALTER USER/ALTER ROLE o "down -v".
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?falta POSTGRES_USER en orangepi/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?falta POSTGRES_PASSWORD en orangepi/.env}
+      POSTGRES_DB: ${POSTGRES_DB:?falta POSTGRES_DB en orangepi/.env}
+      NODERED_DB_USER: ${NODERED_DB_USER:?falta NODERED_DB_USER en orangepi/.env}
+      NODERED_DB_PASSWORD: ${NODERED_DB_PASSWORD:?falta NODERED_DB_PASSWORD en orangepi/.env}
+    # Solo el host puede entrar por el puerto 5432; Node-RED llega por la red
+    # del compose con el nombre "postgres". Nada se publica en la LAN.
+    ports:
+      - "127.0.0.1:5432:5432"
+    # Ajustes modestos: la NPU y el servicio de visión también necesitan RAM.
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=20", "-c", "work_mem=4MB"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Los scripts de initdb solo corren al crear el volumen por primera vez,
+      # en orden alfabético: primero el esquema y luego el rol de Node-RED.
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./sql/roles.sh:/docker-entrypoint-initdb.d/02-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 384m
+
+  nodered:
+    # Imagen propia con node-red-contrib-postgresql (nodered/Dockerfile).
+    build: ../nodered
+    image: pase-lista/nodered:5.0.9-2
+    restart: unless-stopped
+    logging: *logging
+    # Solo recibe lo que usa: MQTT, el rol de Node-RED en Postgres (no el
+    # superusuario) y las credenciales del editor.
+    environment:
+      MQTT_USER: ${MQTT_USER:?falta MQTT_USER en orangepi/.env}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?falta MQTT_PASSWORD en orangepi/.env}
+      POSTGRES_DB: ${POSTGRES_DB:?falta POSTGRES_DB en orangepi/.env}
+      NODERED_DB_USER: ${NODERED_DB_USER:?falta NODERED_DB_USER en orangepi/.env}
+      NODERED_DB_PASSWORD: ${NODERED_DB_PASSWORD:?falta NODERED_DB_PASSWORD en orangepi/.env}
+      NODERED_ADMIN_USER: ${NODERED_ADMIN_USER:?falta NODERED_ADMIN_USER en orangepi/.env}
+      NODERED_ADMIN_PASSWORD: ${NODERED_ADMIN_PASSWORD:?falta NODERED_ADMIN_PASSWORD en orangepi/.env}
+      # Nombres y direcciones del certificado HTTPS (subjectAltName). Si cambia,
+      # settings.js regenera el certificado al reiniciar.
+      NODERED_TLS_SAN: ${NODERED_TLS_SAN:-DNS:localhost,IP:127.0.0.1}
+      # Los flujos se cargan desde el repo: se monta nodered/flows en /flows y
+      # Node-RED lee y escribe /flows/flows.json (se monta la carpeta y no solo
+      # el archivo porque al desplegar Node-RED lo reemplaza con rename). Cada
+      # Deploy del editor deja flows.json listo para commit. Solo esa carpeta
+      # es escribible: el Dockerfile y settings.js quedan fuera del contenedor.
+      # Requiere que nodered/flows sea escribible por el uid 1000 (el usuario
+      # node-red del contenedor, que en la Orange Pi es "orangepi").
+      # Las credenciales de MQTT y Postgres se resuelven con ${VAR} en los
+      # nodos de configuración. /data (volumen) guarda el estado de ejecución
+      # y el certificado HTTPS.
+      FLOWS: /flows/flows.json
+      NODE_OPTIONS: --max-old-space-size=256
+      TZ: America/Mexico_City
+    ports:
+      # HTTPS con certificado autofirmado (se genera al primer arranque): el
+      # navegador avisa una vez; con curl usar -k. Editor (con adminAuth), API
+      # y archivos estáticos van todos por este puerto.
+      - "1880:1880"
+    volumes:
+      - ../nodered/flows:/flows
+      - nodered_data:/data
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /auth/login responde sin sesión; no toca la base de datos. -k: autofirmado.
+      test: ["CMD-SHELL", "curl -fsSk https://localhost:1880/auth/login >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    mem_limit: 384m
+
+  portainer:
+    image: portainer/portainer-ce:2.45.3@sha256:3609c307943bca8e5c492f69ddd6965df177208b50678a4cff28391c8dd4e96e
+    restart: unless-stopped
+    logging: *logging
+    # El primer visitante no puede quedarse con la cuenta de administrador: la
+    # contraseña viene de orangepi/.env (PORTAINER_ADMIN_PASSWORD) como secreto
+    # de compose, que llega como archivo y no como variable de entorno. Los
+    # secretos con origen "environment" requieren Docker Compose 2.23.1 o
+    # posterior (la placa tiene 5.6). Solo se lee al crear el volumen.
+    command: ["--admin-password-file", "/run/secrets/portainer_admin_password"]
+    secrets:
+      - portainer_admin_password
+    ports:
+      # Solo local. Desde otra máquina, con un túnel SSH:
+      #   ssh -L 9443:localhost:9443 orangepi@<ip-de-la-placa>
+      # y abrir https://localhost:9443 (certificado autofirmado).
+      - "127.0.0.1:9443:9443"
+    volumes:
+      # Acceso al socket de Docker = control total del host: por eso la
+      # cuenta de administrador nace con contraseña y el puerto es local.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    # Sin healthcheck: la imagen no trae shell ni curl.
+    mem_limit: 192m
+
+secrets:
+  portainer_admin_password:
+    environment: PORTAINER_ADMIN_PASSWORD
+
+volumes:
+  mosquitto_data:
+  pgdata:
+  nodered_data:
+  portainer_data:
