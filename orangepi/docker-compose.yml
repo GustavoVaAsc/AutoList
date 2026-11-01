@@ -11,9 +11,12 @@
 # su bloque "environment". El nombre fijo del proyecto evita choques con los
 # otros stacks que comparten esta placa.
 #
-# Volumen de datos ya existente: los scripts de initdb de Postgres (rol de
-# Node-RED e índice) solo corren al crear el volumen. Para aplicarlos sin borrar
-# datos, con el stack arriba y desde orangepi/:
+# Volumen de datos ya existente: los scripts de initdb de Postgres (esquema y
+# rol de Node-RED) solo corren al crear el volumen. 02-roles.sh requiere que las
+# tablas de schema.sql existan; si el volumen es anterior a ellas, fallará a
+# mitad (el rol y su contraseña sí se aplican) y hay que recrearlo con
+# "docker compose down -v" o consultar al equipo. Si las tablas ya existen, para
+# aplicar el rol y el índice sin borrar datos, con el stack arriba y desde orangepi/:
 #   docker compose exec postgres sh /docker-entrypoint-initdb.d/02-roles.sh
 #   docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "CREATE INDEX IF NOT EXISTS metricas_energia_origen_hora_idx ON metricas_energia (origen, hora DESC, id DESC)"'
 # (02-roles.sh se puede repetir: crea el rol si falta y actualiza su contraseña.)
@@ -83,7 +86,9 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     # Ajustes modestos: la NPU y el servicio de visión también necesitan RAM.
-    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=20", "-c", "work_mem=4MB"]
+    # log_error_verbosity=terse: un error de CHECK no escribe la fila fallida
+    # (con su embedding) en el log.
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=20", "-c", "work_mem=4MB", "-c", "log_error_verbosity=terse"]
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Los scripts de initdb solo corren al crear el volumen por primera vez,
@@ -101,7 +106,7 @@ services:
   nodered:
     # Imagen propia con node-red-contrib-postgresql (nodered/Dockerfile).
     build: ../nodered
-    image: pase-lista/nodered:5.0.9-2
+    image: pase-lista/nodered:5.0.9-3
     restart: unless-stopped
     logging: *logging
     # Solo recibe lo que usa: MQTT, el rol de Node-RED en Postgres (no el

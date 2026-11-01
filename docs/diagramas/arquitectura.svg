@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 860" width="1700" height="860" role="img" aria-label="Arquitectura de AutoList: campo (XIAO ESP32S3), borde (Orange Pi Zero 3W) y laptop del profesor">
+  <!-- Fuente editable del diagrama: arquitectura.png se exporta desde este archivo. -->
+  <style>
+    .panel-title { font: 600 28px 'Barlow Condensed', 'Nimbus Sans Narrow', sans-serif; letter-spacing: .3px; }
+    .panel-sub   { font: 400 15px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; fill: #64748b; }
+    .box-title   { font: 600 21px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; fill: #0f172a; }
+    .box-sub     { font: 400 15px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; fill: #475569; }
+    .box-small   { font: 400 13.5px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; fill: #64748b; }
+    .mono        { font: 500 15px 'JetBrains Mono', 'DejaVu Sans Mono', monospace; fill: #475569; }
+    .group       { font: 700 15px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; letter-spacing: .4px; }
+    .item        { font: 400 17px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; fill: #1e293b; }
+    .edge        { font: 600 14px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; paint-order: stroke; stroke-width: 6px; stroke-linejoin: round; }
+    .chip        { font: 600 12px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; fill: #475569; }
+    .legend      { font: 500 15px Inter, 'Nimbus Sans', 'DejaVu Sans', sans-serif; fill: #334155; }
+    .box  { fill: #ffffff; stroke: #1e293b; stroke-width: 1.6; filter: url(#shadow); }
+    .line { fill: none; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+    .mqtt { stroke: #0f766e; } .http { stroke: #2563eb; } .sql { stroke: #7c3aed; }
+    .pow  { stroke: #b45309; } .adm  { stroke: #64748b; stroke-dasharray: 7 6; }
+  </style>
+
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="m-mqtt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/></marker>
+    <marker id="m-http" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
+    <marker id="m-sql"  viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+    <marker id="m-pow"  viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b45309"/></marker>
+    <marker id="m-adm"  viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+  </defs>
+
+  <rect width="1700" height="860" fill="#ffffff"/>
+
+  <!-- ===== Paneles ===== -->
+  <rect x="20" y="20" width="330" height="750" rx="16" fill="#fdf5e9" stroke="#f0d3a6" stroke-width="1.5"/>
+  <text x="44" y="60" class="panel-title" fill="#9a5b13">Campo</text>
+
+  <rect x="380" y="20" width="950" height="750" rx="16" fill="#eef2f7" stroke="#cfd8e3" stroke-width="1.5"/>
+  <text x="404" y="60" class="panel-title" fill="#334155">Borde · Orange Pi Zero 3W</text>
+  <text x="404" y="84" class="panel-sub">Allwinner A733 · NPU de 3 TOPS · 4 GB de RAM</text>
+
+  <rect x="760" y="100" width="550" height="650" rx="14" fill="#e2ebf7" stroke="#93b4dc" stroke-width="1.5" stroke-dasharray="8 6"/>
+  <text x="1290" y="128" class="group" fill="#1d4ed8" text-anchor="end">DOCKER</text>
+
+  <rect x="1355" y="20" width="325" height="750" rx="16" fill="#f2f0fb" stroke="#d6d1f1" stroke-width="1.5"/>
+  <text x="1379" y="60" class="panel-title" fill="#4c3d99">Laptop del profesor</text>
+  <text x="1379" y="84" class="panel-sub">solo abre el navegador</text>
+
+  <!-- ===== Conexiones (debajo de las cajas) ===== -->
+  <!-- XIAO -> visión: fotos HTTP -->
+  <path class="line http" d="M327,155 H417" marker-end="url(#m-http)"/>
+  <text x="372" y="143" class="edge" fill="#2563eb" stroke="#ffffff" text-anchor="middle">fotos HTTP</text>
+
+  <!-- XIAO -> Mosquitto: PIR y energía -->
+  <path class="line mqtt" d="M327,330 H782" marker-end="url(#m-mqtt)"/>
+  <text x="560" y="318" class="edge" fill="#0f766e" stroke="#eef2f7" text-anchor="middle">PIR y energía</text>
+
+  <!-- Mosquitto -> XIAO: comandos -->
+  <path class="line mqtt" d="M782,390 H330" marker-end="url(#m-mqtt)"/>
+  <text x="560" y="414" class="edge" fill="#0f766e" stroke="#eef2f7" text-anchor="middle">comandos (servo, LEDs, luz)</text>
+
+  <!-- XIAO -> tira LED -->
+  <path class="line pow" d="M185,442 V617" marker-end="url(#m-pow)"/>
+  <text x="199" y="535" class="edge" fill="#b45309" stroke="#fdf5e9">MOSFET</text>
+
+  <!-- Visión <-> Mosquitto -->
+  <path class="line mqtt" d="M713,175 H870 V297" marker-start="url(#m-mqtt)" marker-end="url(#m-mqtt)"/>
+  <text x="884" y="240" class="edge" fill="#0f766e" stroke="#e2ebf7">MQTT</text>
+
+  <!-- Visión -> Node-RED: galería por HTTPS -->
+  <path class="line http" d="M713,128 H1040 V320 H1067" marker-end="url(#m-http)"/>
+  <text x="890" y="118" class="edge" fill="#2563eb" stroke="#e2ebf7" text-anchor="middle">GET /api/galeria</text>
+
+  <!-- Pantalla <-> Mosquitto -->
+  <path class="line mqtt" d="M713,670 H850 V423" marker-start="url(#m-mqtt)" marker-end="url(#m-mqtt)"/>
+  <text x="836" y="560" class="edge" fill="#0f766e" stroke="#e2ebf7" text-anchor="end">MQTT</text>
+
+  <!-- Mosquitto <-> Node-RED -->
+  <path class="line mqtt" d="M998,360 H1067" marker-start="url(#m-mqtt)" marker-end="url(#m-mqtt)"/>
+  <text x="1032" y="348" class="edge" fill="#0f766e" stroke="#e2ebf7" text-anchor="middle">MQTT</text>
+
+  <!-- Portainer -> Node-RED: administra -->
+  <path class="line adm" d="M1180,242 V297" marker-end="url(#m-adm)"/>
+  <text x="1194" y="276" class="edge" fill="#64748b" stroke="#e2ebf7">administra</text>
+
+  <!-- Node-RED -> Postgres: SQL -->
+  <path class="line sql" d="M1180,422 V557" marker-end="url(#m-sql)"/>
+  <text x="1166" y="495" class="edge" fill="#7c3aed" stroke="#e2ebf7" text-anchor="end">SQL · red del compose</text>
+
+  <!-- Frontend -> Node-RED: API HTTP -->
+  <path class="line http" d="M1378,350 H1293" marker-end="url(#m-http)"/>
+  <text x="1335" y="338" class="edge" fill="#2563eb" stroke="#ffffff" text-anchor="middle">HTTPS</text>
+
+  <!-- Frontend <-> Mosquitto: MQTT WebSocket -->
+  <path class="line mqtt" d="M1517,423 V728 H930 V423" marker-start="url(#m-mqtt)" marker-end="url(#m-mqtt)"/>
+  <text x="1080" y="718" class="edge" fill="#0f766e" stroke="#e2ebf7" text-anchor="middle">MQTT sobre WebSocket · 9001</text>
+
+  <!-- ===== Campo ===== -->
+  <rect class="box" x="45" y="100" width="280" height="340" rx="12" stroke="#b97a2a"/>
+  <text x="66" y="140" class="box-title">XIAO ESP32S3 Sense</text>
+  <text x="66" y="182" class="group" fill="#9a5b13">SENSORES</text>
+  <text x="66" y="210" class="item">Cámara</text>
+  <text x="66" y="236" class="item">PIR HC-SR501</text>
+  <text x="66" y="262" class="item">INA219 (energía)</text>
+  <text x="66" y="304" class="group" fill="#9a5b13">ACTUADORES</text>
+  <text x="66" y="332" class="item">Servo (puerta)</text>
+  <text x="66" y="358" class="item">LEDs RGB</text>
+  <text x="66" y="384" class="item">Buzzer</text>
+  <text x="66" y="420" class="box-small">Wi-Fi · HTTP y MQTT</text>
+
+  <rect x="45" y="620" width="280" height="120" rx="12" fill="#f6a623" stroke="#b45309" stroke-width="1.6" filter="url(#shadow)"/>
+  <text x="66" y="664" class="box-title" fill="#3b2304" style="fill:#3b2304">Tira LED de 12 V</text>
+  <text x="66" y="694" class="box-sub" style="fill:#5c3a0a">ilumina la cara</text>
+
+  <!-- ===== Borde: host ===== -->
+  <rect class="box" x="420" y="105" width="290" height="110" rx="12"/>
+  <rect x="592" y="113" width="108" height="20" rx="10" fill="#e2e8f0"/>
+  <text x="646" y="127" class="chip" text-anchor="middle">host · systemd</text>
+  <text x="565" y="162" class="box-title" text-anchor="middle">Servicio de visión</text>
+  <text x="565" y="190" class="box-sub" text-anchor="middle">C++ nativo · NPU</text>
+
+  <rect class="box" x="420" y="600" width="290" height="140" rx="12"/>
+  <rect x="592" y="608" width="108" height="20" rx="10" fill="#e2e8f0"/>
+  <text x="646" y="622" class="chip" text-anchor="middle">host · systemd</text>
+  <text x="565" y="656" class="box-title" text-anchor="middle">Pantalla ILI9341</text>
+  <text x="565" y="684" class="box-sub" text-anchor="middle">Python · táctil XPT2046</text>
+  <text x="565" y="710" class="box-small" text-anchor="middle">RTC DS3231 por I²C</text>
+
+  <!-- ===== Borde: Docker ===== -->
+  <rect class="box" x="785" y="300" width="210" height="120" rx="12"/>
+  <text x="890" y="350" class="box-title" text-anchor="middle">Mosquitto</text>
+  <text x="890" y="380" class="mono" text-anchor="middle">1883 · WS 9001</text>
+
+  <rect class="box" x="1070" y="140" width="220" height="100" rx="12"/>
+  <text x="1180" y="176" class="box-title" text-anchor="middle">Portainer CE</text>
+  <text x="1180" y="200" class="mono" text-anchor="middle" style="font-size:13.5px">127.0.0.1:9443</text>
+  <text x="1180" y="224" class="box-small" text-anchor="middle">administra los contenedores</text>
+
+  <rect class="box" x="1070" y="300" width="220" height="120" rx="12"/>
+  <text x="1180" y="342" class="box-title" text-anchor="middle">Node-RED</text>
+  <text x="1180" y="368" class="mono" text-anchor="middle">HTTPS · 1880</text>
+  <text x="1180" y="394" class="box-small" text-anchor="middle">reglas, API y frontend</text>
+
+  <rect class="box" x="1070" y="560" width="220" height="130" rx="12"/>
+  <text x="1180" y="600" class="box-title" text-anchor="middle" style="font-size:18.5px">Postgres + pgvector</text>
+  <text x="1180" y="628" class="mono" text-anchor="middle" style="font-size:13.5px">127.0.0.1:5432</text>
+  <text x="1180" y="652" class="box-small" text-anchor="middle">alumnos, sesiones,</text>
+  <text x="1180" y="672" class="box-small" text-anchor="middle">asistencias y energía</text>
+
+  <!-- ===== Laptop ===== -->
+  <rect class="box" x="1380" y="300" width="275" height="120" rx="12" stroke="#4c3d99"/>
+  <text x="1517" y="350" class="box-title" text-anchor="middle">Frontend web</text>
+  <text x="1517" y="380" class="box-sub" text-anchor="middle">Vite + React · navegador</text>
+
+  <!-- ===== Leyenda ===== -->
+  <g transform="translate(330,815)">
+    <line class="line mqtt" x1="0" y1="0" x2="36" y2="0"/><text x="46" y="5" class="legend">MQTT</text>
+    <line class="line http" x1="150" y1="0" x2="186" y2="0"/><text x="196" y="5" class="legend">HTTP(S)</text>
+    <line class="line sql" x1="296" y1="0" x2="332" y2="0"/><text x="342" y="5" class="legend">SQL</text>
+    <line class="line pow" x1="430" y1="0" x2="466" y2="0"/><text x="476" y="5" class="legend">Potencia</text>
+    <line class="line adm" x1="600" y1="0" x2="636" y2="0"/><text x="646" y="5" class="legend">Administración</text>
+    <rect x="806" y="-10" width="50" height="20" rx="10" fill="#e2e8f0"/><text x="831" y="4" class="chip" text-anchor="middle">host</text>
+    <text x="866" y="5" class="legend">fuera de Docker</text>
+  </g>
+</svg>
