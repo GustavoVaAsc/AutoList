@@ -121,7 +121,7 @@ sequenceDiagram
 
 1. El PIR de la XIAO detecta movimiento y lo publica.
 2. El servicio de visión enciende la tira LED, espera unos 300 ms a que la exposición se estabilice y pide una ráfaga de fotos en alta resolución.
-3. Filtro de calidad: elige la foto más nítida (varianza del Laplaciano). Si ninguna pasa el umbral, publica `motivo: imagen_insuficiente`.
+3. Filtro de calidad: elige la foto más nítida (varianza del Laplaciano). Si ninguna pasa el umbral, publica `decision: imagen_insuficiente`.
 4. En la NPU, detecta el rostro y sus 5 puntos clave, alinea la cara a 112×112 y calcula el embedding.
 5. Compara contra la galería local por similitud coseno y publica el resultado con sus latencias.
 6. Node-RED aplica las reglas de la sesión:
@@ -313,10 +313,11 @@ aula/camara/energia      XIAO → borde            {"v":12.1,"i":0.85,"p":10.3}
 aula/camara/estado       XIAO → borde            {"rssi":-58,"heap":120000,"temp":48}
 aula/actuador/cmd        borde → XIAO            {"servo":"abrir","led":"verde","buzzer":1,"luz":0}   (Node-RED o pantalla)
 aula/actuador/estado     XIAO → borde            {"servo":"cerrado","led":"azul","luz":0}
-aula/vision/resultado    visión → Node-RED       {"cuenta":"320068234","conf":0.78,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
-aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234"}   (enrolar, cancelar, probar)
-aula/vision/enrolamiento visión → frontend, LCD  {"cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
-aula/vision/embedding    visión → Node-RED       {"cuenta":"320068234","embedding":[...]}   (QoS 1, retain=false; solo lo consume Node-RED, que acepta únicamente la cuenta con inscripción pendiente)
+aula/vision/resultado    visión → Node-RED       {"ts":"2026-11-04T09:12:33.120-06:00","modo":"pase","decision":"reconocido","cuenta":"320068234","conf":0.78,"margen":0.21,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
+aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234","nombre":"Ana López"}   (enrolar, cancelar, probar)
+aula/vision/enrolamiento visión → frontend, LCD  {"ts":"2026-11-04T09:12:33.120-06:00","cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
+aula/vision/embedding    visión → Node-RED       {"ts":"2026-11-04T09:12:33.120-06:00","cuenta":"320068234","dim":512,"modelo":"w600k_mbf-uint8-v1","embedding":[...]}   (QoS 1, retain=false; solo lo consume Node-RED, que acepta únicamente la cuenta con inscripción pendiente)
+aula/vision/estado       visión → Node-RED, web  {"ts":"2026-11-04T09:12:33.120-06:00","en_linea":true,"modo":"inactivo","galeria":38,"modelo":"w600k_mbf-uint8-v1"}   (QoS 1, retenido; el LWT {"en_linea":false} lo pone el broker)
 aula/vision/galeria/alta Node-RED → visión       {"cuenta":"320068234"}   (QoS 1, nunca retenido; tras guardar el embedding: el servicio recarga la galería con GET /api/galeria)
 aula/vision/galeria/baja Node-RED → visión       {"cuenta":"320068234"}   (QoS 1, nunca retenido; retira a una persona de la galería en RAM)
 aula/sesion/cmd          pantalla → Node-RED     {"accion":"iniciar","materia":"FSE","grupo":"1","tol_min":10}
@@ -328,6 +329,8 @@ aula/sistema/metricas    Orange Pi → Node-RED    {"temp":52.1,"cpu":34,"ram":6
 > Los valores de ejemplo son ilustrativos, no mediciones.
 
 > Con las ACL (4 nov), solo el usuario de Node-RED puede publicar en `aula/vision/galeria/#`.
+
+> `decision` es el veredicto del servicio de visión (`reconocido`, `dudoso`, `desconocido`, `sin_rostro`, `imagen_insuficiente`, `error`) y `motivo` da el detalle fino de ese veredicto (el esquema SQL `intentos.motivo` lo necesita). El servicio aplica los dos umbrales (`reconocido` y `dudoso`, zona gris del LED ámbar de la sección 5.1) y los publica como `decision`; Node-RED decide sobre `decision` y no compara números. Los payloads completos, los vocabularios y las extensiones están en `docs/contrato-mqtt.md`, que manda sobre esta sección.
 
 ### 7.2 Esquema de Postgres (`orangepi/sql/schema.sql`)
 

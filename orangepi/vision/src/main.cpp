@@ -18,18 +18,31 @@ using namespace vision;
 struct Printer {
   void operator()(const ActuatorCommand& c) const { std::cout << "luz=" << c.light.value_or(-1); }
   void operator()(const AttendanceResult& r) const {
-    std::cout << "cuenta=" << r.account.value_or("-") << " conf=" << r.confidence
-              << " motivo=" << r.reason.value_or("-") << " modo=" << to_wire(r.mode) << " lat_ms{cap=" << r.lat_ms.cap
-              << " det=" << r.lat_ms.det << " emb=" << r.lat_ms.emb
-              << " total=" << r.lat_ms.total << "}";
+    std::cout << "ts=" << r.timestamp << " cuenta=" << r.account.value_or("-")
+              << " conf=" << r.confidence.value_or(-1.0f) << " decision="
+              << to_wire(r.decision) << " motivo=" << r.reason.value_or("-")
+              << " modo=" << to_wire(r.mode) << " lat_ms{cap=" << r.lat_ms.cap.value_or(-1)
+              << " det=" << r.lat_ms.det.value_or(-1) << " emb=" << r.lat_ms.emb.value_or(-1)
+              << " total=" << r.lat_ms.total.value_or(-1) << "}";
   }
   void operator()(const EnrollmentProgress& p) const {
-    std::cout << "cuenta=" << p.account << " paso=" << p.step << "/" << p.total
-              << " pose=" << p.pose << " estado=" << static_cast<int>(p.status)
+    std::cout << "ts=" << p.timestamp << " cuenta=" << p.account << " paso=" << p.step << "/"
+              << p.total << " pose=" << p.pose << " estado=" << to_wire(p.status)
               << " motivo=" << p.reason.value_or("-");
   }
   void operator()(const EmbeddingMessage& m) const {
-    std::cout << "cuenta=" << m.account << " dim=" << m.embedding.size();
+    std::cout << "ts=" << m.timestamp << " cuenta=" << m.account << " dim=" << m.dim()
+              << " modelo=" << m.model;
+  }
+  void operator()(const VisionStatus& s) const {
+    std::cout << "ts=" << s.timestamp << " en_linea=" << s.online << " modo=" << to_wire(s.mode)
+              << " galeria=" << s.gallery_size << " modelo=" << s.model;
+  }
+  void operator()(const VisionCommand& c) const {
+    std::cout << "accion=" << to_wire(c.action) << " cuenta=" << c.account;
+  }
+  void operator()(const GalleryAccount& g) const {
+    std::cout << "cuenta=" << g.account;
   }
   void operator()(const auto&) const {}
 };
@@ -49,6 +62,7 @@ int main() {
   fakes::FakeFaceEmbedder embedder;
   Gallery gallery;
   SystemClock clock;
+  SystemWallClock wall_clock;
 
   FaceDetection face;
   face.score = 0.99f;
@@ -66,7 +80,8 @@ int main() {
   ServiceConfig config;
   config.capture_url = "http://fake/capture";
   config.pose_delay = Millis(100);
-  VisionService service(ServiceDeps{bus, http, detector, embedder, gallery, clock}, config);
+  VisionService service(ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock},
+                        config);
 
   std::size_t shown = 0;
   const auto show_new_messages = [&] {
@@ -84,7 +99,7 @@ int main() {
   show_new_messages();
 
   std::cout << "enrolar\n";
-  bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Enroll, "320068235"});
+  bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Enroll, "320068235", std::nullopt});
   while (true) {
     service.poll();
     show_new_messages();

@@ -17,6 +17,7 @@
 #include "vision/face_embedder.hpp"
 #include "vision/http_client.hpp"
 #include "vision/message_bus.hpp"
+#include "vision/wall_clock.hpp"
 
 namespace vision::fakes {
 
@@ -52,6 +53,18 @@ class ManualClock final : public Clock {
 struct PublishedMessage {
   std::string topic;
   Payload payload;
+};
+// Reloj de pared fijo: devuelve siempre la misma hora, para que las pruebas puedan
+// comprobar el "ts" sin depender del reloj de la placa.
+class FixedWallClock final : public WallClock {
+ public:
+  std::string now_iso8601() const override {
+    if (on_now) on_now();
+    return value;
+  }
+
+  std::string value = "2026-11-04T09:12:33.120-06:00";
+  std::function<void()> on_now;  // puede lanzar para simular un fallo
 };
 
 // Entrega los mensajes en el hilo que llama a inject. Cumple el contrato de MessageBus:

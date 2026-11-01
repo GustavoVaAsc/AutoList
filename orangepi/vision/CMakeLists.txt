@@ -22,6 +22,8 @@ if(OPENCV_VERSION VERSION_GREATER_EQUAL 4.7)
   message(FATAL_ERROR "Se requiere OpenCV 4.6.x (la de Debian); pkg-config encontro ${OPENCV_VERSION}")
 endif()
 find_package(Threads REQUIRED)
+# nlohmann/json: la capa JSON del contrato MQTT (include/vision/json_payload.hpp).
+find_package(nlohmann_json 3.11 REQUIRED)
 
 # Runtime VIPLite del fabricante. libNBGlinker exporta vip_*; depende de libVIPhal.
 # VIPLITE_ROOT (-DVIPLITE_ROOT=... o variable de entorno) apunta a otra instalacion.
@@ -38,11 +40,13 @@ add_library(vision_core STATIC
   src/alignment.cpp
   src/gallery.cpp
   src/image_header.cpp
+  src/json_payload.cpp
   src/sharpness.cpp
   src/tensor.cpp
-  src/vision_service.cpp)
+  src/vision_service.cpp
+  src/wall_clock.cpp)
 target_include_directories(vision_core PUBLIC include)
-target_link_libraries(vision_core PUBLIC PkgConfig::OPENCV)
+target_link_libraries(vision_core PUBLIC PkgConfig::OPENCV nlohmann_json::nlohmann_json)
 target_link_options(vision_core PUBLIC -Wl,--as-needed)
 
 # --- Wrapper de la NPU ------------------------------------------------------
@@ -65,6 +69,7 @@ add_executable(test_core
   tests/test_alignment.cpp
   tests/test_gallery.cpp
   tests/test_image_header.cpp
+  tests/test_json_payload.cpp
   tests/test_sharpness.cpp
   tests/test_tensor.cpp)
 target_link_libraries(test_core PRIVATE vision_core minitest_main)

@@ -71,6 +71,7 @@ struct Harness {
   fakes::FakeFaceEmbedder embedder;
   Gallery gallery;
   fakes::ManualClock clock;
+  fakes::FixedWallClock wall_clock;
   ServiceConfig config;
   std::unique_ptr<VisionService> service;
 
@@ -84,7 +85,7 @@ struct Harness {
     gallery.upsert("320068234", std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});
     gallery.upsert("320068235", std::vector<float>{0.0f, 1.0f, 0.0f, 0.0f});
     service = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, detector, embedder, gallery, clock}, config);
+        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock}, config);
   }
 
   // Reconstruye el servicio con otra configuracion (la anterior se da de baja primero).
@@ -92,7 +93,7 @@ struct Harness {
     service.reset();
     config = new_config;
     service = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, detector, embedder, gallery, clock}, config);
+        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock}, config);
   }
 
   void queue_frames(int count) {
@@ -101,7 +102,7 @@ struct Harness {
 
   void pir() { bus.inject(topics::kCameraPir, PirEvent{}); }
   void command(VisionAction action, std::string account = "") {
-    bus.inject(topics::kVisionCmd, VisionCommand{action, std::move(account)});
+    bus.inject(topics::kVisionCmd, VisionCommand{action, std::move(account), std::nullopt});
   }
 
   std::vector<AttendanceResult> results() const {
@@ -112,6 +113,9 @@ struct Harness {
   }
   std::vector<EmbeddingMessage> embeddings() const {
     return bus.published_as<EmbeddingMessage>(topics::kVisionEmbedding);
+  }
+  std::vector<VisionStatus> statuses() const {
+    return bus.published_as<VisionStatus>(topics::kVisionStatus);
   }
   // Valores de "luz" publicados, en orden.
   std::vector<int> light_commands() const {
@@ -188,11 +192,12 @@ TEST(attendance_happy_path_publishes_exactly_one_result) {
   CHECK_EQ(results.size(), std::size_t{1});
   CHECK_EQ(results[0].account.value(), std::string("320068234"));
   CHECK(!results[0].reason.has_value());
-  CHECK_NEAR(results[0].confidence, 1.0, 1e-6);
-  CHECK_EQ(results[0].lat_ms.cap, 60);
-  CHECK_EQ(results[0].lat_ms.det, 12);
-  CHECK_EQ(results[0].lat_ms.emb, 6);
-  CHECK_EQ(results[0].lat_ms.total, 300 + 60 + 12 + 6);  // incluye la espera de la luz
+  CHECK(results[0].decision == Decision::Recognized);
+  CHECK_NEAR(results[0].confidence.value(), 1.0, 1e-6);
+  CHECK_EQ(results[0].lat_ms.cap.value(), 60);
+  CHECK_EQ(results[0].lat_ms.det.value(), 12);
+  CHECK_EQ(results[0].lat_ms.emb.value(), 6);
+  CHECK_EQ(results[0].lat_ms.total.value(), 300 + 60 + 12 + 6);  // incluye la espera de la luz
   CHECK(h.service->state() == ServiceState::Idle);
 }
 
@@ -207,11 +212,13 @@ TEST(attendance_turns_light_on_then_waits_then_turns_it_off) {
   CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
   CHECK_EQ(h.http.requested_urls[0], kCaptureUrl);
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
-  // Orden global: luz encendida, resultado, luz apagada.
-  CHECK_EQ(h.bus.published.size(), std::size_t{3});
-  CHECK(h.bus.published[0].topic == topics::kActuatorCmd);
-  CHECK(h.bus.published[1].topic == topics::kVisionResult);
-  CHECK(h.bus.published[2].topic == topics::kActuatorCmd);
+  // Orden global: estado (pase), luz encendida, resultado, luz apagada, estado (inactivo).
+  CHECK_EQ(h.bus.published.size(), std::size_t{5});
+  CHECK(h.bus.published[0].topic == topics::kVisionStatus);
+  CHECK(h.bus.published[1].topic == topics::kActuatorCmd);
+  CHECK(h.bus.published[2].topic == topics::kVisionResult);
+  CHECK(h.bus.published[3].topic == topics::kActuatorCmd);
+  CHECK(h.bus.published[4].topic == topics::kVisionStatus);
 }
 
 TEST(attendance_feeds_the_sharpest_frame_to_detector_aligned_to_112) {
@@ -256,6 +263,8 @@ TEST(attendance_capture_failure_publishes_reason_instead_of_crashing) {
   const auto results = h.results();
   CHECK_EQ(results.size(), std::size_t{1});
   CHECK(!results[0].account.has_value());
+  CHECK(!results[0].confidence.has_value());
+  CHECK(results[0].decision == Decision::InsufficientImage);
   CHECK_EQ(results[0].reason.value(), std::string(reasons::kCaptureFailed));
   CHECK_EQ(h.detector.calls, 0);
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
@@ -293,6 +302,7 @@ TEST(attendance_reports_insufficient_image_below_sharpness_threshold) {
   h.service->poll();
 
   CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kInsufficientImage));
+  CHECK(h.results().at(0).decision == Decision::InsufficientImage);
   CHECK_EQ(h.detector.calls, 0);
 }
 
@@ -304,6 +314,9 @@ TEST(attendance_reports_no_face) {
   h.service->poll();
 
   CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kNoFace));
+  CHECK(h.results().at(0).decision == Decision::NoFace);
+  CHECK(!h.results().at(0).account.has_value());
+  CHECK(!h.results().at(0).confidence.has_value());
   CHECK_EQ(h.embedder.calls, std::size_t{0});
 }
 
@@ -320,7 +333,7 @@ TEST(attendance_picks_the_highest_scoring_face) {
   CHECK(h.results().at(0).account.has_value());
 }
 
-TEST(attendance_reports_unknown_below_match_threshold_but_keeps_confidence) {
+TEST(attendance_reports_unknown_below_match_threshold_but_keeps_the_best_candidate) {
   Harness h;
   h.embedder.outputs = {{0.0f, 0.0f, 1.0f, 0.0f}};  // ortogonal a toda la galeria
   h.queue_frames(3);
@@ -328,9 +341,12 @@ TEST(attendance_reports_unknown_below_match_threshold_but_keeps_confidence) {
   h.service->poll();
 
   const auto result = h.results().at(0);
-  CHECK(!result.account.has_value());
+  CHECK(result.decision == Decision::Unknown);
   CHECK_EQ(result.reason.value(), std::string(reasons::kUnknown));
-  CHECK_NEAR(result.confidence, 0.0, 1e-6);
+  CHECK_NEAR(result.confidence.value(), 0.0, 1e-6);
+  // Con "desconocido" se manda el mejor candidato, para que Node-RED pueda auditarlo.
+  CHECK(result.account.has_value());
+  CHECK_EQ(result.account.value(), std::string("320068234"));
 }
 
 TEST(attendance_with_empty_gallery_reports_reason) {
@@ -342,6 +358,8 @@ TEST(attendance_with_empty_gallery_reports_reason) {
   h.service->poll();
 
   CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kEmptyGallery));
+  CHECK(h.results().at(0).decision == Decision::Unknown);
+  CHECK(!h.results().at(0).account.has_value());
 }
 
 TEST(attendance_detector_exception_becomes_internal_error_result) {
@@ -353,6 +371,7 @@ TEST(attendance_detector_exception_becomes_internal_error_result) {
 
   CHECK_EQ(h.results().size(), std::size_t{1});
   CHECK_EQ(h.results()[0].reason.value(), std::string(reasons::kInternalError));
+  CHECK(h.results()[0].decision == Decision::Error);
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
   CHECK(h.service->state() == ServiceState::Idle);
 }
@@ -442,7 +461,7 @@ TEST(enrollment_runs_five_poses_and_publishes_normalized_mean_embedding) {
   CHECK(h.service->state() == ServiceState::Enrolling);
   CHECK_EQ(h.progress().size(), std::size_t{1});
   CHECK_EQ(h.progress()[0].pose, std::string("frente"));
-  CHECK(h.progress()[0].status == EnrollmentStatus::Pending);
+  CHECK(h.progress()[0].status == EnrollmentStatus::WaitingPose);
   CHECK(h.http.requested_urls.empty());  // aun no se captura: el alumno adopta la pose
 
   for (int i = 0; i < 5; ++i) h.enrollment_step();
@@ -450,9 +469,10 @@ TEST(enrollment_runs_five_poses_and_publishes_normalized_mean_embedding) {
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK_EQ(h.http.requested_urls.size(), std::size_t{5});
 
-  // Por pose: aceptada y, salvo en la ultima, el aviso de la siguiente.
+  // Por pose: capturando, aceptada y, salvo en la ultima, el aviso de la siguiente.
+  // Al final, el estado "completado".
   const auto progress = h.progress();
-  CHECK_EQ(progress.size(), std::size_t{1 + 5 + 4});
+  CHECK_EQ(progress.size(), std::size_t{5 + 5 + 5 + 1});
   int accepted = 0;
   for (const EnrollmentProgress& p : progress) {
     CHECK_EQ(p.account, std::string("999000111"));
@@ -463,8 +483,9 @@ TEST(enrollment_runs_five_poses_and_publishes_normalized_mean_embedding) {
     }
   }
   CHECK_EQ(accepted, 5);
-  CHECK_EQ(progress.back().pose, std::string("frente"));
+  CHECK_EQ(progress.back().pose, std::string("frente_2"));
   CHECK_EQ(progress.back().step, 5);
+  CHECK(progress.back().status == EnrollmentStatus::Completed);
 
   const auto embeddings = h.embeddings();
   CHECK_EQ(embeddings.size(), std::size_t{1});
@@ -487,9 +508,9 @@ TEST(enrollment_pose_names_follow_the_plan) {
 
   std::vector<std::string> prompted;
   for (const EnrollmentProgress& p : h.progress()) {
-    if (p.status == EnrollmentStatus::Pending) prompted.push_back(p.pose);
+    if (p.status == EnrollmentStatus::WaitingPose) prompted.push_back(p.pose);
   }
-  CHECK(prompted == (std::vector<std::string>{"frente", "izquierda", "derecha", "arriba", "frente"}));
+  CHECK(prompted == (std::vector<std::string>{"frente", "izquierda", "derecha", "arriba", "frente_2"}));
 }
 
 TEST(pir_is_ignored_while_enrolling) {
@@ -618,7 +639,7 @@ TEST(cancel_for_another_account_is_ignored_but_empty_or_matching_cancels) {
   h.command(VisionAction::Cancel, "222222222");
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
-  CHECK(h.progress().back().status == EnrollmentStatus::Pending);
+  CHECK(h.progress().back().status == EnrollmentStatus::WaitingPose);
 
   h.command(VisionAction::Cancel, "");  // vacia = la actual
   h.service->poll();
@@ -645,13 +666,13 @@ TEST(embedding_dimension_change_between_poses_fails_the_enrollment) {
 
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK(h.embeddings().empty());
-  CHECK(h.progress().back().status == EnrollmentStatus::Failed);
-  CHECK_EQ(h.progress().back().reason.value(), std::string(reasons::kInternalError));
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kInconsistent));
   CHECK_EQ(h.http.requested_urls.size(), std::size_t{2});  // no se reintenta ni se sigue
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
 }
 
-TEST(zero_embedding_for_a_pose_is_rejected_and_retried) {
+TEST(zero_embedding_for_a_pose_fails_the_enrollment_with_the_npu_motive) {
   Harness h;
   h.embedder.outputs = {{0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f}};
   h.queue_frames(5);
@@ -659,9 +680,11 @@ TEST(zero_embedding_for_a_pose_is_rejected_and_retried) {
   h.service->poll();
   h.enrollment_step();
 
-  CHECK(h.progress().back().status == EnrollmentStatus::Rejected);
-  CHECK_EQ(h.progress().back().reason.value(), std::string(reasons::kInternalError));
-  CHECK(h.service->state() == ServiceState::Enrolling);
+  // Un embedding de norma cero es un fallo de la NPU, no una pose rechazable.
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kNpu));
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.embeddings().empty());
 }
 
 TEST(rejected_pose_is_retried_then_accepted) {
@@ -675,7 +698,7 @@ TEST(rejected_pose_is_retried_then_accepted) {
   auto progress = h.progress();
   CHECK(progress.back().status == EnrollmentStatus::Rejected);
   CHECK_EQ(progress.back().step, 1);
-  CHECK_EQ(progress.back().reason.value(), std::string(reasons::kCaptureFailed));
+  CHECK_EQ(progress.back().reason.value(), std::string(enrollment_reasons::kCaptureFailure));
 
   h.enrollment_step();  // reintento de la misma pose
   progress = h.progress();
@@ -698,7 +721,8 @@ TEST(enrollment_aborts_after_too_many_rejections_of_one_pose) {
   CHECK_EQ(rejected, 5);
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK(h.embeddings().empty());
-  CHECK(h.progress().back().status == EnrollmentStatus::Failed);
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kNpu));
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
 }
 
@@ -720,7 +744,9 @@ TEST(enrollment_waits_for_the_pose_delay_before_capturing) {
 TEST(service_rejects_invalid_config) {
   Harness h;
   const auto rejects = [&](const ServiceConfig& config) {
-    CHECK_THROWS(VisionService(ServiceDeps{h.bus, h.http, h.detector, h.embedder, h.gallery, h.clock}, config),
+    CHECK_THROWS(VisionService(ServiceDeps{h.bus, h.http, h.detector, h.embedder, h.gallery, h.clock,
+                                          h.wall_clock},
+                               config),
                  std::invalid_argument);
   };
   ServiceConfig bad = h.config;
@@ -747,7 +773,7 @@ TEST(service_rejects_invalid_config) {
   rejects(bad);
 }
 
-TEST(topics_match_plan_section_7_1) {
+TEST(topics_match_the_contract) {
   CHECK(topics::kCameraPir == "aula/camara/pir");
   CHECK(topics::kCameraEnergy == "aula/camara/energia");
   CHECK(topics::kCameraStatus == "aula/camara/estado");
@@ -757,6 +783,9 @@ TEST(topics_match_plan_section_7_1) {
   CHECK(topics::kVisionCmd == "aula/vision/cmd");
   CHECK(topics::kVisionEnrollment == "aula/vision/enrolamiento");
   CHECK(topics::kVisionEmbedding == "aula/vision/embedding");
+  CHECK(topics::kVisionStatus == "aula/vision/estado");
+  CHECK(topics::kVisionGalleryAdd == "aula/vision/galeria/alta");
+  CHECK(topics::kVisionGalleryRemove == "aula/vision/galeria/baja");
   CHECK(topics::kSessionCmd == "aula/sesion/cmd");
   CHECK(topics::kScreenRestart == "aula/pantalla/reinicio");
   CHECK(topics::kSessionStatus == "aula/sesion/estado");
@@ -772,7 +801,7 @@ TEST(destroyed_service_is_unsubscribed_and_receives_nothing) {
 
   CHECK_EQ(h.bus.subscriber_count(), std::size_t{0});
   CHECK_EQ(h.bus.inject(topics::kCameraPir, PirEvent{}), std::size_t{0});
-  CHECK_EQ(h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Enroll, "100000001"}), std::size_t{0});
+  CHECK_EQ(h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Enroll, "100000001", std::nullopt}), std::size_t{0});
   CHECK(h.bus.published.empty());
 }
 
@@ -783,7 +812,9 @@ TEST(constructor_failure_after_first_subscribe_leaves_no_subscription) {
     if (topic == topics::kVisionCmd) throw std::runtime_error("broker caido");
   };
 
-  CHECK_THROWS(VisionService(ServiceDeps{h.bus, h.http, h.detector, h.embedder, h.gallery, h.clock}, h.config),
+  CHECK_THROWS(VisionService(ServiceDeps{h.bus, h.http, h.detector, h.embedder, h.gallery, h.clock,
+                                        h.wall_clock},
+                             h.config),
                std::runtime_error);
   CHECK_EQ(h.bus.subscriber_count(), std::size_t{0});
   CHECK_EQ(h.bus.inject(topics::kCameraPir, PirEvent{}), std::size_t{0});
@@ -988,7 +1019,7 @@ TEST(poll_isolates_a_throwing_enrollment_step) {
   bool armed = false, fired = false;
   h.bus.on_publish = [&](std::string_view, const Payload& p) {
     const auto* progress = std::get_if<EnrollmentProgress>(&p);
-    if (progress != nullptr && progress->status == EnrollmentStatus::Pending && progress->step == 2) {
+    if (progress != nullptr && progress->status == EnrollmentStatus::WaitingPose && progress->step == 2) {
       armed = true;
     }
   };
@@ -1035,8 +1066,8 @@ TEST(embedding_publish_failure_fails_the_enrollment_once) {
 
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK(h.embeddings().empty());
-  CHECK(h.progress().back().status == EnrollmentStatus::Failed);
-  CHECK_EQ(h.progress().back().reason.value(), std::string(reasons::kInternalError));
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kNpu));
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
 
   h.queue_frames(5);  // mas polls no reintentan nada
@@ -1079,7 +1110,7 @@ TEST(attendance_total_latency_counts_from_the_pir_including_queue_wait) {
   h.clock.advance(50ms);  // el evento espera en cola hasta el siguiente poll
   h.service->poll();
 
-  CHECK_EQ(h.results().at(0).lat_ms.total, 50 + 300);
+  CHECK_EQ(h.results().at(0).lat_ms.total.value(), 50 + 300);
 }
 
 TEST(captures_use_the_configured_http_timeout) {
@@ -1351,7 +1382,7 @@ TEST(a_failure_while_enqueuing_never_escapes_and_leaves_no_stuck_flag) {
   CHECK_EQ(h.results().size(), std::size_t{1});
 
   fail = true;  // lo mismo con probar
-  CHECK_EQ(h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Test, ""}), std::size_t{1});
+  CHECK_EQ(h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Test, "", std::nullopt}), std::size_t{1});
   h.command(VisionAction::Test);
   h.service->poll();
   CHECK_EQ(h.results().size(), std::size_t{2});
@@ -1389,7 +1420,7 @@ TEST(enroll_with_an_invalid_account_is_dropped_before_taking_a_slot) {
 TEST(start_enrollment_refuses_an_invalid_account_without_echoing_it) {
   Harness h;
   for (const char* bad : {"", "1", "12345678", "1234567890", "12345678a", "1234 5678", "<b>hi</b>1", "-12345678"}) {
-    ServiceTestAccess::handle(*h.service, VisionCommand{VisionAction::Enroll, bad}, h.clock.now());
+    ServiceTestAccess::handle(*h.service, VisionCommand{VisionAction::Enroll,  bad, std::nullopt}, h.clock.now());
     CHECK(h.service->state() == ServiceState::Idle);
     CHECK(h.progress().back().status == EnrollmentStatus::Error);
     CHECK_EQ(h.progress().back().reason.value(), std::string(reasons::kInvalidAccount));
@@ -1409,7 +1440,7 @@ TEST(second_valid_enroll_in_one_poll_gets_busy_and_the_first_proceeds) {
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
   CHECK_EQ(h.progress().size(), std::size_t{2});
-  CHECK(h.progress()[0].status == EnrollmentStatus::Pending);
+  CHECK(h.progress()[0].status == EnrollmentStatus::WaitingPose);
   CHECK_EQ(h.progress()[0].account, std::string("100000001"));
   CHECK(h.progress()[1].status == EnrollmentStatus::Error);
   CHECK_EQ(h.progress()[1].reason.value(), std::string(reasons::kBusy));
@@ -1418,7 +1449,7 @@ TEST(second_valid_enroll_in_one_poll_gets_busy_and_the_first_proceeds) {
 
   h.clock.advance(h.config.pose_delay);  // el primero sigue su curso
   h.service->poll();
-  CHECK(h.progress().back().status == EnrollmentStatus::Accepted || h.progress().back().status == EnrollmentStatus::Pending);
+  CHECK(h.progress().back().status == EnrollmentStatus::Accepted || h.progress().back().status == EnrollmentStatus::WaitingPose);
   CHECK_EQ(h.progress().back().account, std::string("100000001"));
   CHECK(h.service->state() == ServiceState::Enrolling);
 }
@@ -1500,7 +1531,7 @@ TEST(refusals_use_error_status_with_step_zero_and_never_failed) {
   h.command(VisionAction::Enroll, "200000002");
   h.command(VisionAction::Test);
   h.service->poll();
-  ServiceTestAccess::handle(*h.service, VisionCommand{VisionAction::Enroll, "bad"}, h.clock.now());
+  ServiceTestAccess::handle(*h.service, VisionCommand{VisionAction::Enroll, "bad", std::nullopt}, h.clock.now());
 
   const auto progress = h.progress();
   CHECK_EQ(progress.size(), std::size_t{4});
@@ -1604,7 +1635,7 @@ TEST(attendance_still_answers_with_internal_error_when_the_clock_fails_building_
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK_EQ(h.results().size(), std::size_t{1});
   CHECK_EQ(h.results()[0].reason.value(), std::string(reasons::kInternalError));
-  CHECK_EQ(h.results()[0].lat_ms.total, 0);
+  CHECK(!h.results()[0].lat_ms.total.has_value());  // sin reloj no hay total medible
   CHECK(h.results()[0].mode == AttendanceMode::Attendance);
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
 }
@@ -1613,10 +1644,10 @@ TEST(enqueue_failures_are_logged_once_per_poll) {
   Harness h;
   CapturedStderr log;
   h.clock.on_now = [] { throw std::runtime_error("reloj roto"); };
-  for (int i = 0; i < 5; ++i) CHECK_EQ(h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Cancel, ""}), std::size_t{1});
+  for (int i = 0; i < 5; ++i) CHECK_EQ(h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Cancel, "", std::nullopt}), std::size_t{1});
   CHECK_EQ(log.count("no se pudo encolar un mensaje"), std::size_t{1});
   h.service->poll();
-  CHECK_EQ(h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Cancel, ""}), std::size_t{1});
+  CHECK_EQ(h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Cancel, "", std::nullopt}), std::size_t{1});
   CHECK_EQ(log.count("no se pudo encolar un mensaje"), std::size_t{2});
 }
 
@@ -1628,4 +1659,267 @@ TEST(coalesced_probar_is_logged_once_per_poll) {
   h.service->poll();
   for (int i = 0; i < 4; ++i) h.command(VisionAction::Test);
   CHECK_EQ(log.count("orden repetida descartada"), std::size_t{2});
+}
+
+// --- Decision, zona gris y umbral (contrato v0.3) -------------------------------------------
+
+// La galeria de pruebas tiene dos alumnos: (1,0,0,0) y (0,1,0,0).
+TEST(decision_reconocido_por_encima_del_umbral) {
+  Harness h;
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}};  // coseno 1.0
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+
+  const auto result = h.results().at(0);
+  CHECK(result.decision == Decision::Recognized);
+  CHECK_EQ(result.account.value(), std::string("320068234"));
+  CHECK_NEAR(result.confidence.value(), 1.0, 1e-6);
+  CHECK(!result.reason.has_value());
+}
+
+TEST(decision_dudoso_en_la_zona_gris) {
+  Harness h;
+  h.embedder.outputs = {{0.5f, 0.5f, 0.5f, 0.5f}};  // coseno 0.5 con los dos
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+
+  const auto result = h.results().at(0);
+  CHECK(result.decision == Decision::Doubtful);
+  // Con "dudoso" tambien se manda el mejor candidato, para la auditoria.
+  CHECK(result.account.has_value());
+  CHECK_NEAR(result.confidence.value(), 0.5, 1e-6);
+  CHECK(!result.reason.has_value());
+}
+
+TEST(decision_desconocido_por_debajo_del_umbral) {
+  Harness h;
+  h.embedder.outputs = {{0.0f, 0.0f, 1.0f, 0.0f}};  // coseno 0.0 con los dos
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+
+  const auto result = h.results().at(0);
+  CHECK(result.decision == Decision::Unknown);
+  CHECK_EQ(result.reason.value(), std::string(reasons::kUnknown));
+  CHECK(result.account.has_value());  // el mejor candidato, para la auditoria
+  CHECK_NEAR(result.confidence.value(), 0.0, 1e-6);
+}
+
+TEST(los_umbrales_mueven_la_zona_gris) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.min_recognized_score = 0.60f;
+  config.min_dudoso_score = 0.45f;
+  h.restart(config);
+  h.embedder.outputs = {{0.5f, 0.5f, 0.5f, 0.5f}};  // coseno 0.5
+  h.queue_frames(9);  // tres pases de lista
+
+  h.pir();
+  h.service->poll();
+  CHECK(h.results().at(0).decision == Decision::Doubtful);
+
+  config.min_dudoso_score = 0.55f;  // ahora 0.5 queda por debajo
+  h.restart(config);
+  h.pir();
+  h.service->poll();
+  CHECK(h.results().at(1).decision == Decision::Unknown);
+
+  config.min_recognized_score = 0.40f;  // ahora 0.5 queda por encima
+  config.min_dudoso_score = 0.30f;
+  h.restart(config);
+  h.pir();
+  h.service->poll();
+  CHECK(h.results().at(2).decision == Decision::Recognized);
+}
+
+TEST(umbrales_invalidos_son_rechazados_al_arrancar) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.min_dudoso_score = 0.9f;
+  config.min_recognized_score = 0.5f;  // el dudoso por encima del reconocido
+  CHECK_THROWS(VisionService(ServiceDeps{h.bus, h.http, h.detector, h.embedder, h.gallery, h.clock,
+                                        h.wall_clock},
+                             config),
+               std::invalid_argument);
+}
+
+TEST(el_margen_solo_aparece_con_dos_candidatos_o_mas) {
+  Harness h;
+  h.gallery.remove("320068235");  // queda un solo alumno: no hay con quien comparar
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}};
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+
+  const auto result = h.results().at(0);
+  CHECK(result.decision == Decision::Recognized);
+  CHECK(!result.margin.has_value());
+
+  Harness h2;
+  h2.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}};
+  h2.queue_frames(3);
+  h2.pir();
+  h2.service->poll();
+
+  const auto with_two = h2.results().at(0);
+  CHECK(with_two.margin.has_value());
+  CHECK_NEAR(with_two.margin.value(), 1.0, 1e-6);  // 1.0 contra 0.0
+}
+
+TEST(el_margen_es_la_diferencia_con_el_segundo_candidato) {
+  Harness h;
+  h.gallery.upsert("320068234", std::vector<float>{0.0f, 1.0f, 0.0f, 0.0f});
+  h.gallery.upsert("320068235", std::vector<float>{0.6f, 0.8f, 0.0f, 0.0f});
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}};
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+
+  const auto result = h.results().at(0);
+  CHECK_EQ(result.account.value(), std::string("320068235"));
+  CHECK_NEAR(result.confidence.value(), 0.6, 1e-6);
+  CHECK(result.margin.has_value());
+  CHECK_NEAR(result.margin.value(), 0.6, 1e-6);  // 0.6 contra 0.0
+}
+
+// --- ts y estado del servicio ------------------------------------------------------------
+
+TEST(todos_los_mensajes_del_servicio_llevan_ts_en_iso_8601_con_zona) {
+  Harness h;
+  h.queue_frames(5);
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  for (int i = 0; i < 5; ++i) h.enrollment_step();
+  h.pir();
+  h.service->poll();
+
+  int checked = 0;
+  for (const fakes::PublishedMessage& message : h.bus.published) {
+    std::string timestamp;
+    if (const auto* result = std::get_if<AttendanceResult>(&message.payload)) {
+      timestamp = result->timestamp;
+    } else if (const auto* progress = std::get_if<EnrollmentProgress>(&message.payload)) {
+      timestamp = progress->timestamp;
+    } else if (const auto* embedding = std::get_if<EmbeddingMessage>(&message.payload)) {
+      timestamp = embedding->timestamp;
+    } else if (const auto* status = std::get_if<VisionStatus>(&message.payload)) {
+      timestamp = status->timestamp;
+    } else {
+      continue;  // la luz y el comando no llevan ts
+    }
+    CHECK(is_iso8601_with_zone(timestamp));
+    CHECK_EQ(timestamp, std::string("2026-11-04T09:12:33.120-06:00"));
+    ++checked;
+  }
+  CHECK(checked > 0);
+}
+
+TEST(el_estado_del_servicio_cambia_de_modo) {
+  Harness h;
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+
+  const auto statuses = h.statuses();
+  CHECK_EQ(statuses.size(), std::size_t{2});
+  CHECK(statuses[0].mode == VisionMode::Attendance);
+  CHECK(statuses[1].mode == VisionMode::Idle);
+  for (const VisionStatus& status : statuses) {
+    CHECK(status.online);
+    CHECK_EQ(status.gallery_size, std::size_t{2});
+    CHECK_EQ(status.model, std::string("w600k_mbf-uint8-v1"));
+  }
+}
+
+TEST(el_estado_del_servicio_durante_el_registro) {
+  Harness h;
+  h.queue_frames(5);
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+
+  const auto statuses = h.statuses();
+  CHECK_EQ(statuses.size(), std::size_t{1});
+  CHECK(statuses[0].mode == VisionMode::Enrolling);
+
+  for (int i = 0; i < 5; ++i) h.enrollment_step();
+  CHECK(h.statuses().back().mode == VisionMode::Idle);
+}
+
+// --- Motivos del enrolamiento y estados ----------------------------------------------------
+
+TEST(el_registro_mapea_los_motivos_al_vocabulario_del_contrato) {
+  Harness h;
+  h.http.responses.push_back({500, {}});  // la primera captura de la pose 1 falla
+  h.queue_frames(5);
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  h.enrollment_step();
+
+  // Una captura fallida se rechaza con "fallo_captura" (no "captura_fallida").
+  const auto progress = h.progress();
+  CHECK(progress.back().status == EnrollmentStatus::Rejected);
+  CHECK_EQ(progress.back().reason.value(), std::string("fallo_captura"));
+  CHECK_EQ(progress.back().reason.value(), std::string(enrollment_reasons::kCaptureFailure));
+}
+
+TEST(un_rostro_que_no_se_ve_se_rechaza_con_sin_rostro) {
+  Harness h;
+  h.detector.detections.clear();
+  h.queue_frames(5);
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  h.enrollment_step();
+
+  CHECK(h.progress().back().status == EnrollmentStatus::Rejected);
+  CHECK_EQ(h.progress().back().reason.value(), std::string("sin_rostro"));
+}
+
+TEST(las_ordenes_rechazadas_usan_el_estado_error) {
+  Harness h;
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  h.command(VisionAction::Enroll, "200000002");  // ocupado
+  h.service->poll();
+
+  const auto progress = h.progress();
+  CHECK(progress[1].status == EnrollmentStatus::Error);
+  CHECK_EQ(progress[1].reason.value(), std::string("ocupado"));
+  CHECK_EQ(progress[1].step, 0);
+  CHECK_EQ(progress[1].pose, std::string());
+}
+
+TEST(el_estado_completado_se_publica_antes_del_embedding) {
+  Harness h;
+  h.queue_frames(5);
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  for (int i = 0; i < 5; ++i) h.enrollment_step();
+
+  int completed_at = -1;
+  int embedding_at = -1;
+  for (std::size_t i = 0; i < h.bus.published.size(); ++i) {
+    const fakes::PublishedMessage& message = h.bus.published[i];
+    if (message.topic == topics::kVisionEnrollment) {
+      const auto* progress = std::get_if<EnrollmentProgress>(&message.payload);
+      if (progress != nullptr && progress->status == EnrollmentStatus::Completed) {
+        completed_at = static_cast<int>(i);
+      }
+    }
+    if (message.topic == topics::kVisionEmbedding) embedding_at = static_cast<int>(i);
+  }
+  CHECK(completed_at >= 0);
+  CHECK(embedding_at >= 0);
+  CHECK(completed_at < embedding_at);
+}
+
+TEST(el_nombre_del_comando_enrolar_llega_al_registro) {
+  Harness h;
+  h.queue_frames(5);
+  h.bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Enroll, "100000001", "Ana López"});
+  h.service->poll();
+
+  CHECK_EQ(h.progress()[0].name.value(), std::string("Ana López"));
+  CHECK_EQ(h.progress()[0].account, std::string("100000001"));
 }

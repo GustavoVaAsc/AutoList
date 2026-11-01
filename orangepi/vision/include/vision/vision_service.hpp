@@ -15,6 +15,7 @@
 #include "vision/gallery.hpp"
 #include "vision/http_client.hpp"
 #include "vision/message_bus.hpp"
+#include "vision/wall_clock.hpp"
 
 namespace vision {
 
@@ -24,7 +25,17 @@ struct ServiceConfig {
   Millis settle_time{300};  // espera tras encender la luz, para que se estabilice la exposicion
   // Umbrales sin calibrar: se fijan con las pruebas E3 y la calibracion con LFW (plan sec. 9).
   double min_sharpness = 0.0;     // varianza del Laplaciano; bajo esto, imagen_insuficiente
-  float min_match_score = 0.5f;   // coseno; bajo esto, desconocido
+  // Umbrales PROVISIONALES de la decision (contrato v0.3, seccion 4): la calibracion con
+  // LFW es el hito del 18 de noviembre (plan, secciones 9 y 12.1), asi que estos valores
+  // son de trabajo y hay que recalibrarlos (y volver a publicarlos) con el modelo real.
+  // Con coseno >= min_recognized_score la decision es "reconocido"; entre
+  // min_dudoso_score y min_recognized_score es "dudoso" (zona gris del plan 5.1, LED
+  // ambar); por debajo de min_dudoso_score es "desconocido".
+  float min_recognized_score = 0.60f;
+  float min_dudoso_score = 0.45f;
+  // Nombre y version del modelo de reconocimiento; lo publica el servicio en el
+  // embedding y en el estado. Provisional hasta que exista el .nb (plan 6.2).
+  std::string model_name = "w600k_mbf-uint8-v1";
   Millis pose_delay{3000};        // tiempo para que el alumno adopte cada pose
   int max_attempts_per_pose = 5;  // intentos antes de abortar el registro
   // La foto viene de la red y no es de fiar: se acota antes de decodificarla. Las
@@ -48,6 +59,9 @@ struct ServiceDeps {
   FaceEmbedder& embedder;
   Gallery& gallery;
   Clock& clock;
+  // Reloj de pared: estampa "ts" en los mensajes que publica el servicio. El de
+  // milisegundos (Clock) no lleva fecha.
+  WallClock& wall_clock;
 };
 
 enum class ServiceState { Idle, AttendanceInProgress, Enrolling };
@@ -96,6 +110,7 @@ class VisionService {
 
   struct Enrollment {
     std::string account;
+    std::optional<std::string> name;  // "nombre" del comando enrolar (opcional)
     std::size_t step = 0;  // indice 0-based de la pose en curso
     int attempts = 0;
     std::vector<std::vector<float>> embeddings;
@@ -117,10 +132,15 @@ class VisionService {
   FaceOutcome analyze(const cv::Mat& frame);
   // Las publicaciones del servicio no lanzan: un fallo del bus se registra y se sigue.
   void publish_light(bool on);
+  // El estado del servicio (aula/vision/estado): modo, galeria y modelo.
+  void publish_status();
+  // La hora del contrato (ISO 8601 con zona) para estampar "ts".
+  std::string stamp_now() const;
   bool try_publish(std::string_view topic, const Payload& payload, const char* what);
   cv::Mat decode_capture(const HttpResponse& response) const;
 
-  void start_enrollment(const std::string& account);
+  void start_enrollment(const std::string& account,
+                        const std::optional<std::string>& name);
   void advance_enrollment();
   void finish_enrollment();
   void cancel_enrollment(const std::string& account);
