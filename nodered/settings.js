@@ -97,7 +97,7 @@ module.exports = {
     },
 
     // La API HTTP (/api/...) queda abierta por ahora. httpNodeAuth entra el
-    // 25 nov (plan, sección 12): se añade aquí con { user, pass: <hash bcrypt> }.
+    // 11 nov (plan, sección 12): se añade aquí con { user, pass: <hash bcrypt> }.
 
     // flows.json legible en los diffs de git.
     flowFilePretty: true,
