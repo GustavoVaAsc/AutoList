@@ -1,0 +1,5 @@
+# Solo lo que el Dockerfile copia a la imagen (el Dockerfile siempre se envía).
+*
+!settings.js
+!package.json
+!package-lock.json

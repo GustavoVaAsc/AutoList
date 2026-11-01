@@ -79,7 +79,7 @@ flowchart LR
   NR -->|MQTT reinicio| LCD
   LCD <-->|MQTT| MQ
   MQ -->|MQTT cmd| ESP
-  WEB -->|HTTP API| NR
+  WEB -->|HTTPS API| NR
   WEB <-->|MQTT WebSocket| MQ
 ```
 
@@ -93,8 +93,8 @@ flowchart LR
 - **HTTP:** imágenes de la cámara.
 - **MQTT:** telemetría, resultados y comandos.
 - **MQTT sobre WebSocket (puerto 9001):** progreso del registro en el frontend.
-- **HTTP (Node-RED):** frontend estático y API de alumnos y registro.
-- **SQL por localhost:** de Node-RED a Postgres, en la misma Orange Pi.
+- **HTTPS (Node-RED, certificado autofirmado):** frontend estático y API de alumnos y registro.
+- **SQL por la red del compose:** de Node-RED a Postgres, por el nombre de servicio `postgres`. El puerto 5432 solo se publica en 127.0.0.1.
 
 ## 5. Flujos
 
@@ -225,13 +225,13 @@ sequenceDiagram
 
 ### 6.3 Docker en la Orange Pi (`orangepi/docker-compose.yml`)
 - Mosquitto, con listener en 1883 y WebSocket en 9001 (para el frontend), y usuario y contraseña. Con ACL, el usuario del frontend no puede leer `aula/vision/embedding`.
-- Node-RED.
-- Postgres con la imagen `pgvector/pgvector`: sesiones, alumnos, asistencias y la tabla `metricas_energia`.
-- Portainer CE (`portainer/portainer-ce`), el bloque que aparece en la Fig. 1: se administra desde el navegador.
+- Node-RED, servido por HTTPS en el puerto 1880 con certificado autofirmado. El editor está protegido por usuario y contraseña (`adminAuth`).
+- Postgres con la imagen `pgvector/pgvector`: sesiones, alumnos, asistencias y la tabla `metricas_energia`. Se publica solo en `127.0.0.1:5432`; Node-RED lo alcanza por la red del compose con el nombre `postgres`. Node-RED usa un rol de base de datos con privilegios mínimos (solo SELECT e INSERT sobre `metricas_energia`), no el superusuario.
+- Portainer CE (`portainer/portainer-ce`), el bloque que aparece en la Fig. 1: se administra desde el navegador. Solo escucha en `127.0.0.1:9443`; desde otra máquina se entra con un túnel SSH (`ssh -L 9443:localhost:9443 ...`) y `https://localhost:9443`.
 - **La pantalla no corre en Docker.** Es el único componente que necesita SPI, GPIO e I²C, así que se ejecuta en el host como unidad systemd (`orangepi/systemd/orangepi-pantalla.service`), con el usuario del servicio en los grupos `spi`, `gpio` e `i2c`. Así los permisos de `/dev/spidev*` y `/dev/i2c-*` los resuelve el host con sus reglas de udev, sin mapear dispositivos al contenedor, y la pantalla sobrevive a un reinicio de Node-RED.
 - **El reinicio de la pantalla va por MQTT.** Node-RED publica un mensaje de reinicio y el script de Python hace `sys.exit(0)`; systemd, con `Restart=always`, lo vuelve a levantar. El arranque y la supervisión reales los hace systemd, no Node-RED.
 
-### 6.4 Node-RED (`nodered/flows.json`)
+### 6.4 Node-RED (`nodered/flows/flows.json`)
 1. **Ingesta:** MQTT → tabla `metricas_energia` de Postgres (energía, latencias y temperatura).
 2. **Pase de lista:** resultado → reglas → Postgres, actuador y pantalla.
 3. **Sesiones:** iniciar, terminar y generar el reporte CSV.
@@ -362,9 +362,13 @@ CREATE TABLE metricas_energia (
   lat_det_ms    INT,                      -- latencia de detección
   lat_emb_ms    INT,                      -- latencia de embedding
   lat_total_ms  INT,                      -- latencia total de inferencia
-  temp_soC      REAL,                     -- temperatura del SoC
+  temp_soc      REAL,                     -- temperatura del SoC
   hora          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Para GET /api/metricas/energia: filtra por origen y ordena por hora e id
+CREATE INDEX IF NOT EXISTS metricas_energia_origen_hora_idx
+  ON metricas_energia (origen, hora DESC, id DESC);
 ```
 
 Si el profesor exige MariaDB, solo cambian `vector` → `BLOB` y `TIMESTAMPTZ` → `DATETIME`; el resto es SQL estándar.
@@ -450,13 +454,15 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
   /pantalla              programa Python de la ILI9341
   /systemd               unidad systemd de la pantalla (orangepi-pantalla.service)
   /sql/schema.sql        esquema de Postgres (alumnos, sesiones, asistencias, metricas_energia)
+  /sql/roles.sh         rol de Node-RED en Postgres (privilegios mínimos)
   docker-compose.yml     Mosquitto, Node-RED, Postgres y Portainer
+  .env.example           credenciales de MQTT, Postgres y Node-RED (copiar a .env; nunca subir el .env)
 /nodered
-  flows.json
+  /flows/flows.json      flujos de Node-RED (el editor los escribe aquí al desplegar)
 /web                     frontend de registro (Vite + React + TypeScript)
 /herramientas            enrolamiento por lote (experimentos), calibración LFW, reporte CSV
+  simular_energia.sh     publica lecturas simuladas de energía en aula/camara/energia
 /docs                    diagramas, mediciones, consentimiento, reporte
-.env.example             credenciales de MQTT y Postgres (nunca subir el .env)
 ```
 
 **Convenciones:**
