@@ -121,19 +121,27 @@ No rompas estas reglas sin decisión humana.
 - No uses `ALTER DEFAULT PRIVILEGES`. Es intencional: daría permisos automáticos sobre tablas no revisadas (comentario de `sql/roles.sh`).
 - El repo no documenta un procedimiento para tablas nuevas en un volumen existente. No lo inventes: consulta al equipo antes de aplicar a mano el SQL de tablas nuevas.
 - Mantén sincronizado el plan, sección 7.2, con `sql/schema.sql`.
-- Próximas tablas: `alumnos`, `sesiones`, `asistencias` e `intentos` (plan, sección 7.2). Los embeddings son `vector(512)`. La dimensión 512 está decidida y confirmada por Gustavo.
-- Obsoleto: el comentario "128 si el modelo lo usa" de la columna `embedding` de `alumnos` en el plan, sección 7.2. También está obsoleto el aviso "512 o 128" del encabezado de `sql/schema.sql` y de la sección Pendiente de `orangepi/README.md`. Actualízalos al agregar las tablas.
+- Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` ya están en `sql/schema.sql` (plan, sección 7.2). Los embeddings son `vector(512)`, dimensión confirmada por Gustavo. `intentos` no guarda embeddings: quien no se reconoce no dio consentimiento.
+- `alumnos` tiene los CHECK `embedding IS NULL OR consentimiento` y `consentimiento = (consentimiento_fecha IS NOT NULL)`. Registrar son dos UPDATE: primero el consentimiento y su fecha, con el embedding aún NULL (lo escribe el endpoint HTTP del profesor), y después el embedding con `AND consentimiento AND embedding IS NULL` (lo escribe el manejador de MQTT, que nunca escribe el consentimiento). Retirar el rostro es el inverso (embedding NULL, consentimiento false, fecha NULL). El rol de Node-RED solo puede actualizar `nombre`, `grupo`, `embedding`, `consentimiento` y `consentimiento_fecha`, y no tiene DELETE (`sql/roles.sh`).
+- Corregir una asistencia ya registrada lo hace solo el superusuario: el rol de Node-RED tiene SELECT e INSERT sobre `asistencias`. Borrar la identidad completa de una persona (`nombre`, `no_cuenta`) también es un procedimiento de superusuario, porque `asistencias` referencia la fila.
+- No se sirve `/api/galeria` sin `httpNodeAuth` y `GALERIA_TOKEN` (11 nov). No se registra a ninguna persona real sin `httpNodeAuth` y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo).
+- En `psql`, los embeddings se pasan con `\set` o con `PREPARE`/`EXECUTE`, nunca como literales pegados en la sentencia.
 
 ## Diferido y sin decidir
 
 No implementes ni quites estos puntos en silencio. Si tu cambio los toca, dilo en el resumen.
 
-### Diferido al 25 de noviembre (plan, sección 12.1)
+### Diferido al 4 de noviembre (plan, sección 12.1)
 
 | Punto | Estado actual |
 |---|---|
-| `httpNodeAuth` en la API | Pendiente. El comentario sobre `httpNodeAuth` en `nodered/settings.js` indica dónde se añade. |
-| ACL de Mosquitto y usuarios por rol | `acl_file` comentado en `mosquitto/mosquitto.conf`. Hoy hay un único `MQTT_USER` (`orangepi/README.md`, "Pendiente para el 25 de noviembre"). |
+| ACL de Mosquitto y usuarios por rol | `acl_file` comentado en `mosquitto/mosquitto.conf`. Hoy hay un único `MQTT_USER` (`orangepi/README.md`, sección Pendiente, "Para el 4 de noviembre"). |
+
+### Diferido al 11 de noviembre (plan, sección 12.1)
+
+| Punto | Estado actual |
+|---|---|
+| `httpNodeAuth` y `GALERIA_TOKEN` en la API | Pendiente. El comentario sobre `httpNodeAuth` en `nodered/settings.js` indica dónde se añade. `GALERIA_TOKEN` está en `.env.example` pero ningún contenedor lo recibe todavía. Hasta entonces rige la regla de los embeddings reales de [Cambios de esquema](#cambios-de-esquema). |
 
 ### Sin decidir: no implementar sin decisión humana
 

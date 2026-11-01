@@ -19,7 +19,7 @@ Este archivo rige a cualquier agente de código que trabaje en el repo (Claude C
 
 Pase de lista con reconocimiento facial para la materia Fundamentos de Sistemas Embebidos (2027-1). La inferencia corre en la NPU de una Orange Pi Zero 3W. Una XIAO ESP32S3 Sense en campo lee la cámara, el PIR y el INA219, y maneja el servo, los LEDs, el buzzer y la tira LED de 12 V. Mosquitto, Node-RED, Postgres y Portainer corren en la placa (`docs/HIGH-LEVEL-PLAN.md`, sección 4).
 
-`docs/HIGH-LEVEL-PLAN.md` es la fuente de verdad. Si una decisión cambia, actualiza el plan en el mismo cambio. No contradigas el plan en silencio.
+`docs/HIGH-LEVEL-PLAN.md` es la fuente de verdad, salvo los tópicos, payloads y ACL de MQTT, que manda `docs/contrato-mqtt.md`. Si una decisión cambia, actualiza el plan en el mismo cambio. No contradigas el plan en silencio.
 
 ## Equipo y carriles
 
@@ -94,8 +94,8 @@ La Orange Pi y la XIAO ESP32S3 Sense son equipos físicos únicos que se turnan 
 
 ## Contrato MQTT
 
-- Los tópicos y payloads de plan, sección 7.1, son el contrato entre carriles. Firmware, visión y Node-RED dependen de ellos (plan, sección 13).
-- Si cambias un tópico o un payload, actualiza plan, sección 7.1, en el mismo cambio y avisa al carril afectado.
+- `docs/contrato-mqtt.md` es la fuente de verdad de los tópicos, payloads y ACL entre carriles; cuando difiera del plan, manda el contrato. El plan, sección 7.1, es su resumen. Firmware, visión y Node-RED dependen de él (plan, sección 13).
+- Si cambias un tópico, un payload o la ACL, actualiza `docs/contrato-mqtt.md` (con su entrada en el historial) y el plan, sección 7.1, en el mismo cambio, y avisa al carril afectado.
 - Los rangos de la ingesta de energía se validan en `nodered/flows/flows.json` (función "Validar v, i, p") y se documentan en `orangepi/README.md` (sección Energía). Si cambian, actualiza las dos cosas.
 
 ## Verificación

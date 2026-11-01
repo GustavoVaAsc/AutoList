@@ -1,6 +1,6 @@
 # Contrato MQTT
 
-> **Borrador v0.1.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
+> **Borrador v0.2.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
 
 ## 1. Convenciones generales
 
@@ -27,7 +27,8 @@
 | `aula/vision/enrolamiento` | visión | frontend, pantalla | 0 | no |
 | `aula/vision/embedding` | visión | Node-RED | 1 | no |
 | `aula/vision/estado` **[propuesta]** | visión (+ LWT) | Node-RED, frontend | 1 | sí |
-| `aula/galeria/cambio` **[propuesta]** | Node-RED | visión | 1 | no |
+| `aula/vision/galeria/alta` | Node-RED | visión | 1 | no |
+| `aula/vision/galeria/baja` | Node-RED | visión | 1 | no |
 | `aula/sesion/cmd` | pantalla, frontend | Node-RED | 1 | no |
 | `aula/sesion/estado` | Node-RED | todos | 1 | sí |
 | `aula/pantalla/reinicio` | Node-RED | pantalla | 1 | no |
@@ -137,8 +138,6 @@ Un mensaje por intento de reconocimiento, sea del pase de lista o de una prueba 
 | `enrolar` | `cuenta`, `nombre` | Inicia el registro de 5 poses. Mientras dura, se ignora el PIR. Si ya hay un registro en curso, se rechaza con `estado: "error"` y `motivo: "ocupado"` en `aula/vision/enrolamiento`. |
 | `cancelar` | `cuenta` | Aborta el registro en curso y descarta lo capturado. |
 | `probar` | `cuenta` (opcional) | Una captura y reconocimiento; publica `aula/vision/resultado` con `modo: "prueba"`. |
-| `confirmar` **[propuesta]** | `cuenta` | Continúa tras una advertencia de parecido (chequeo antifraude, paso 6 del registro). |
-
 `nombre` va en `enrolar` para que la pantalla lo muestre en la guía de registro sin consultar la base. **[propuesta]**
 
 ### `aula/vision/enrolamiento`
@@ -165,7 +164,7 @@ Progreso del registro, un mensaje por cambio de estado. QoS 0: si se pierde uno,
 | `pose` | string | sí | `frente`, `izquierda`, `derecha`, `arriba`, `frente_2` |
 | `estado` | string | sí | `esperando_pose`, `capturando`, `aceptada`, `rechazada`, `advertencia`, `completado`, `cancelado`, `error` |
 | `motivo` | string | no | Con `rechazada`: `sin_rostro`, `varios_rostros`, `rostro_chico`, `borrosa`, `giro_excesivo`, `fallo_captura`. Con `error`: `ocupado`, `inconsistente` (las fotos no se parecen entre sí), `npu`. |
-| `parecido_a` | string | no | **[propuesta]** Con `advertencia`: cuenta del alumno al que se parece. Nunca incluye embeddings. |
+| `parecido_a` | string | no | **[propuesta]** Con `advertencia`: cuenta del alumno al que se parece. Nunca incluye embeddings. La advertencia es informativa (plan, sección 5.4, paso 6): la visión no espera confirmación y sigue con `completado` y la publicación del embedding. Si el profesor no está de acuerdo, aplica la baja del rostro. |
 | `miniatura` | string | no | JPEG en base64, como máximo 160×120 y unos 8 KB. Solo con `aceptada` o `rechazada`. La pantalla la ignora. |
 
 ### `aula/vision/embedding`
@@ -191,15 +190,17 @@ Salud del servicio de visión, con LWT `{"en_linea": false}`. Le dice a Node-RED
 
 `modo`: `inactivo`, `pase`, `enrolando`. `galeria`: número de embeddings cargados.
 
-### `aula/galeria/cambio` **[propuesta]**
-Hueco del plan: hoy la galería en RAM se actualiza con el propio `aula/vision/embedding` que publica la visión, antes de que Node-RED confirme que lo guardó en Postgres. Además, la baja de un rostro (`DELETE /api/alumnos/:cuenta/rostro`) no tiene un tópico que avise a la visión. Propuesta: Node-RED publica este tópico **después** de escribir en Postgres, y la visión solo modifica su galería al recibirlo.
+### `aula/vision/galeria/alta` y `aula/vision/galeria/baja`
+La galería en RAM solo cambia por orden de Node-RED, que publica estos tópicos **después** de escribir en Postgres (plan, sección 5.4). La visión nunca agrega una entrada por su cuenta, ni siquiera tras publicar `aula/vision/embedding`. Así la base es la única fuente de verdad. Los dos van con QoS 1 y sin retención.
 
 ```json
-{"op": "alta", "cuenta": "320068234", "embedding": ["…"]}
-{"op": "baja", "cuenta": "320068234"}
+{"cuenta": "320068234"}
 ```
 
-Así la base es la única fuente de verdad, y la galería se reconstruye completa con `GET /api/galeria` al arrancar y en cada reconexión al broker.
+- **`alta`:** Node-RED guardó el embedding de esa cuenta. La visión recarga la galería completa con `GET /api/galeria` (unas 40 entradas). El mensaje no lleva el embedding: así no viaja otra vez por MQTT y la galería siempre sale de la base.
+- **`baja`:** se retiró el consentimiento de esa cuenta. La visión borra su entrada de la galería en RAM.
+- **Recarga completa** con `GET /api/galeria` también al arrancar y en cada reconexión al broker; cubre una `baja` perdida mientras la visión estaba desconectada.
+- Desde el 11 nov, `GET /api/galeria` exige `httpNodeAuth` y el encabezado `X-Galeria-Token` (`GALERIA_TOKEN`), que solo tienen Node-RED y la visión (plan, secciones 6.2 y 6.7).
 
 ## 5. Borde (Node-RED, pantalla, Orange Pi)
 
@@ -235,15 +236,16 @@ Cada 10 s.
 | Usuario | Lee | Escribe |
 |---|---|---|
 | `xiao` | `aula/actuador/cmd`, `aula/sesion/estado` | `aula/camara/#`, `aula/actuador/estado` |
-| `vision` | `aula/camara/pir`, `aula/vision/cmd`, `aula/galeria/cambio` | `aula/vision/#`, `aula/actuador/cmd` |
+| `vision` | `aula/camara/pir`, `aula/vision/cmd`, `aula/vision/galeria/#` | `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/embedding`, `aula/vision/estado`, `aula/actuador/cmd` |
 | `nodered` | `aula/#` | `aula/#` |
 | `pantalla` | `aula/sesion/estado`, `aula/vision/enrolamiento`, `aula/actuador/estado`, `aula/pantalla/reinicio` | `aula/sesion/cmd`, `aula/actuador/cmd` |
 | `frontend` (WS) | `aula/vision/enrolamiento`, `aula/vision/resultado`, `aula/vision/estado`, `aula/sesion/estado`, `aula/actuador/estado`, `aula/camara/estado` | `aula/actuador/cmd`, `aula/sesion/cmd` |
 
-El `frontend` nunca lee `aula/vision/embedding` ni `aula/galeria/cambio`. **[decidir]** ¿El frontend publica directo en `aula/actuador/cmd`, o pasa por la API de Node-RED? Pasar por la API deja un solo punto de control y de registro.
+El `frontend` nunca lee `aula/vision/embedding` ni `aula/vision/galeria/#`. Solo `nodered` publica en `aula/vision/galeria/#`: por eso `vision` escribe sus tópicos uno por uno y no `aula/vision/#`. **[decidir]** ¿El frontend publica directo en `aula/actuador/cmd`, o pasa por la API de Node-RED? Pasar por la API deja un solo punto de control y de registro.
 
 ## 7. Historial de cambios
 
 | Versión | Cambio |
 |---|---|
 | v0.1 | Borrador inicial a partir de la sección 7.1 del plan, con las propuestas marcadas |
+| v0.2 | `aula/galeria/cambio` se reemplaza por `aula/vision/galeria/alta` y `aula/vision/galeria/baja` (solo `cuenta`; la visión recarga con `GET /api/galeria`), acordado entre Gustavo y Yordi. En la ACL, `vision` escribe sus tópicos uno por uno y lee `aula/vision/galeria/#`; solo `nodered` publica en la galería. Se retira la acción `confirmar` de `aula/vision/cmd`: la advertencia de parecido es informativa |

@@ -13,7 +13,6 @@ Todos los comandos de esta guía se ejecutan desde `orangepi/`, salvo que se ind
 - [Energía](#energía)
 - [Operación](#operación)
 - [Seguridad y riesgos aceptados](#seguridad-y-riesgos-aceptados)
-- [Pendiente](#pendiente)
 
 ## Qué levanta
 
@@ -65,6 +64,7 @@ Después, sustituir cada valor `cambiar_esta_clave` en `.env`:
 | `NODERED_ADMIN_USER`, `NODERED_ADMIN_PASSWORD` | Login del editor de Node-RED | En cada arranque de Node-RED |
 | `NODERED_TLS_SAN` | Nombres e IP del certificado HTTPS. Opcional; por omisión `DNS:localhost,IP:127.0.0.1`. | En cada arranque de Node-RED. Si cambia, el certificado se regenera. |
 | `PORTAINER_ADMIN_PASSWORD` | Contraseña inicial del administrador de Portainer | Solo al crear `portainer_data` |
+| `GALERIA_TOKEN` | Token de `GET /api/galeria`. Se usará desde el 11 nov; ningún contenedor lo recibe todavía. | Aún no se aplica |
 
 Si Compose no encuentra una de las variables obligatorias, falla con un mensaje que indica cuál falta.
 
@@ -231,7 +231,7 @@ Los nombres de servicio son `mosquitto`, `postgres`, `nodered` y `portainer`.
 
 Usar `--build` después de cambiar `nodered/settings.js`, `nodered/Dockerfile`, `nodered/package.json` o `nodered/package-lock.json`. Estos archivos se copian a la imagen, así que sin reconstruirla el cambio no tiene efecto.
 
-La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-2`). Al reconstruir por un cambio, subir el sufijo (`-3`, `-4`...), como indica el comentario del archivo.
+La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-3`). Al reconstruir por un cambio, subir el sufijo (`-4`, `-5`...), como indica el comentario del archivo.
 
 ### Desplegar flujos
 
@@ -269,6 +269,8 @@ docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -
 
 La alternativa es `docker compose down -v`, que borra todos los datos.
 
+Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` también vienen de `schema.sql`, así que un volumen creado antes de agregarlas no las tiene. En ese caso `02-roles.sh` falla a mitad: el rol y su contraseña ya se aplicaron, pero los permisos sobre las tablas que no existen no. Recrear el volumen con `down -v` (si solo hay datos de prueba) o consultar al equipo antes de crear las tablas a mano.
+
 ## Seguridad y riesgos aceptados
 
 ### Riesgos aceptados hoy
@@ -281,13 +283,32 @@ La alternativa es `docker compose down -v`, que borra todos los datos.
 | Node-RED puede ejecutar código | Un nodo `exec`, previsto en el plan para el reporte CSV, ejecutaría comandos en el contenedor. Por eso el editor exige `adminAuth` (`nodered/settings.js`, línea 13), y `settings.js` no es escribible desde el contenedor (`nodered/Dockerfile`). |
 | Portainer controla el host | Portainer monta el socket de Docker (`/var/run/docker.sock`). Por eso su puerto solo escucha en la placa. |
 
-### Pendiente para el 25 de noviembre
+### Pendiente
+
+No se sirve `/api/galeria` sin `httpNodeAuth` y `GALERIA_TOKEN` (11 nov). No se registra a ninguna persona real sin `httpNodeAuth` y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo).
+
+#### Para el 4 de noviembre
 
 | Pendiente | Estado en el repo |
 |---|---|
 | ACL de Mosquitto y usuarios por rol | `mosquitto/mosquitto.conf` tiene `acl_file` comentado, a la espera del archivo `acl` |
-| MQTT cifrado | No hay listeners TLS en `mosquitto/mosquitto.conf` |
+
+#### Para el 11 de noviembre
+
+| Pendiente | Estado en el repo |
+|---|---|
 | `httpNodeAuth` en la API | Pendiente. El comentario de `nodered/settings.js` indica dónde se añade. |
+| `GALERIA_TOKEN` | La variable está en `.env.example` y ningún contenedor la recibe todavía. Desde el 11 nov, `GET /api/galeria` exigirá el encabezado `X-Galeria-Token`; solo Node-RED y el servicio de visión tendrán el token. |
+
+#### Sin fecha (sin decidir)
+
+| Pendiente | Estado en el repo |
+|---|---|
+| MQTT cifrado | No hay listeners TLS en `mosquitto/mosquitto.conf`. No se implementa sin decisión del equipo. |
+
+### Datos biométricos
+
+Retirar el consentimiento de un alumno borra su embedding de la base al instante (`embedding = NULL`) y de los archivos de datos cuando autovacuum limpia las tuplas muertas de `alumnos` y de su tabla TOAST. Los bytes pueden sobrevivir en el WAL o en espacio libre hasta que se sobrescriban, y cualquier `pg_dump` o copia del volumen `pgdata` los conserva. Borrar por completo la identidad de una persona (`nombre`, `no_cuenta`) es un procedimiento de superusuario, porque `asistencias` referencia su fila.
 
 ### Respuesta si se sospecha que Node-RED está comprometido
 
@@ -300,10 +321,6 @@ La alternativa es `docker compose down -v`, que borra todos los datos.
 7. Actualizar `MQTT_PASSWORD` en todos los clientes MQTT: la XIAO, el servicio de visión, la pantalla y el frontend.
 
 Si el acceso pudo llegar al host, revisar también `POSTGRES_PASSWORD` y la cuenta de Portainer.
-
-## Pendiente
-
-- Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` no están en `sql/schema.sql`. Se agregan cuando Gustavo fije la dimensión del embedding (512 o 128).
 
 ## Next steps
 

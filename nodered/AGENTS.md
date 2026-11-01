@@ -36,7 +36,7 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 ## Settings e imagen
 
 - Cambiar `settings.js`, `Dockerfile`, `package.json` o `package-lock.json` exige reconstruir la imagen desde `orangepi/`: `docker compose up -d --build`.
-- Antes de reconstruir, sube el sufijo de la etiqueta en la línea `image:` del servicio `nodered` de `orangepi/docker-compose.yml`: de `5.0.9-2` a `-3`, `-4` y así sucesivamente. El comentario del compose sobre la etiqueta de Node-RED lo pide.
+- Antes de reconstruir, sube el sufijo de la etiqueta en la línea `image:` del servicio `nodered` de `orangepi/docker-compose.yml`: de `5.0.9-3` a `-4`, `-5` y así sucesivamente. El comentario del compose sobre la etiqueta de Node-RED lo pide.
 - `settings.js` vive en `/etc/nodered`, un directorio de root que el contenedor no puede modificar (comentarios del `Dockerfile`). No lo muevas a `flows/` ni a `/data`.
 - Node-RED no instala módulos. `settings.js` bloquea la instalación desde la paleta y desde los nodos function (bloque `externalModules` y `functionExternalModules`). Las dependencias van en `package.json` y `package-lock.json`.
 - La imagen instala con `npm ci --omit=dev --ignore-scripts` (instrucción `RUN` del `Dockerfile`). Ninguna dependencia necesita scripts de instalación.
@@ -62,7 +62,8 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 
   La función anterior al nodo fija `msg.params = [datos.v, datos.i, datos.p];`, con valores ya validados.
 
-- Nunca concatenes en `query` valores que llegan por MQTT o HTTP.
+- Nunca concatenes en `query` valores que llegan por MQTT o HTTP. Los embeddings viajan siempre como parámetros enlazados (`$1::vector`).
+- Los nodos catch y debug de las rutas de embeddings (`aula/vision/embedding`, `/api/galeria`, registro) registran solo `msg.error.message`, nunca el mensaje ni el payload completos: un embedding en el log es un dato biométrico.
 - El nodo se conecta con el rol `NODERED_DB_USER`, nunca con el superusuario. Para tablas nuevas, ver [orangepi/AGENTS.md](../orangepi/AGENTS.md#cambios-de-esquema).
 
 ## Validación de payloads
@@ -82,7 +83,7 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 ## API HTTP
 
 - El editor y la API responden en `https://<ip>:1880` con un certificado autofirmado. Desde la placa: `curl -k "https://127.0.0.1:1880/api/..."`. `-k` no verifica el certificado.
-- La API no tiene autenticación hoy. El comentario sobre `httpNodeAuth` en `settings.js` indica dónde se añade, y `httpNodeAuth` entra el 25 de noviembre. No lo implementes ni lo quites en silencio.
+- La API no tiene autenticación hoy. El comentario sobre `httpNodeAuth` en `settings.js` indica dónde se añade, y `httpNodeAuth` entra el 11 de noviembre. No lo implementes ni lo quites en silencio.
 - `GET /api/galeria` es para el servicio de visión, no para el frontend. Sus embeddings nunca llegan al navegador (plan, secciones 5.4 y 6.7).
 - Los endpoints de plan, sección 6.7, son el contrato con el frontend. Si cambias una ruta o un campo, actualiza esa sección en el mismo cambio.
 

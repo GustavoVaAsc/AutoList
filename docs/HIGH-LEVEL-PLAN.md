@@ -133,6 +133,8 @@ sequenceDiagram
    - **rojo:** desconocido o ya registrado;
    - **ámbar:** zona gris de confianza; se repite la captura y, si persiste, el profesor lo marca manualmente desde la pantalla.
 
+   El marcado manual es un `INSERT ... ON CONFLICT (no_cuenta, sesion_id) DO NOTHING` con `metodo = 'manual'`. Si no se insertó ninguna fila (el alumno ya estaba registrado en la sesión), Node-RED se lo avisa al profesor. Corregir una asistencia ya registrada solo lo hace el superusuario: el rol de Node-RED no tiene UPDATE ni DELETE sobre `asistencias`.
+
 ### 5.2 Control (flujo inverso)
 
 - **Automático:** Node-RED → `aula/actuador/cmd` → XIAO ESP32S3.
@@ -141,7 +143,7 @@ sequenceDiagram
 
 ### 5.3 Sesión de clase
 
-El profesor inicia la sesión con materia, grupo y tolerancia. Node-RED crea el registro en Postgres y publica `aula/sesion/estado`; la XIAO enciende el LED azul. Al terminar, se genera el reporte de presentes, retardos y faltas (sección 7.3).
+El profesor inicia la sesión con materia, grupo y tolerancia. Node-RED crea el registro en Postgres, en una sola transacción: primero `UPDATE sesiones SET fin = now() WHERE fin IS NULL` (cierra una sesión olvidada) y después el `INSERT` de la nueva. El índice único parcial `sesiones_una_abierta_idx` garantiza que haya a lo más una sesión abierta, incluso si dos inicios llegan a la vez. Después publica `aula/sesion/estado`; la XIAO enciende el LED azul. Al terminar, se genera el reporte de presentes, retardos y faltas (sección 7.3).
 
 ### 5.4 Registro de alumnos (enrolamiento)
 
@@ -160,7 +162,9 @@ sequenceDiagram
   participant L as Pantalla ILI9341
   participant D as Postgres
 
-  W->>N: POST /api/enrolamiento {cuenta, consentimiento}
+  W->>N: POST /api/enrolamiento {cuenta, consentimiento} (tras httpNodeAuth)
+  N->>D: UPDATE alumnos SET consentimiento = true, consentimiento_fecha = now()
+  N->>N: inscripción pendiente de la cuenta (vence tras 5 min sin progreso)
   N->>V: aula/vision/cmd {accion: enrolar}
   loop 5 poses
     V-->>L: aula/vision/enrolamiento {paso, pose}
@@ -169,7 +173,8 @@ sequenceDiagram
   end
   V->>V: consistencia entre fotos y comparación contra la galería
   V->>N: aula/vision/embedding
-  N->>D: UPDATE alumnos SET embedding
+  N->>D: UPDATE alumnos SET embedding (si la cuenta está pendiente, hay consentimiento y aún no tiene rostro)
+  N->>V: aula/vision/galeria/alta
   W->>N: POST /api/enrolamiento/probar
   N->>V: aula/vision/cmd {accion: probar}
   V-->>W: resultado y confianza
@@ -177,21 +182,23 @@ sequenceDiagram
 
 > Las flechas punteadas son mensajes MQTT que llegan al frontend y a la pantalla por Mosquitto.
 
-1. El profesor elige a un alumno pendiente en el frontend y marca el consentimiento. Sin consentimiento, el botón de inicio está deshabilitado.
-2. Node-RED valida que el alumno exista y publica la orden de registro.
+1. El profesor elige a un alumno pendiente en el frontend y marca el consentimiento, que el alumno firmó antes. Sin consentimiento, el botón de inicio está deshabilitado. La versión del formato de consentimiento es `docs/consentimiento.md`, aún pendiente de redactar.
+2. `POST /api/enrolamiento {"cuenta","consentimiento":true}` va detrás de `httpNodeAuth`. Node-RED registra el consentimiento con `UPDATE alumnos SET consentimiento = true, consentimiento_fecha = now() WHERE no_cuenta = $1 AND embedding IS NULL`; si no actualiza ninguna fila (la cuenta no existe o ya tiene rostro), rechaza la petición. Si ya hay una inscripción pendiente para esa cuenta (doble clic, segunda pestaña), responde 409 sin tocar nada. Guarda una inscripción pendiente de esa cuenta en el contexto del flujo, que vence tras 5 minutos sin progreso (cada mensaje `aula/vision/enrolamiento` de esa cuenta renueva el plazo), y publica la orden `enrolar`. Así el consentimiento lo escribe solo el profesor, autenticado por HTTP; nada que llegue por MQTT puede darlo.
 3. El servicio de visión enciende la tira LED y toma 5 fotos, una por pose: de frente, un poco a la izquierda, un poco a la derecha, un poco hacia arriba y de frente otra vez. La ILI9341 le muestra la pose al alumno, que no ve la laptop del profesor.
 4. Cada foto se valida: exactamente un rostro, cara de al menos ~100 px de ancho, nitidez mínima y giro de cabeza moderado. Si se rechaza, el frontend muestra el motivo y se repite esa pose.
 5. Se calcula el embedding de cada foto en la NPU. Los que se alejan mucho del resto se descartan; los demás se promedian y se normalizan.
-6. **Chequeo antifraude:** si el nuevo embedding se parece mucho al de otro alumno ya registrado, el frontend muestra una advertencia y el profesor decide si continúa.
-7. Node-RED guarda el embedding en Postgres (es el único que escribe en la base) y el servicio de visión actualiza su galería local. Las fotos se descartan: las miniaturas solo pasan por el navegador y el embedding nunca llega al frontend.
+6. **Chequeo antifraude:** si el nuevo embedding se parece mucho al de otro alumno ya registrado, el frontend muestra una advertencia informativa. El embedding se guarda igual (no hay paso de confirmación); si el profesor no está de acuerdo, aplica la baja del rostro (`DELETE /api/alumnos/:cuenta/rostro`) y repite el registro.
+7. Node-RED recibe `aula/vision/embedding` y solo acepta la `cuenta` de la inscripción pendiente. Guarda el embedding con `UPDATE alumnos SET embedding = $1::vector WHERE no_cuenta = $2 AND consentimiento AND embedding IS NULL` (es el único que escribe en la base). Si no actualiza ninguna fila, lo rechaza y registra solo la `cuenta`. Después borra la inscripción pendiente y publica `aula/vision/galeria/alta {"cuenta":...}`; el servicio de visión recarga entonces la galería con `GET /api/galeria`. Las fotos se descartan: las miniaturas solo pasan por el navegador y el embedding nunca llega al frontend.
 8. **Prueba inmediata:** el alumno se para frente a la cámara y el frontend muestra el resultado y la confianza.
+9. **Cancelar o expirar:** `POST /api/enrolamiento/cancelar`, o el vencimiento (5 minutos sin progreso), borra la inscripción pendiente. Si no se guardó ningún embedding, restablece `consentimiento = false, consentimiento_fecha = NULL` (con `AND embedding IS NULL`).
+10. **Reinicio o despliegue de Node-RED:** las inscripciones pendientes viven en memoria y no sobreviven un reinicio. Al arrancar el proceso o al desplegar flujos, el mismo manejador primero borra todas las inscripciones pendientes del contexto y después ejecuta `UPDATE alumnos SET consentimiento = false, consentimiento_fecha = NULL WHERE consentimiento AND embedding IS NULL`, para no dejar consentimientos sin rostro.
 
 **Reglas del registro:**
 - **Mismo pipeline siempre.** El embedding del registro se calcula con el mismo modelo cuantizado en la NPU que el pase de lista. Registrar con el modelo flotante en la PC baja la precisión.
 - **Misma cámara.** No se registra con la webcam de la laptop: registrarse con una cámara y reconocerse con otra también baja la precisión.
 - **Pase de lista en pausa.** Mientras hay un registro en curso, el servicio de visión ignora el PIR.
-- **Re-registro y baja** desde el frontend. Borrar el embedding es la forma de retirar el consentimiento.
-- **Sincronización.** Al arrancar, el servicio de visión pide la galería completa a Node-RED (`GET /api/galeria`).
+- **Re-registro y baja** desde el frontend. Retirar el consentimiento es el inverso del registro: Node-RED hace `UPDATE alumnos SET embedding = NULL, consentimiento = false, consentimiento_fecha = NULL WHERE no_cuenta = $1` y publica `aula/vision/galeria/baja` con la cuenta (QoS 1, sin retención), para que el servicio de visión borre esa entrada de su galería en RAM. Si el servicio estaba caído, la baja se aplica al recargar la galería con `GET /api/galeria`. La base lo impone: no puede haber embedding sin consentimiento con fecha. Volver a registrar a alguien con rostro exige primero la baja y un consentimiento nuevo.
+- **Sincronización.** El servicio de visión pide la galería completa a Node-RED (`GET /api/galeria`) al arrancar, en cada reconexión MQTT y al recibir `aula/vision/galeria/alta`. La galería solo cambia por orden de Node-RED (`alta` y `baja`).
 
 ## 6. Componentes de software
 
@@ -218,15 +225,15 @@ sequenceDiagram
 - **Fallback del reconocimiento:** si `w600k_mbf` cuantizado pierde precisión, se prueba primero la cuantización int16 o mixta del mismo modelo y, si no basta, se cambia a `w600k_r50` (IResNet50, también de 512, así que el esquema no cambia). Criterio: comparar con los pares de LFW el ONNX flotante contra el `.nb` y aplicar el fallback si el FAR/FRR en el umbral elegido empeora de forma apreciable. Cambiar de modelo invalida los embeddings registrados: hay que volver a registrar a todos.
 - **Conversión:** ONNX → Pegasus/Acuity → cuantización uint8 con imágenes de calibración → `.nb`. Para la A733 se usa Acuity **v2.0.10.2** (Docker `ubuntu-npu:v2.0.10.2`, `env.sh v3`) y se exporta con `pegasus_export_ovx_nbg.sh <modelo> uint8 a733`. El `.nb` tiene que ser compatible con el driver `vipcore` 1.13.0 y con las librerías VIPLite de la imagen: no actualizar el kernel sin volver a probar con `vpm_run`.
 - **Librerías (decidido):** CMake, libmosquitto (MQTT), cpp-httplib (cliente HTTP), nlohmann/json y OpenCV 4.6 de Debian. Corre nativo con systemd, igual que la pantalla. Un solo hilo de trabajo atiende la cola de eventos y la NPU.
-- **Galería en RAM:** `std::vector` con los embeddings (unos 80 KB para 40 alumnos), cargada al arrancar con `GET /api/galeria` y actualizada con los mensajes `aula/vision/embedding`. Sin base de datos local.
+- **Galería en RAM:** `std::vector` con los embeddings (unos 80 KB para 40 alumnos), se carga con `GET /api/galeria` al arrancar, en cada reconexión MQTT y al recibir `aula/vision/galeria/alta` (recarga completa: son unas 40 entradas, y así hay un solo camino de carga). Nunca añade una entrada por su cuenta, ni siquiera tras calcular un embedding: la galería sigue a Node-RED. Al recibir `aula/vision/galeria/baja`, borra la entrada de esa cuenta. Ambos tópicos se suscriben con QoS 1. Desde el 11 nov, `GET /api/galeria` exige además el encabezado `X-Galeria-Token` (ver la sección 6.7). Sin base de datos local.
 - **Registro:** atiende las órdenes `enrolar`, `cancelar` y `probar`; publica el progreso en `aula/vision/enrolamiento` y el embedding final en `aula/vision/embedding`. Mientras registra, ignora el PIR.
 - **Mejora de imagen:** CLAHE y gamma en CPU (OpenCV). Como experimento: Zero-DCE y superresolución del recorte facial en la NPU.
 - **Publica:** número de cuenta, confianza y latencias (captura, detección, embedding, total).
 
 ### 6.3 Docker en la Orange Pi (`orangepi/docker-compose.yml`)
-- Mosquitto, con listener en 1883 y WebSocket en 9001 (para el frontend), y usuario y contraseña. Con ACL, el usuario del frontend no puede leer `aula/vision/embedding`.
+- Mosquitto, con listener en 1883 y WebSocket en 9001 (para el frontend), y usuario y contraseña. Con ACL (4 nov), el usuario del frontend no puede leer `aula/vision/embedding` y solo el usuario de Node-RED puede publicar en `aula/vision/galeria/#`.
 - Node-RED, servido por HTTPS en el puerto 1880 con certificado autofirmado. El editor está protegido por usuario y contraseña (`adminAuth`).
-- Postgres con la imagen `pgvector/pgvector`: sesiones, alumnos, asistencias y la tabla `metricas_energia`. Se publica solo en `127.0.0.1:5432`; Node-RED lo alcanza por la red del compose con el nombre `postgres`. Node-RED usa un rol de base de datos con privilegios mínimos (solo SELECT e INSERT sobre `metricas_energia`), no el superusuario.
+- Postgres con la imagen `pgvector/pgvector`: sesiones, alumnos, asistencias y la tabla `metricas_energia`. Se publica solo en `127.0.0.1:5432`; Node-RED lo alcanza por la red del compose con el nombre `postgres`. Node-RED usa un rol de base de datos con privilegios mínimos sobre las tablas que usa (sin DELETE ni DDL), no el superusuario.
 - Portainer CE (`portainer/portainer-ce`), el bloque que aparece en la Fig. 1: se administra desde el navegador. Solo escucha en `127.0.0.1:9443`; desde otra máquina se entra con un túnel SSH (`ssh -L 9443:localhost:9443 ...`) y `https://localhost:9443`.
 - **La pantalla no corre en Docker.** Es el único componente que necesita SPI, GPIO e I²C, así que se ejecuta en el host como unidad systemd (`orangepi/systemd/orangepi-pantalla.service`), con el usuario del servicio en los grupos `spi`, `gpio` e `i2c`. Así los permisos de `/dev/spidev*` y `/dev/i2c-*` los resuelve el host con sus reglas de udev, sin mapear dispositivos al contenedor, y la pantalla sobrevive a un reinicio de Node-RED.
 - **El reinicio de la pantalla va por MQTT.** Node-RED publica un mensaje de reinicio y el script de Python hace `sys.exit(0)`; systemd, con `Restart=always`, lo vuelve a levantar. El arranque y la supervisión reales los hace systemd, no Node-RED.
@@ -234,11 +241,16 @@ sequenceDiagram
 ### 6.4 Node-RED (`nodered/flows/flows.json`)
 1. **Ingesta:** MQTT → tabla `metricas_energia` de Postgres (energía, latencias y temperatura).
 2. **Pase de lista:** resultado → reglas → Postgres, actuador y pantalla.
-3. **Sesiones:** iniciar, terminar y generar el reporte CSV.
+3. **Sesiones:** iniciar (cierra en la misma transacción una sesión abierta que se haya quedado olvidada), terminar y generar el reporte CSV.
 4. **Pantalla:** reinicio por MQTT (el script de Python hace `sys.exit(0)` y systemd lo levanta) y un nodo `exec` que ejecuta el programa de Python que genera el reporte CSV. Con la pantalla, Node-RED habla solo por MQTT.
 5. **Métricas del sistema:** temperatura del SoC, CPU y RAM → Postgres.
-6. **Registro:** importación de la lista maestra, órdenes de registro y guardado del embedding que llega por `aula/vision/embedding`.
+6. **Registro:** importación de la lista maestra; `POST /api/enrolamiento`, que registra el consentimiento del profesor, abre la inscripción pendiente (vence tras 5 min sin progreso; 409 si ya hay una) y publica la orden `enrolar`; la limpieza al arrancar o desplegar (borra las inscripciones pendientes y luego los consentimientos sin rostro); el manejador de `aula/vision/embedding`, que solo acepta la cuenta pendiente y guarda el embedding si hay consentimiento y aún no tiene rostro; y la publicación de `aula/vision/galeria/alta` (tras guardar) y `aula/vision/galeria/baja` (al retirar el consentimiento).
 7. **API HTTP y frontend:** endpoints del frontend (ver frontend web) y archivos estáticos de `web/` servidos con `httpStatic` desde `/data/public`. Todo protegido con `httpNodeAuth`.
+
+**Reglas de los flujos:**
+- No se sirve `/api/galeria` sin `httpNodeAuth` y `GALERIA_TOKEN` (11 nov). No se registra a ninguna persona real sin `httpNodeAuth` y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo).
+- El consentimiento lo escribe solo el endpoint HTTP del profesor. El manejador de `aula/vision/embedding` nunca lo escribe: solo guarda el embedding de la cuenta pendiente cuando ya hay consentimiento.
+- Los embeddings viajan siempre como parámetros enlazados (`$1::vector`), nunca concatenados en el SQL. Los nodos catch y debug de las rutas de embeddings registran solo `msg.error.message`, nunca el mensaje completo.
 
 ### 6.5 Pantalla ILI9341 (`orangepi/pantalla`, Python, táctil XPT2046)
 
@@ -283,9 +295,13 @@ POST   /api/alumnos/importar        CSV de la lista maestra
 POST   /api/enrolamiento            {"cuenta":"320068234","consentimiento":true}
 POST   /api/enrolamiento/cancelar
 POST   /api/enrolamiento/probar     reconocimiento de prueba
-DELETE /api/alumnos/:cuenta/rostro  borra el embedding (retira el consentimiento)
-GET    /api/galeria                 embeddings para el servicio de visión (no lo usa el frontend)
+DELETE /api/alumnos/:cuenta/rostro  retira el consentimiento: embedding NULL en la base y aula/vision/galeria/baja
+GET    /api/galeria                 embeddings para el servicio de visión (no lo usa el frontend); exige X-Galeria-Token
 ```
+
+`POST /api/enrolamiento` registra el consentimiento del profesor y abre la inscripción pendiente; `POST /api/enrolamiento/cancelar` la cierra; el embedding se guarda cuando llega por MQTT (sección 5.4). `DELETE /api/alumnos/:cuenta/rostro` es el retiro del consentimiento, con la baja por MQTT de la sección 7.1.
+
+Desde el 11 nov, `GET /api/galeria` exige además el encabezado `X-Galeria-Token` igual a `GALERIA_TOKEN`, comparado en tiempo constante. Ese token solo lo tienen Node-RED y el servicio de visión, nunca el navegador: el inicio de sesión del profesor no basta para descargar embeddings.
 
 ## 7. Datos
 
@@ -300,7 +316,9 @@ aula/actuador/estado     XIAO → borde            {"servo":"cerrado","led":"azu
 aula/vision/resultado    visión → Node-RED       {"cuenta":"320068234","conf":0.78,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
 aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234"}   (enrolar, cancelar, probar)
 aula/vision/enrolamiento visión → frontend, LCD  {"cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
-aula/vision/embedding    visión → Node-RED       {"cuenta":"320068234","embedding":[...]}
+aula/vision/embedding    visión → Node-RED       {"cuenta":"320068234","embedding":[...]}   (QoS 1, retain=false; solo lo consume Node-RED, que acepta únicamente la cuenta con inscripción pendiente)
+aula/vision/galeria/alta Node-RED → visión       {"cuenta":"320068234"}   (QoS 1, nunca retenido; tras guardar el embedding: el servicio recarga la galería con GET /api/galeria)
+aula/vision/galeria/baja Node-RED → visión       {"cuenta":"320068234"}   (QoS 1, nunca retenido; retira a una persona de la galería en RAM)
 aula/sesion/cmd          pantalla → Node-RED     {"accion":"iniciar","materia":"FSE","grupo":"1","tol_min":10}
 aula/pantalla/reinicio   Node-RED → pantalla     {"reiniciar":1}
 aula/sesion/estado       Node-RED → todos        {"activa":true,"id":12}
@@ -309,19 +327,28 @@ aula/sistema/metricas    Orange Pi → Node-RED    {"temp":52.1,"cpu":34,"ram":6
 
 > Los valores de ejemplo son ilustrativos, no mediciones.
 
-### 7.2 Esquema de Postgres (`orangepi/sql/schema.sql`, borrador)
+> Con las ACL (4 nov), solo el usuario de Node-RED puede publicar en `aula/vision/galeria/#`.
+
+### 7.2 Esquema de Postgres (`orangepi/sql/schema.sql`)
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE alumnos (
-  no_cuenta      VARCHAR(9) PRIMARY KEY,
+  no_cuenta      VARCHAR(9) PRIMARY KEY CHECK (no_cuenta ~ '^[0-9]{9}$'),
   nombre         TEXT        NOT NULL,
   grupo          TEXT        NOT NULL,
-  embedding      vector(512),            -- NULL = pendiente de rostro; 128 si el modelo lo usa
+  embedding      vector(512),            -- NULL = pendiente de rostro
   consentimiento BOOLEAN     NOT NULL DEFAULT FALSE,
-  fecha_alta     TIMESTAMPTZ NOT NULL DEFAULT now()
+  consentimiento_fecha TIMESTAMPTZ,      -- cuándo el profesor registró el consentimiento; formato: docs/consentimiento.md (pendiente)
+  fecha_alta     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT alumnos_embedding_requiere_consentimiento
+    CHECK (embedding IS NULL OR consentimiento),   -- retirar = embedding NULL, consentimiento false y fecha NULL
+  CONSTRAINT alumnos_consentimiento_con_fecha
+    CHECK (consentimiento = (consentimiento_fecha IS NOT NULL))
 );
+-- schema.sql añade autovacuum agresivo en alumnos: el embedding borrado no debe
+-- quedarse como tupla muerta.
 
 CREATE TABLE sesiones (
   id             SERIAL PRIMARY KEY,
@@ -331,6 +358,8 @@ CREATE TABLE sesiones (
   fin            TIMESTAMPTZ,
   tolerancia_min INT         NOT NULL DEFAULT 10
 );
+-- A lo más una sesión abierta a la vez
+CREATE UNIQUE INDEX sesiones_una_abierta_idx ON sesiones ((true)) WHERE fin IS NULL;
 
 CREATE TABLE asistencias (
   id        SERIAL PRIMARY KEY,
@@ -348,8 +377,8 @@ CREATE TABLE intentos (
   hora          TIMESTAMPTZ NOT NULL DEFAULT now(),
   sesion_id     INT REFERENCES sesiones,
   confianza_max REAL,
-  motivo        TEXT,                    -- desconocido, imagen_insuficiente, duplicado
-  embedding     vector(512)
+  motivo        TEXT CHECK (motivo IN ('desconocido','imagen_insuficiente','duplicado'))
+  -- sin embedding: quien no se reconoce no dio consentimiento
 );
 
 CREATE TABLE metricas_energia (
@@ -389,10 +418,14 @@ ORDER BY a.no_cuenta;
 ### 7.4 Auditoría con pgvector
 
 ```sql
--- ¿A quién se parece más un intento desconocido?
-SELECT no_cuenta, nombre, 1 - (embedding <=> $1) AS similitud
-FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
+-- Chequeo antifraude del registro (sección 5.4, paso 6): ¿a quién se parece más el embedding nuevo?
+SELECT no_cuenta, nombre, 1 - (embedding <=> $1::vector) AS similitud
+FROM alumnos
+WHERE embedding IS NOT NULL AND no_cuenta <> $2
+ORDER BY embedding <=> $1::vector LIMIT 3;
 ```
+
+Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta que se está registrando. El servicio de visión hace esta comparación en RAM; la versión SQL sirve para auditarla. Los intentos nunca se guardan con embedding para esto (`intentos` no tiene la columna).
 
 ## 8. Hardware
 
@@ -421,7 +454,7 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
 
 ## 9. Experimentos
 
-**Participantes:** 10 inscritos más 3 a 5 no inscritos ("impostores"). Mínimo aceptable: 6 inscritos y 3 no inscritos. Todos firman el formato de consentimiento (`docs/consentimiento.md`, pendiente de redactar).
+**Participantes:** 10 inscritos más 3 a 5 no inscritos ("impostores"). Mínimo aceptable: 6 inscritos y 3 no inscritos. Todos firman el formato de consentimiento (`docs/consentimiento.md`, pendiente de redactar), y el registro de personas reales sigue la regla de la sección 6.4.
 
 | ID | Experimento | Método | Métrica |
 |---|---|---|---|
@@ -482,10 +515,10 @@ El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardwar
 | Fecha | Hito | Gustavo | Arnau | Yordi |
 |---|---|---|---|---|
 | **28 oct** | Proyecto y planeación | Especificación y exposición | Lista de compras | Repo y estructura |
-| **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms); toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb`; XIAO: `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | Overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; ingesta a `metricas_energia`; primer gráfico de energía; arranque del esqueleto del frontend |
-| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro) |
+| **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms); toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb` | Overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; ingesta a `metricas_energia`; primer gráfico de energía; arranque del esqueleto del frontend; ACL de Mosquitto y usuarios por rol |
+| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura; XIAO (llega la semana del 4 nov): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro); `httpNodeAuth` en Node-RED |
 | **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E5; umbral con LFW | — | Frontend de registro completo, con la pestaña de Métricas y Asistencia; pantalla completa con sus 3 vistas y los botones de control |
-| **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend y de la pantalla; `httpNodeAuth` y ACL de Mosquitto; E6 |
+| **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend y de la pantalla; E6 |
 
 La fila del 25 de noviembre es de integración: el comprimido de código lo aporta todo el equipo.
 
@@ -504,22 +537,23 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 | Verificación de la NPU en la imagen oficial (hecho) | Gustavo | — | El ejemplo de detección en la NPU |
 | Toolchain Pegasus en la PC | Gustavo | — | La conversión del modelo a `.nb` |
 | Modelo convertido a `.nb` | Gustavo | El toolchain Pegasus | La detección y el embedding en la NPU |
-| Captura, PIR e INA219 por MQTT en la XIAO | Gustavo | La compra del INA219 y el PIR | La ingesta de energía a Postgres |
-| Servo y LEDs por MQTT | Gustavo | La compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
-| Prueba de servo y captura simultáneas | Gustavo | El servo y el firmware de la XIAO | — |
+| Captura, PIR e INA219 por MQTT en la XIAO (11 nov) | Gustavo | La llegada de la XIAO y la compra del INA219 y el PIR | La ingesta de energía real a Postgres |
+| Servo y LEDs por MQTT (11 nov) | Gustavo | La llegada de la XIAO y la compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
+| Prueba de servo y captura simultáneas (11 nov) | Gustavo | El servo y el firmware de la XIAO | — |
 | Overlays de SPI y unidad systemd | Arnau | — | La pantalla en la Orange Pi |
 | Detección, alineación y embedding en la NPU | Gustavo | El modelo `.nb` y `/dev/vipcore` | La galería y la publicación del resultado |
 | Galería y publicación del resultado | Gustavo | La detección en la NPU | El pase de lista y las reglas de sesión |
-| Orden de enrolar con captura de 5 poses | Gustavo | La galería | El registro de alumnos en el frontend |
+| Orden de enrolar con captura de 5 poses | Gustavo | La galería y la captura de la XIAO | El registro de alumnos en el frontend |
 | Filtro de calidad, mejora de imagen y antifraude | Gustavo | El embedding en la NPU | E1–E3 y el umbral con LFW |
 | Umbral con LFW | Gustavo | El embedding en la NPU | E1–E3 |
 | Esquema de Postgres con pgvector | Yordi | La dimensión del embedding que fija Gustavo | La API de alumnos y la galería local |
-| Ingesta MQTT → `metricas_energia` y primer gráfico de energía | Yordi | El compose y la publicación MQTT de la XIAO | E5 de consumo |
+| Ingesta MQTT → `metricas_energia` y primer gráfico de energía | Yordi | El compose; con datos reales, la publicación MQTT de la XIAO (11 nov), y mientras tanto el simulador | E5 de consumo |
 | Flujos de pase de lista y de sesiones | Yordi | La publicación del resultado de la visión | La asistencia en Postgres |
 | API de alumnos e importación de CSV | Yordi | El esquema de Postgres | El frontend de registro |
 | Reinicio por MQTT y reporte CSV | Yordi | El compose | La pantalla y el reporte final |
 | Frontend de registro completo | Yordi | La API de alumnos y el orden de enrolar | — |
-| `httpNodeAuth` y ACL de Mosquitto | Yordi | Los flujos de Node-RED | El despliegue seguro |
+| `httpNodeAuth` y `GALERIA_TOKEN` (11 nov) | Yordi | Los flujos de Node-RED | No se sirve `/api/galeria` sin `httpNodeAuth` y `GALERIA_TOKEN` (11 nov). No se registra a ninguna persona real sin `httpNodeAuth` y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo). |
+| ACL de Mosquitto (4 nov) | Yordi | El compose | El despliegue seguro y el registro de personas reales (regla de la fila anterior) |
 | Pantalla ILI9341 con sus 3 vistas | Yordi | Los overlays de SPI y la unidad systemd | — |
 
 ### 12.4 Equipos compartidos
@@ -537,21 +571,21 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así 
 |---|---|
 | La NPU deja de funcionar tras actualizar o recompilar el kernel | La placa corre la imagen oficial de Orange Pi con el kernel de fabricante `6.6.98-sun60iw2` (necesario también para ZeroTier), que trae el driver `vipcore` 1.13.0 y VIPLite; la NPU está verificada con `vpm_run`. El driver, las librerías VIPLite y el `.nb` (Acuity v2.0.10.2) tienen que ser compatibles entre sí: congelar los paquetes del kernel con `apt-mark hold` y volver a probar con `vpm_run` después de cualquier cambio de kernel |
 | Conversión de modelos difícil | Empezar por los ejemplos del ai-sdk de Radxa para el A733; los modelos de rostro son CNN estándar |
-| El servo, el buzzer y los LEDs RGB tienen que repartirse los 4 timers LEDC del ESP32-S3 | Cada timer fija la frecuencia de sus dos canales y todos los timers comparten reloj: el servo (50 Hz) necesita un timer propio, el buzzer otro, y los tres LEDs RGB pueden ocupar los dos que quedan. Repartir con `ledcAttach`/`ledcWrite` de Arduino 3.x, no con `ledcSetup`, y comprobar en la semana 1 que el servo se mueve mientras la cámara captura. La cámara no consume canal LEDC: en el ESP32-S3 el XCLK lo genera el periférico LCD_CAM |
-| Las compras del material aún no están hechas | El servo, el INA219, el PIR, el MOSFET y la tira LED de 12 V bloquean el firmware de la XIAO, la etapa de potencia y la lectura de energía. Son el camino crítico de las tres primeras semanas: pedirlas el lunes y no contar con el servo ni el INA219 hasta que lleguen |
-| El INA219 y la SCCB de la cámara pueden terminar en el mismo puerto I2C | La SCCB de la cámara usa el puerto I2C0 con los pines GPIO39 y GPIO40 de la placa Sense, y el INA219 en D4/D5 (GPIO5 y GPIO6) también es I2C0. La forma más simple de separarlos es poner el INA219 en `Wire1` (I2C1) con los pines explícitos, `Wire1.begin(5, 6)`. La otra vía es que la cámara use un puerto ya inicializado, pero para eso el driver exige dejar `pin_sccb_sda` y `pin_sccb_scl` a -1 y pasar el número de puerto en `sccb_i2c_port`. Verificar en la semana 1 que la cámara sigue detectando el sensor con el INA219 conectado |
+| El servo, el buzzer y los LEDs RGB tienen que repartirse los 4 timers LEDC del ESP32-S3 | Cada timer fija la frecuencia de sus dos canales y todos los timers comparten reloj: el servo (50 Hz) necesita un timer propio, el buzzer otro, y los tres LEDs RGB pueden ocupar los dos que quedan. Repartir con `ledcAttach`/`ledcWrite` de Arduino 3.x, no con `ledcSetup`, y comprobar al recibir la XIAO (hito del 11 nov) que el servo se mueve mientras la cámara captura. La cámara no consume canal LEDC: en el ESP32-S3 el XCLK lo genera el periférico LCD_CAM |
+| Las compras del material aún no están hechas | El servo, el INA219, el PIR, el MOSFET y la tira LED de 12 V bloquean el firmware de la XIAO, la etapa de potencia y la lectura de energía. Son el camino crítico: la XIAO llega la semana del 4 nov, así que todo su firmware pasa al hito del 11 nov y, hasta entonces, la ingesta se prueba con el simulador (`herramientas/simular_energia.sh`). No contar con el servo ni el INA219 hasta que lleguen |
+| El INA219 y la SCCB de la cámara pueden terminar en el mismo puerto I2C | La SCCB de la cámara usa el puerto I2C0 con los pines GPIO39 y GPIO40 de la placa Sense, y el INA219 en D4/D5 (GPIO5 y GPIO6) también es I2C0. La forma más simple de separarlos es poner el INA219 en `Wire1` (I2C1) con los pines explícitos, `Wire1.begin(5, 6)`. La otra vía es que la cámara use un puerto ya inicializado, pero para eso el driver exige dejar `pin_sccb_sda` y `pin_sccb_scl` a -1 y pasar el número de puerto en `sccb_i2c_port`. Verificar al recibir la XIAO (hito del 11 nov) que la cámara sigue detectando el sensor con el INA219 conectado |
 | Un solo microcontrolador concentra sensores y actuadores: si la XIAO se cuelga, se cae todo el nodo de campo | Watchdog y reconexión automática a Wi-Fi y MQTT; plan B: una ESP32-C3 económica solo para actuadores |
 | El profesor exige MariaDB | Esquema portable (sección 7.2) |
 | Mala calidad de imagen | Foto bajo demanda en alta resolución, tira LED frontal, filtro de calidad |
 | La XIAO se calienta | Sin streaming continuo, solo captura bajo demanda |
 | Suplantación con foto | Detección de vida por parpadeo entre cuadros (opcional) o documentarlo como limitación |
-| Privacidad de datos biométricos | Consentimiento, solo embeddings, sin fotos en el repo |
+| Privacidad de datos biométricos | Consentimiento con fecha en la base (formato en `docs/consentimiento.md`, pendiente), solo embeddings de alumnos registrados (los intentos no reconocidos no guardan embedding), sin fotos en el repo. Retirar el consentimiento borra el embedding de la base al instante y de los archivos de datos tras el autovacuum; los bytes pueden sobrevivir en el WAL o en espacio libre hasta que se sobrescriban, y cualquier `pg_dump` o copia del volumen los conserva |
 | La pantalla necesita SPI, GPIO e I²C | Corre en el host como servicio systemd, fuera de Docker; Node-RED la reinicia por MQTT: el script de Python hace `sys.exit(0)` y systemd, con `Restart=always`, lo levanta |
 | Todo el stack concentrado en la Orange Pi (4 GB de RAM) | Vigilar la RAM con las métricas del SoC y dejar margen para el servicio de visión y el frontend; a cambio, la laptop dejó de ser una dependencia del sistema |
 | Los overlays de SPI no exponen `/dev/spidev*` | Verificar en la semana 1 con `ls /dev/spidev*`; los overlays se activan con `orangepi-config` o en `/boot/orangepiEnv.txt` |
 | Hora incorrecta sin internet | RTC DS3231 en la Orange Pi |
 | El frontend queda en la ruta crítica del registro | Probar los endpoints desde la semana 2 con un cliente HTTP; la herramienta de enrolamiento por lote sirve de respaldo |
-| Acceso no autorizado a datos biométricos desde el frontend | `httpNodeAuth` en Node-RED y ACL en Mosquitto; los embeddings nunca llegan al navegador |
+| Acceso no autorizado a datos biométricos desde el frontend | `httpNodeAuth` y `GALERIA_TOKEN` en Node-RED (11 nov) y ACL en Mosquitto (4 nov); los embeddings nunca llegan al navegador y el consentimiento solo lo escribe el endpoint HTTP del profesor. No se sirve `/api/galeria` sin `httpNodeAuth` y `GALERIA_TOKEN` (11 nov). No se registra a ninguna persona real sin `httpNodeAuth` y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo). |
 | Un registro dispara el pase de lista | El servicio de visión ignora el PIR mientras hay un registro en curso |
-| El firmware y la visión son un solo punto de fallo | Un mismo error de protocolo MQTT rompe a la vez el pase de lista, la ingesta de energía y los flujos de Node-RED. Fijar los payloads de los tópicos en el repositorio antes de escribir el firmware, y probar el broker con un cliente de línea de comandos antes de encadenar el resto. Ahora los dos los escribe la misma persona (Gustavo), lo que da coherencia al contrato MQTT, pero concentra la carga |
-| D2 (GPIO3) es un pin de strapping del ESP32-S3 | En el arranque elige el origen de las señales JTAG y por defecto está flotante. El pull-down de la compuerta del MOSFET lo fija a 0, así que hay que verificar en la semana 1 que el USB Serial/JTAG sigue funcionando: es la vía de consola y de programación de la placa |
+| El firmware y la visión son un solo punto de fallo | Un mismo error de protocolo MQTT rompe a la vez el pase de lista, la ingesta de energía y los flujos de Node-RED. Fijar los payloads de los tópicos en el repositorio antes de escribir el firmware (que ahora empieza el 11 nov), y probar el broker con un cliente de línea de comandos antes de encadenar el resto. Ahora los dos los escribe la misma persona (Gustavo), lo que da coherencia al contrato MQTT, pero concentra la carga |
+| D2 (GPIO3) es un pin de strapping del ESP32-S3 | En el arranque elige el origen de las señales JTAG y por defecto está flotante. El pull-down de la compuerta del MOSFET lo fija a 0, así que hay que verificar al recibir la XIAO (hito del 11 nov) que el USB Serial/JTAG sigue funcionando: es la vía de consola y de programación de la placa |
