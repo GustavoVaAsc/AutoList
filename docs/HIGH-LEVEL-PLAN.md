@@ -61,8 +61,8 @@ La fuente editable del diagrama es [`diagramas/arquitectura.svg`](diagramas/arqu
 
 | Capa | Dispositivo | Responsabilidad |
 |---|---|---|
-| Campo | XIAO ESP32S3 Sense | Fotos bajo demanda (HTTP); PIR e INA219 (MQTT); servo, LEDs RGB, buzzer y MOSFET de la tira LED de 12 V (MQTT) |
-| Borde | Orange Pi Zero 3W | Servicio de visión (NPU, systemd), Docker (Mosquitto, Node-RED, Postgres con pgvector y Portainer), pantalla ILI9341, RTC DS3231, frontend web (servido por Node-RED) |
+| Campo | XIAO ESP32S3 | Fotos bajo demanda (HTTP); PIR e INA219 (MQTT); servo, LEDs RGB, buzzer y MOSFET de la tira LED de 12 V (MQTT) |
+| Edge | Orange Pi Zero 3W | Servicio de visión (NPU, systemd), Docker (Mosquitto, Node-RED, Postgres con pgvector y Portainer), pantalla ILI9341, RTC DS3231, frontend web (servido por Node-RED) |
 | Administración | Navegador de la laptop del profesor | Frontend web de registro de alumnos; la laptop solo abre el navegador |
 
 **Protocolos:**
@@ -178,7 +178,7 @@ sequenceDiagram
 
 ## 6. Componentes de software
 
-### 6.1 XIAO ESP32S3 Sense (`firmware/xiao`)
+### 6.1 XIAO ESP32S3 (`firmware/xiao`)
 - Core Arduino de ESP32 con PubSubClient, en C++.
 - **HTTP:** `/capture?res=UXGA` para la foto. `/stream` (MJPEG en QVGA) queda para la v2: en la primera versión no se usa (ver sección 6.7).
 - Descarta los primeros cuadros al despertar la cámara.
@@ -284,11 +284,11 @@ Desde el 11 nov, `GET /api/galeria` exige además el encabezado `X-Galeria-Token
 ### 7.1 Tópicos MQTT
 
 ```
-aula/camara/pir          XIAO → borde            {"mov":1}
-aula/camara/energia      XIAO → borde            {"v":12.1,"i":0.85,"p":10.3}
-aula/camara/estado       XIAO → borde            {"rssi":-58,"heap":120000,"temp":48}
-aula/actuador/cmd        borde → XIAO            {"servo":"abrir","led":"verde","buzzer":1,"luz":0}   (Node-RED o pantalla)
-aula/actuador/estado     XIAO → borde            {"servo":"cerrado","led":"azul","luz":0}
+aula/camara/pir          XIAO → edge             {"mov":1}
+aula/camara/energia      XIAO → edge             {"v":12.1,"i":0.85,"p":10.3}
+aula/camara/estado       XIAO → edge             {"rssi":-58,"heap":120000,"temp":48}
+aula/actuador/cmd        edge → XIAO             {"servo":"abrir","led":"verde","buzzer":1,"luz":0}   (Node-RED o pantalla)
+aula/actuador/estado     XIAO → edge             {"servo":"cerrado","led":"azul","luz":0}
 aula/vision/resultado    visión → Node-RED       {"cuenta":"320068234","conf":0.78,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
 aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234"}   (enrolar, cancelar, probar)
 aula/vision/enrolamiento visión → frontend, LCD  {"cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
@@ -407,10 +407,10 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 
 | Componente | Nodo | Uso |
 |---|---|---|
-| Orange Pi Zero 3W 4 GB + microSD | Borde | Inferencia, Docker, pantalla |
-| XIAO ESP32S3 Sense | Campo | Cámara (sensor OV3660, hasta 2048×1536), PIR, INA219 y actuadores |
-| ILI9341 con táctil XPT2046 | Borde (SPI) | Interfaz |
-| RTC DS3231 (rescatado) | Borde (I²C) | Hora confiable si no hay NTP |
+| Orange Pi Zero 3W 4 GB + microSD | Edge | Inferencia, Docker, pantalla |
+| XIAO ESP32S3 | Campo | Cámara (sensor OV3660, hasta 2048×1536), PIR, INA219 y actuadores |
+| ILI9341 con táctil XPT2046 | Edge (SPI) | Interfaz |
+| RTC DS3231 (rescatado) | Edge (I²C) | Hora confiable si no hay NTP |
 | PIR HC-SR501 | XIAO | Disparo de captura |
 | INA219 | XIAO (I²C) | Potencia del sistema, en serie con la entrada de 12 V |
 | Servo SG90 o MG90S + capacitor de 470 µF | XIAO | Puerta simulada |
@@ -484,7 +484,7 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 
 ## 12. Roles y plan semanal
 
-El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardware de la pantalla** (Arnau) y **borde, datos, frontend y pantalla** (Yordi). Cada hito es un miércoles y cada carril presenta un avance verificable ese día. La sección 12.3 lista las dependencias entre tareas: lo que no depende de nadie arranca de inmediato y lo que sí, espera.
+El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardware de la pantalla** (Arnau) y **edge, datos, frontend y pantalla** (Yordi). Cada hito es un miércoles y cada carril presenta un avance verificable ese día. La sección 12.3 lista las dependencias entre tareas: lo que no depende de nadie arranca de inmediato y lo que sí, espera.
 
 ### 12.1 Hitos
 
@@ -504,7 +504,7 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 |---|---|---|
 | **Gustavo** | Visión y campo | Servicio de visión en la NPU, conversión de modelos, mejora de imagen, antifraude, firmware de la XIAO (sensores y actuadores), etapa de potencia, pruebas unitarias, E1–E5, calibración LFW |
 | **Arnau** | Hardware de la pantalla y documentación | Overlays de SPI, unidad systemd de la pantalla (`orangepi-pantalla.service`), RTC DS3231, y documentación y presentaciones del proyecto (con la colaboración de todo el equipo) |
-| **Yordi** | Borde, datos, frontend y pantalla | Docker, Node-RED, Postgres, API HTTP, frontend web de registro con las gráficas de métricas y asistencia, pantalla ILI9341 (3 vistas y botones), E6 |
+| **Yordi** | Edge, datos, frontend y pantalla | Docker, Node-RED, Postgres, API HTTP, frontend web de registro con las gráficas de métricas y asistencia, pantalla ILI9341 (3 vistas y botones), E6 |
 
 ### 12.3 Dependencias entre tareas
 
@@ -534,12 +534,12 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 
 ### 12.4 Equipos compartidos
 
-La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así que las tareas que los ocupan se turnan. El turno de cada equipo se acuerda al inicio de cada hito, y el miércoles por la mañana se reserva como franja de demostraciones: la Orange Pi se enciende y cada carril muestra lo que trae. Con tres personas, la Orange Pi se reparte entre Gustavo para la NPU, Arnau para los overlays de SPI y la unidad systemd, y Yordi para el stack de Docker y la pantalla.
+La Orange Pi Zero 3W y la XIAO ESP32S3 son equipos físicos únicos, así que las tareas que los ocupan se turnan. El turno de cada equipo se acuerda al inicio de cada hito, y el miércoles por la mañana se reserva como franja de demostraciones: la Orange Pi se enciende y cada carril muestra lo que trae. Con tres personas, la Orange Pi se reparte entre Gustavo para la NPU, Arnau para los overlays de SPI y la unidad systemd, y Yordi para el stack de Docker y la pantalla.
 
 | Equipo | Tareas que lo ocupan | Quién lo usa |
 |---|---|---|
 | Orange Pi Zero 3W | NPU; overlays de SPI y unidad systemd; stack de Docker | Gustavo, Arnau y Yordi |
-| XIAO ESP32S3 Sense | Firmware de captura y sensores; etapa de potencia | Gustavo |
+| XIAO ESP32S3 | Firmware de captura y sensores; etapa de potencia | Gustavo |
 
 ## 13. Riesgos
 

@@ -1,11 +1,26 @@
 # AutoList: pase de lista con reconocimiento facial en Edge AI
 
-**Materia:** Fundamentos de Sistemas Embebidos 2027-1
-**Profesor:** Eduardo Fragoso Navarro
-**Equipo:** Jiménez Ayala Yordi Josué · Solé Pi Arnau Roger · Valenzuela Ascencio Gustavo
-**Plataforma Edge AI:** Orange Pi Zero 3W (Allwinner A733, NPU de 3 TOPS, 4 GB de RAM)
-
 > Última actualización: 1 nov 2026. Actualizamos este README con cada avance significativo; resume el estado del proyecto. El detalle técnico está en [`docs/HIGH-LEVEL-PLAN.md`](docs/HIGH-LEVEL-PLAN.md).
+
+## Datos generales
+
+### Materia
+
+Fundamentos de Sistemas Embebidos 2027-1
+
+### Profesor
+
+Eduardo Fragoso Navarro
+
+### Equipo
+
+- Jiménez Ayala Yordi Josué
+- Solé Pi Arnau Roger
+- Valenzuela Ascencio Gustavo
+
+### Plataforma Edge AI
+
+Orange Pi Zero 3W (Allwinner A733, NPU de 3 TOPS, 4 GB de RAM)
 
 ---
 
@@ -14,7 +29,7 @@
 AutoList automatiza el pase de lista y verifica que cada alumno esté físicamente en el aula. El reconocimiento facial corre en la NPU de la Orange Pi, sin servicios en la nube. Como antecedente existe un [proyecto previo de pase de lista por Bluetooth](https://github.com/Yordi-JA/Pase-de-Asitencia-Bluetooth-Proyecto-Final-Sistemas-de-comunicaciones), que registraba la asistencia pero no verificaba la identidad.
 
 El sistema:
-- detecta al alumno con un PIR, toma fotos con la XIAO ESP32S3 Sense y lo identifica en la NPU;
+- detecta al alumno con un PIR, toma fotos con la XIAO ESP32S3 y lo identifica en la NPU;
 - registra presente o retardo según la tolerancia de la sesión, con lista maestra y anti-doble registro;
 - da retroalimentación física: servo como puerta simulada, LEDs RGB, buzzer y una tira LED de 12 V (vía MOSFET) que ilumina la cara;
 - guarda todo en Postgres y lo muestra en un frontend web y en una pantalla táctil ILI9341;
@@ -42,9 +57,9 @@ Tópicos MQTT y esquema de la base: [sección 7](docs/HIGH-LEVEL-PLAN.md#7-datos
 
 | Componente | Tecnología | Carpeta | Estado |
 |---|---|---|---|
-| Stack de borde | Docker: Mosquitto, Node-RED (HTTPS), Postgres + pgvector, Portainer | `orangepi/`, `nodered/` | Funcionando: ingesta y API de energía |
+| Stack del edge | Docker: Mosquitto, Node-RED (HTTPS), Postgres + pgvector, Portainer | `orangepi/`, `nodered/` | Funcionando: ingesta y API de energía |
 | Servicio de visión | C++20 nativo con systemd, NPU (VIPLite), OpenCV 4.6 | `orangepi/vision` | Esqueleto con pruebas; faltan modelos y adaptadores reales |
-| Firmware de campo | XIAO ESP32S3 Sense, Arduino C++, MQTT y HTTP | `firmware/xiao` | Placa y cámara disponibles; firmware sin iniciar |
+| Firmware de campo | XIAO ESP32S3, Arduino C++, MQTT y HTTP | `firmware/xiao` | Placa y cámara disponibles; firmware sin iniciar |
 | Pantalla | Python en el host (systemd), ILI9341 + táctil XPT2046, RTC DS3231 | `orangepi/pantalla`, `orangepi/systemd` | Pantalla disponible; software sin iniciar |
 | Frontend web | Vite + React + TypeScript, servido por Node-RED | `web/` | Sin iniciar |
 
@@ -165,16 +180,16 @@ Resumen de la [sección 13](docs/HIGH-LEVEL-PLAN.md#13-riesgos) y de los pendien
 |---|---|
 | [`docs/HIGH-LEVEL-PLAN.md`](docs/HIGH-LEVEL-PLAN.md) | Plan de alto nivel: alcance, arquitectura, flujos, datos, hardware, experimentos, plan semanal y riesgos |
 | [`docs/contrato-mqtt.md`](docs/contrato-mqtt.md) | Contrato de tópicos y payloads MQTT entre módulos |
-| [`orangepi/README.md`](orangepi/README.md) | Operación del stack de borde: credenciales, arranque, acceso, energía y seguridad |
+| [`orangepi/README.md`](orangepi/README.md) | Operación del stack del edge: credenciales, arranque, acceso, energía y seguridad |
 | [`orangepi/vision/README.md`](orangepi/vision/README.md) | Servicio de visión: estructura, compilación, pruebas y lo que falta |
 | [`AGENTS.md`](AGENTS.md) | Reglas del repo: carriles, ramas, commits y seguridad de datos |
 | [`docs/diagramas/arquitectura.svg`](docs/diagramas/arquitectura.svg) | Fuente editable del diagrama de arquitectura |
 
 ## Instalación y ejecución
 
-> Hoy solo existen el stack de borde y el esqueleto de la visión. Completaremos esta sección cuando estén el firmware, la pantalla y el frontend.
+> Hoy solo existen el stack del edge y el esqueleto de la visión. Completaremos esta sección cuando estén el firmware, la pantalla y el frontend.
 
-### Stack de borde (en la Orange Pi)
+### Stack del edge (en la Orange Pi)
 
 Requisitos: Docker Compose 2.23.1 o posterior, arm64 y `openssl`. Guía completa: [`orangepi/README.md`](orangepi/README.md).
 
