@@ -151,10 +151,20 @@ class FakeHttpClient final : public HttpClient {
     return response;
   }
 
+  // Con cabeceras: se registran y se responde igual que sin ellas.
+  HttpResponse get(const std::string& url, Millis timeout, std::size_t max_body_bytes,
+                   const std::vector<std::string>& headers) override {
+    requested_headers.push_back(headers);
+    return get(url, timeout, max_body_bytes);
+  }
+
+  [[nodiscard]] bool supports_request_headers() const noexcept override { return true; }
+
   std::deque<HttpResponse> responses;
   std::vector<std::string> requested_urls;
   std::vector<Millis> requested_timeouts;
   std::vector<std::size_t> requested_max_body_bytes;
+  std::vector<std::vector<std::string>> requested_headers;
   std::function<void()> on_call;  // se ejecuta antes de responder
 };
 
