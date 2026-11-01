@@ -3,8 +3,11 @@
 docs/SPEC.md
 docs/PODA.md
 
-# Credenciales: solo se versiona .env.example
+# Credenciales: el .env real (orangepi/.env) nunca se versiona, a cualquier
+# profundidad; solo se versiona orangepi/.env.example
 .env
+.env.*
+!.env.example
 
 # Modelos y datasets: fuera de git, van en releases o en una carpeta compartida
 *.nb
@@ -20,3 +23,10 @@ web/build/
 .DS_Store
 Thumbs.db
 *.swp
+
+# Archivos que Node-RED escribe junto a flows.json al desplegar: la copia de
+# respaldo y el temporal del rename atómico (flows.json.$$$)
+nodered/flows/.flows*.backup
+nodered/flows/*.$$$
+# Red de seguridad: las credenciales de Node-RED viven en el volumen /data, no aquí
+nodered/flows/*_cred.json

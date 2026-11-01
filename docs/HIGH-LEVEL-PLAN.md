@@ -79,7 +79,7 @@ flowchart LR
   NR -->|MQTT reinicio| LCD
   LCD <-->|MQTT| MQ
   MQ -->|MQTT cmd| ESP
-  WEB -->|HTTP API| NR
+  WEB -->|HTTPS API| NR
   WEB <-->|MQTT WebSocket| MQ
 ```
 
@@ -93,8 +93,8 @@ flowchart LR
 - **HTTP:** imágenes de la cámara.
 - **MQTT:** telemetría, resultados y comandos.
 - **MQTT sobre WebSocket (puerto 9001):** progreso del registro en el frontend.
-- **HTTP (Node-RED):** frontend estático y API de alumnos y registro.
-- **SQL por localhost:** de Node-RED a Postgres, en la misma Orange Pi.
+- **HTTPS (Node-RED, certificado autofirmado):** frontend estático y API de alumnos y registro.
+- **SQL por la red del compose:** de Node-RED a Postgres, por el nombre de servicio `postgres`. El puerto 5432 solo se publica en 127.0.0.1.
 
 ## 5. Flujos
 
@@ -223,13 +223,13 @@ sequenceDiagram
 
 ### 6.3 Docker en la Orange Pi (`orangepi/docker-compose.yml`)
 - Mosquitto, con listener en 1883 y WebSocket en 9001 (para el frontend), y usuario y contraseña. Con ACL, el usuario del frontend no puede leer `aula/vision/embedding`.
-- Node-RED.
-- Postgres con la imagen `pgvector/pgvector`: sesiones, alumnos, asistencias y la tabla `metricas_energia`.
-- Portainer CE (`portainer/portainer-ce`), el bloque que aparece en la Fig. 1: se administra desde el navegador.
+- Node-RED, servido por HTTPS en el puerto 1880 con certificado autofirmado. El editor está protegido por usuario y contraseña (`adminAuth`).
+- Postgres con la imagen `pgvector/pgvector`: sesiones, alumnos, asistencias y la tabla `metricas_energia`. Se publica solo en `127.0.0.1:5432`; Node-RED lo alcanza por la red del compose con el nombre `postgres`. Node-RED usa un rol de base de datos con privilegios mínimos (solo SELECT e INSERT sobre `metricas_energia`), no el superusuario.
+- Portainer CE (`portainer/portainer-ce`), el bloque que aparece en la Fig. 1: se administra desde el navegador. Solo escucha en `127.0.0.1:9443`; desde otra máquina se entra con un túnel SSH (`ssh -L 9443:localhost:9443 ...`) y `https://localhost:9443`.
 - **La pantalla no corre en Docker.** Es el único componente que necesita SPI, GPIO e I²C, así que se ejecuta en el host como unidad systemd (`orangepi/systemd/orangepi-pantalla.service`), con el usuario del servicio en los grupos `spi`, `gpio` e `i2c`. Así los permisos de `/dev/spidev*` y `/dev/i2c-*` los resuelve el host con sus reglas de udev, sin mapear dispositivos al contenedor, y la pantalla sobrevive a un reinicio de Node-RED.
 - **El reinicio de la pantalla va por MQTT.** Node-RED publica un mensaje de reinicio y el script de Python hace `sys.exit(0)`; systemd, con `Restart=always`, lo vuelve a levantar. El arranque y la supervisión reales los hace systemd, no Node-RED.
 
-### 6.4 Node-RED (`nodered/flows.json`)
+### 6.4 Node-RED (`nodered/flows/flows.json`)
 1. **Ingesta:** MQTT → tabla `metricas_energia` de Postgres (energía, latencias y temperatura).
 2. **Pase de lista:** resultado → reglas → Postgres, actuador y pantalla.
 3. **Sesiones:** iniciar, terminar y generar el reporte CSV.
@@ -360,9 +360,13 @@ CREATE TABLE metricas_energia (
   lat_det_ms    INT,                      -- latencia de detección
   lat_emb_ms    INT,                      -- latencia de embedding
   lat_total_ms  INT,                      -- latencia total de inferencia
-  temp_soC      REAL,                     -- temperatura del SoC
+  temp_soc      REAL,                     -- temperatura del SoC
   hora          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Para GET /api/metricas/energia: filtra por origen y ordena por hora e id
+CREATE INDEX IF NOT EXISTS metricas_energia_origen_hora_idx
+  ON metricas_energia (origen, hora DESC, id DESC);
 ```
 
 Si el profesor exige MariaDB, solo cambian `vector` → `BLOB` y `TIMESTAMPTZ` → `DATETIME`; el resto es SQL estándar.
@@ -448,13 +452,15 @@ FROM alumnos ORDER BY embedding <=> $1 LIMIT 3;
   /pantalla              programa Python de la ILI9341
   /systemd               unidad systemd de la pantalla (orangepi-pantalla.service)
   /sql/schema.sql        esquema de Postgres (alumnos, sesiones, asistencias, metricas_energia)
+  /sql/roles.sh         rol de Node-RED en Postgres (privilegios mínimos)
   docker-compose.yml     Mosquitto, Node-RED, Postgres y Portainer
+  .env.example           credenciales de MQTT, Postgres y Node-RED (copiar a .env; nunca subir el .env)
 /nodered
-  flows.json
+  /flows/flows.json      flujos de Node-RED (el editor los escribe aquí al desplegar)
 /web                     frontend de registro (Vite + React + TypeScript)
 /herramientas            enrolamiento por lote (experimentos), calibración LFW, reporte CSV
+  simular_energia.sh     publica lecturas simuladas de energía en aula/camara/energia
 /docs                    diagramas, mediciones, consentimiento, reporte
-.env.example             credenciales de MQTT y Postgres (nunca subir el .env)
 ```
 
 **Convenciones:**
@@ -474,7 +480,7 @@ El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardwar
 | Fecha | Hito | Gustavo | Arnau | Yordi |
 |---|---|---|---|---|
 | **28 oct** | Proyecto y planeación | Especificación y exposición | Lista de compras | Repo y estructura |
-| **4 nov** | Primer avance | Armbian y `/dev/vipcore`; toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb`; XIAO: `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | Overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; ingesta a `metricas_energia`; primer gráfico de energía; arranque del esqueleto del frontend |
+| **4 nov** | Primer avance | Imagen oficial de Orange Pi (Debian 12, kernel 6.6 del fabricante), con `/dev/vipcore` presente en la placa; toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb`; XIAO: `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | Overlays de SPI (`ls /dev/spidev*`; en la placa ya aparecen `/dev/spidev3.0` y `/dev/spidev3.1`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; ingesta a `metricas_energia`; primer gráfico de energía; arranque del esqueleto del frontend |
 | **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro) |
 | **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E5; umbral con LFW | — | Frontend de registro completo, con la pestaña de Métricas y Asistencia; pantalla completa con sus 3 vistas y los botones de control |
 | **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend y de la pantalla; `httpNodeAuth` y ACL de Mosquitto; E6 |
@@ -493,7 +499,7 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 
 | Tarea | Persona | Depende de | Bloquea a |
 |---|---|---|---|
-| Armbian y verificación de `/dev/vipcore` | Gustavo | — | El ejemplo de detección en la NPU |
+| Verificación de `/dev/vipcore` en la imagen oficial | Gustavo | — | El ejemplo de detección en la NPU |
 | Toolchain Pegasus en la PC | Gustavo | — | La conversión del modelo a `.nb` |
 | Modelo convertido a `.nb` | Gustavo | El toolchain Pegasus | La detección y el embedding en la NPU |
 | Captura, PIR e INA219 por MQTT en la XIAO | Gustavo | La compra del INA219 y el PIR | La ingesta de energía a Postgres |
@@ -520,14 +526,14 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así 
 
 | Equipo | Tareas que lo ocupan | Quién lo usa |
 |---|---|---|
-| Orange Pi Zero 3W | Armbian y NPU; overlays de SPI y unidad systemd; stack de Docker | Gustavo, Arnau y Yordi |
+| Orange Pi Zero 3W | Imagen oficial y NPU; overlays de SPI y unidad systemd; stack de Docker | Gustavo, Arnau y Yordi |
 | XIAO ESP32S3 Sense | Firmware de captura y sensores; etapa de potencia | Gustavo |
 
 ## 13. Riesgos
 
 | Riesgo | Mitigación |
 |---|---|
-| La NPU no funciona en Armbian | En la imagen de Armbian de la Zero 3W el nodo `/dev/vipcore` aparece, pero la aceleración es opt-in: hay que instalar los blobs del fabricante. Plan B: imagen oficial de Orange Pi (kernel de fabricante 6.6) |
+| La NPU no funciona con la imagen oficial | En la placa, con la imagen oficial de Orange Pi (Debian 12, kernel de fabricante 6.6), el nodo `/dev/vipcore` ya aparece. Falta comprobar con el ejemplo de detección que la inferencia usa la NPU |
 | Conversión de modelos difícil | Empezar por los ejemplos del ai-sdk de Radxa para el A733; los modelos de rostro son CNN estándar |
 | El servo, el buzzer y los LEDs RGB tienen que repartirse los 4 timers LEDC del ESP32-S3 | Cada timer fija la frecuencia de sus dos canales y todos los timers comparten reloj: el servo (50 Hz) necesita un timer propio, el buzzer otro, y los tres LEDs RGB pueden ocupar los dos que quedan. Repartir con `ledcAttach`/`ledcWrite` de Arduino 3.x, no con `ledcSetup`, y comprobar en la semana 1 que el servo se mueve mientras la cámara captura. La cámara no consume canal LEDC: en el ESP32-S3 el XCLK lo genera el periférico LCD_CAM |
 | Las compras del material aún no están hechas | El servo, el INA219, el PIR, el MOSFET y la tira LED de 12 V bloquean el firmware de la XIAO, la etapa de potencia y la lectura de energía. Son el camino crítico de las tres primeras semanas: pedirlas el lunes y no contar con el servo ni el INA219 hasta que lleguen |
@@ -540,7 +546,7 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así 
 | Privacidad de datos biométricos | Consentimiento, solo embeddings, sin fotos en el repo |
 | La pantalla necesita SPI, GPIO e I²C | Corre en el host como servicio systemd, fuera de Docker; Node-RED la reinicia por MQTT: el script de Python hace `sys.exit(0)` y systemd, con `Restart=always`, lo levanta |
 | Todo el stack concentrado en la Orange Pi (4 GB de RAM) | Vigilar la RAM con las métricas del SoC y dejar margen para el servicio de visión y el frontend; a cambio, la laptop dejó de ser una dependencia del sistema |
-| Los overlays de SPI no exponen `/dev/spidev*` | Verificar en la semana 1 con `ls /dev/spidev*` y `armbian-config`; plan B: imagen oficial del fabricante |
+| Los overlays de SPI no exponen `/dev/spidev*` | En la placa, con la imagen oficial, ya aparecen `/dev/spidev3.0` y `/dev/spidev3.1`; se confirma con `ls /dev/spidev*` |
 | Hora incorrecta sin internet | RTC DS3231 en la Orange Pi |
 | El frontend queda en la ruta crítica del registro | Probar los endpoints desde la semana 2 con un cliente HTTP; la herramienta de enrolamiento por lote sirve de respaldo |
 | Acceso no autorizado a datos biométricos desde el frontend | `httpNodeAuth` en Node-RED y ACL en Mosquitto; los embeddings nunca llegan al navegador |
