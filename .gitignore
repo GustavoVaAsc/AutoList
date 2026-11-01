@@ -18,6 +18,7 @@ docs/PODA.md
 node_modules/
 web/dist/
 web/build/
+orangepi/vision/build/
 
 # Sistema
 .DS_Store
