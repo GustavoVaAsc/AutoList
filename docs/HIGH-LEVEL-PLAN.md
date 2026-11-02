@@ -55,45 +55,21 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 
 ## 4. Arquitectura
 
-```mermaid
-flowchart LR
-  subgraph Campo
-    ESP["XIAO ESP32S3 Sense<br/>cámara, PIR, INA219<br/>servo, LEDs, buzzer, MOSFET"]
-  end
-  subgraph OPi["Orange Pi Zero 3W"]
-    VIS["Servicio de visión C++<br/>NPU"]
-    MQ["Mosquitto"]
-    NR["Node-RED"]
-    PG[("Postgres + pgvector")]
-    POR["Portainer CE"]
-    LCD["Pantalla ILI9341<br/>Python (systemd)"]
-  end
-  WEB["Frontend web de registro<br/>Vite + React"]
+![Arquitectura del sistema](diagramas/arquitectura.png)
 
-  ESP -->|HTTP fotos| VIS
-  ESP -->|MQTT pir y energía| MQ
-  VIS <-->|MQTT| MQ
-  MQ <-->|MQTT| NR
-  NR --> PG
-  POR -.->|administra| NR
-  NR -->|MQTT reinicio| LCD
-  LCD <-->|MQTT| MQ
-  MQ -->|MQTT cmd| ESP
-  WEB -->|HTTPS API| NR
-  WEB <-->|MQTT WebSocket| MQ
-```
+La fuente editable del diagrama es [`diagramas/arquitectura.svg`](diagramas/arquitectura.svg).
 
 | Capa | Dispositivo | Responsabilidad |
 |---|---|---|
-| Campo | XIAO ESP32S3 Sense | Fotos bajo demanda (HTTP); PIR e INA219 (MQTT); servo, LEDs RGB, buzzer y MOSFET de la tira LED de 12 V (MQTT) |
-| Borde | Orange Pi Zero 3W | Servicio de visión (NPU), Docker (Mosquitto, Node-RED, Postgres con pgvector y Portainer), pantalla ILI9341, RTC DS3231, frontend web (servido por Node-RED) |
+| Campo | XIAO ESP32S3 | Fotos bajo demanda (HTTP); PIR e INA219 (MQTT); servo, LEDs RGB, buzzer y MOSFET de la tira LED de 12 V (MQTT) |
+| Edge | Orange Pi Zero 3W | Servicio de visión (NPU, systemd), Docker (Mosquitto, Node-RED, Postgres con pgvector y Portainer), pantalla ILI9341, RTC DS3231, frontend web (servido por Node-RED) |
 | Administración | Navegador de la laptop del profesor | Frontend web de registro de alumnos; la laptop solo abre el navegador |
 
 **Protocolos:**
 - **HTTP:** imágenes de la cámara.
 - **MQTT:** telemetría, resultados y comandos.
 - **MQTT sobre WebSocket (puerto 9001):** progreso del registro en el frontend.
-- **HTTPS (Node-RED, certificado autofirmado):** frontend estático y API de alumnos y registro.
+- **HTTPS (Node-RED, certificado autofirmado):** frontend estático, API de alumnos y registro, y la galería que pide el servicio de visión (`GET /api/galeria`).
 - **SQL por la red del compose:** de Node-RED a Postgres, por el nombre de servicio `postgres`. El puerto 5432 solo se publica en 127.0.0.1.
 
 ## 5. Flujos
@@ -121,7 +97,7 @@ sequenceDiagram
 
 1. El PIR de la XIAO detecta movimiento y lo publica.
 2. El servicio de visión enciende la tira LED, espera unos 300 ms a que la exposición se estabilice y pide una ráfaga de fotos en alta resolución.
-3. Filtro de calidad: elige la foto más nítida (varianza del Laplaciano). Si ninguna pasa el umbral, publica `decision: imagen_insuficiente`.
+3. Filtro de calidad: elige la foto más nítida (varianza del Laplaciano). Si ninguna pasa el umbral, publica `motivo: imagen_insuficiente`.
 4. En la NPU, detecta el rostro y sus 5 puntos clave, alinea la cara a 112×112 y calcula el embedding.
 5. Compara contra la galería local por similitud coseno y publica el resultado con sus latencias.
 6. Node-RED aplica las reglas de la sesión:
@@ -202,7 +178,7 @@ sequenceDiagram
 
 ## 6. Componentes de software
 
-### 6.1 XIAO ESP32S3 Sense (`firmware/xiao`)
+### 6.1 XIAO ESP32S3 (`firmware/xiao`)
 - Core Arduino de ESP32 con PubSubClient, en C++.
 - **HTTP:** `/capture?res=UXGA` para la foto. `/stream` (MJPEG en QVGA) queda para la v2: en la primera versión no se usa (ver sección 6.7).
 - Descarta los primeros cuadros al despertar la cámara.
@@ -308,16 +284,15 @@ Desde el 11 nov, `GET /api/galeria` exige además el encabezado `X-Galeria-Token
 ### 7.1 Tópicos MQTT
 
 ```
-aula/camara/pir          XIAO → borde            {"mov":1}
-aula/camara/energia      XIAO → borde            {"v":12.1,"i":0.85,"p":10.3}
-aula/camara/estado       XIAO → borde            {"rssi":-58,"heap":120000,"temp":48}
-aula/actuador/cmd        borde → XIAO            {"servo":"abrir","led":"verde","buzzer":1,"luz":0}   (Node-RED o pantalla)
-aula/actuador/estado     XIAO → borde            {"servo":"cerrado","led":"azul","luz":0}
-aula/vision/resultado    visión → Node-RED       {"ts":"2026-11-04T09:12:33.120-06:00","modo":"pase","decision":"reconocido","cuenta":"320068234","conf":0.78,"margen":0.21,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
-aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234","nombre":"Ana López"}   (enrolar, cancelar, probar)
-aula/vision/enrolamiento visión → frontend, LCD  {"ts":"2026-11-04T09:12:33.120-06:00","cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
-aula/vision/embedding    visión → Node-RED       {"ts":"2026-11-04T09:12:33.120-06:00","cuenta":"320068234","dim":512,"modelo":"w600k_mbf-uint8-v1","embedding":[...]}   (QoS 1, retain=false; solo lo consume Node-RED, que acepta únicamente la cuenta con inscripción pendiente)
-aula/vision/estado       visión → Node-RED, web  {"ts":"2026-11-04T09:12:33.120-06:00","en_linea":true,"modo":"inactivo","galeria":38,"modelo":"w600k_mbf-uint8-v1"}   (QoS 1, retenido; el LWT {"en_linea":false} lo pone el broker)
+aula/camara/pir          XIAO → edge             {"mov":1}
+aula/camara/energia      XIAO → edge             {"v":12.1,"i":0.85,"p":10.3}
+aula/camara/estado       XIAO → edge             {"rssi":-58,"heap":120000,"temp":48}
+aula/actuador/cmd        edge → XIAO             {"servo":"abrir","led":"verde","buzzer":1,"luz":0}   (Node-RED o pantalla)
+aula/actuador/estado     XIAO → edge             {"servo":"cerrado","led":"azul","luz":0}
+aula/vision/resultado    visión → Node-RED       {"cuenta":"320068234","conf":0.78,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
+aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234"}   (enrolar, cancelar, probar)
+aula/vision/enrolamiento visión → frontend, LCD  {"cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
+aula/vision/embedding    visión → Node-RED       {"cuenta":"320068234","embedding":[...]}   (QoS 1, retain=false; solo lo consume Node-RED, que acepta únicamente la cuenta con inscripción pendiente)
 aula/vision/galeria/alta Node-RED → visión       {"cuenta":"320068234"}   (QoS 1, nunca retenido; tras guardar el embedding: el servicio recarga la galería con GET /api/galeria)
 aula/vision/galeria/baja Node-RED → visión       {"cuenta":"320068234"}   (QoS 1, nunca retenido; retira a una persona de la galería en RAM)
 aula/sesion/cmd          pantalla → Node-RED     {"accion":"iniciar","materia":"FSE","grupo":"1","tol_min":10}
@@ -329,8 +304,6 @@ aula/sistema/metricas    Orange Pi → Node-RED    {"temp":52.1,"cpu":34,"ram":6
 > Los valores de ejemplo son ilustrativos, no mediciones.
 
 > Con las ACL (4 nov), solo el usuario de Node-RED puede publicar en `aula/vision/galeria/#`.
-
-> `decision` es el veredicto del servicio de visión (`reconocido`, `dudoso`, `desconocido`, `sin_rostro`, `imagen_insuficiente`, `error`) y `motivo` da el detalle fino de ese veredicto (el esquema SQL `intentos.motivo` lo necesita). El servicio aplica los dos umbrales (`reconocido` y `dudoso`, zona gris del LED ámbar de la sección 5.1) y los publica como `decision`; Node-RED decide sobre `decision` y no compara números. Los payloads completos, los vocabularios y las extensiones están en `docs/contrato-mqtt.md`, que manda sobre esta sección.
 
 ### 7.2 Esquema de Postgres (`orangepi/sql/schema.sql`)
 
@@ -434,10 +407,10 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 
 | Componente | Nodo | Uso |
 |---|---|---|
-| Orange Pi Zero 3W 4 GB + microSD | Borde | Inferencia, Docker, pantalla |
-| XIAO ESP32S3 Sense | Campo | Cámara (sensor OV3660, hasta 2048×1536), PIR, INA219 y actuadores |
-| ILI9341 con táctil XPT2046 | Borde (SPI) | Interfaz |
-| RTC DS3231 (rescatado) | Borde (I²C) | Hora confiable si no hay NTP |
+| Orange Pi Zero 3W 4 GB + microSD | Edge | Inferencia, Docker, pantalla |
+| XIAO ESP32S3 | Campo | Cámara (sensor OV3660, hasta 2048×1536), PIR, INA219 y actuadores |
+| ILI9341 con táctil XPT2046 | Edge (SPI) | Interfaz |
+| RTC DS3231 (rescatado) | Edge (I²C) | Hora confiable si no hay NTP |
 | PIR HC-SR501 | XIAO | Disparo de captura |
 | INA219 | XIAO (I²C) | Potencia del sistema, en serie con la entrada de 12 V |
 | Servo SG90 o MG90S + capacitor de 470 µF | XIAO | Puerta simulada |
@@ -488,9 +461,7 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 /orangepi
   /vision                servicio C++, scripts de conversión (.nb fuera de git)
   /pantalla              programa Python de la ILI9341
-  /systemd               unidades systemd del host
-    orangepi-vision.service  unidad systemd del servicio de visión
-    (la unidad de la pantalla, orangepi-pantalla.service, sigue sin crearse)
+  /systemd               unidad systemd de la pantalla (orangepi-pantalla.service)
   /sql/schema.sql        esquema de Postgres (alumnos, sesiones, asistencias, metricas_energia)
   /sql/roles.sh         rol de Node-RED en Postgres (privilegios mínimos)
   docker-compose.yml     Mosquitto, Node-RED, Postgres y Portainer
@@ -513,21 +484,19 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 
 ## 12. Roles y plan semanal
 
-El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardware de la pantalla** (Arnau) y **borde, datos, frontend y pantalla** (Yordi). Cada hito es un miércoles y cada carril presenta un avance verificable ese día. La sección 12.3 lista las dependencias entre tareas: lo que no depende de nadie arranca de inmediato y lo que sí, espera.
+El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardware de la pantalla** (Arnau) y **edge, datos, frontend y pantalla** (Yordi). Cada hito es un miércoles y cada carril presenta un avance verificable ese día. La sección 12.3 lista las dependencias entre tareas: lo que no depende de nadie arranca de inmediato y lo que sí, espera.
 
 ### 12.1 Hitos
 
 | Fecha | Hito | Gustavo | Arnau | Yordi |
 |---|---|---|---|---|
-| **28 oct** | Proyecto y planeación | Especificación y exposición | Lista de compras | Repo y estructura |
-| **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms); toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb` | Overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; ingesta a `metricas_energia`; primer gráfico de energía; arranque del esqueleto del frontend; ACL de Mosquitto y usuarios por rol |
-| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura; XIAO (llega la semana del 4 nov): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro); `httpNodeAuth` en Node-RED |
+| **28 oct** | Proyecto y planeación | Especificación y exposición | Lista de compras (reprogramada al 4 nov) | Repo y estructura |
+| **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms); toolchain Pegasus en la PC; modelo de la NPU convertido a `.nb` | Lista de compras (reprogramada desde el 28 oct); overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; ingesta a `metricas_energia`; primer gráfico de energía; arranque del esqueleto del frontend; ACL de Mosquitto y usuarios por rol |
+| **11 nov** | Segundo avance | Detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura; XIAO (la placa y su cámara ya están; los sensores y actuadores dependen de las compras): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro); `httpNodeAuth` en Node-RED |
 | **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E5; umbral con LFW | — | Frontend de registro completo, con la pestaña de Métricas y Asistencia; pantalla completa con sus 3 vistas y los botones de control |
 | **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend y de la pantalla; E6 |
 
 La fila del 25 de noviembre es de integración: el comprimido de código lo aporta todo el equipo.
-
-> **Adelantado del hito del 11 de noviembre.** Los adaptadores reales de MQTT y HTTP del servicio de visión (`MosquittoBus`, `HttplibClient` y `GalleryStore`), el proceso de producción (bucle, configuración, señales, recarga de la galería) y su unidad systemd se adelantaron al 11 de noviembre. La razón es que dependían del toolchain de modelos, que todavía no está: esperarlos solo para poder hacerlos evitaba un bloque de trabajo que no depende de él. Lo que sí sigue atado al toolchain es la detección y el embedding en la NPU, y con ellos el primer pase de lista real.
 
 ### 12.2 Reparto
 
@@ -535,7 +504,7 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 |---|---|---|
 | **Gustavo** | Visión y campo | Servicio de visión en la NPU, conversión de modelos, mejora de imagen, antifraude, firmware de la XIAO (sensores y actuadores), etapa de potencia, pruebas unitarias, E1–E5, calibración LFW |
 | **Arnau** | Hardware de la pantalla y documentación | Overlays de SPI, unidad systemd de la pantalla (`orangepi-pantalla.service`), RTC DS3231, y documentación y presentaciones del proyecto (con la colaboración de todo el equipo) |
-| **Yordi** | Borde, datos, frontend y pantalla | Docker, Node-RED, Postgres, API HTTP, frontend web de registro con las gráficas de métricas y asistencia, pantalla ILI9341 (3 vistas y botones), E6 |
+| **Yordi** | Edge, datos, frontend y pantalla | Docker, Node-RED, Postgres, API HTTP, frontend web de registro con las gráficas de métricas y asistencia, pantalla ILI9341 (3 vistas y botones), E6 |
 
 ### 12.3 Dependencias entre tareas
 
@@ -544,10 +513,8 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 | Verificación de la NPU en la imagen oficial (hecho) | Gustavo | — | El ejemplo de detección en la NPU |
 | Toolchain Pegasus en la PC | Gustavo | — | La conversión del modelo a `.nb` |
 | Modelo convertido a `.nb` | Gustavo | El toolchain Pegasus | La detección y el embedding en la NPU |
-| Adaptadores reales de MQTT y HTTP (adelantado) | Gustavo | Las interfaces del núcleo (`MessageBus`, `HttpClient`) y el contrato MQTT v0.3 | El proceso de producción y la prueba de humo |
-| Proceso de producción y unidad systemd (adelantado) | Gustavo | Los adaptadores reales | El primer pase de lista real en la placa |
-| Captura, PIR e INA219 por MQTT en la XIAO (11 nov) | Gustavo | La llegada de la XIAO y la compra del INA219 y el PIR | La ingesta de energía real a Postgres |
-| Servo y LEDs por MQTT (11 nov) | Gustavo | La llegada de la XIAO y la compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
+| Captura, PIR e INA219 por MQTT en la XIAO (11 nov) | Gustavo | La compra del INA219 y el PIR (la XIAO y su cámara ya están) | La ingesta de energía real a Postgres |
+| Servo y LEDs por MQTT (11 nov) | Gustavo | La compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
 | Prueba de servo y captura simultáneas (11 nov) | Gustavo | El servo y el firmware de la XIAO | — |
 | Overlays de SPI y unidad systemd | Arnau | — | La pantalla en la Orange Pi |
 | Detección, alineación y embedding en la NPU | Gustavo | El modelo `.nb` y `/dev/vipcore` | La galería y la publicación del resultado |
@@ -567,12 +534,12 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 
 ### 12.4 Equipos compartidos
 
-La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así que las tareas que los ocupan se turnan. El turno de cada equipo se acuerda al inicio de cada hito, y el miércoles por la mañana se reserva como franja de demostraciones: la Orange Pi se enciende y cada carril muestra lo que trae. Con tres personas, la Orange Pi se reparte entre Gustavo para la NPU, Arnau para los overlays de SPI y la unidad systemd, y Yordi para el stack de Docker y la pantalla.
+La Orange Pi Zero 3W y la XIAO ESP32S3 son equipos físicos únicos, así que las tareas que los ocupan se turnan. El turno de cada equipo se acuerda al inicio de cada hito, y el miércoles por la mañana se reserva como franja de demostraciones: la Orange Pi se enciende y cada carril muestra lo que trae. Con tres personas, la Orange Pi se reparte entre Gustavo para la NPU, Arnau para los overlays de SPI y la unidad systemd, y Yordi para el stack de Docker y la pantalla.
 
 | Equipo | Tareas que lo ocupan | Quién lo usa |
 |---|---|---|
 | Orange Pi Zero 3W | NPU; overlays de SPI y unidad systemd; stack de Docker | Gustavo, Arnau y Yordi |
-| XIAO ESP32S3 Sense | Firmware de captura y sensores; etapa de potencia | Gustavo |
+| XIAO ESP32S3 | Firmware de captura y sensores; etapa de potencia | Gustavo |
 
 ## 13. Riesgos
 
@@ -580,9 +547,9 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así 
 |---|---|
 | La NPU deja de funcionar tras actualizar o recompilar el kernel | La placa corre la imagen oficial de Orange Pi con el kernel de fabricante `6.6.98-sun60iw2` (necesario también para ZeroTier), que trae el driver `vipcore` 1.13.0 y VIPLite; la NPU está verificada con `vpm_run`. El driver, las librerías VIPLite y el `.nb` (Acuity v2.0.10.2) tienen que ser compatibles entre sí: congelar los paquetes del kernel con `apt-mark hold` y volver a probar con `vpm_run` después de cualquier cambio de kernel |
 | Conversión de modelos difícil | Empezar por los ejemplos del ai-sdk de Radxa para el A733; los modelos de rostro son CNN estándar |
-| El servo, el buzzer y los LEDs RGB tienen que repartirse los 4 timers LEDC del ESP32-S3 | Cada timer fija la frecuencia de sus dos canales y todos los timers comparten reloj: el servo (50 Hz) necesita un timer propio, el buzzer otro, y los tres LEDs RGB pueden ocupar los dos que quedan. Repartir con `ledcAttach`/`ledcWrite` de Arduino 3.x, no con `ledcSetup`, y comprobar al recibir la XIAO (hito del 11 nov) que el servo se mueve mientras la cámara captura. La cámara no consume canal LEDC: en el ESP32-S3 el XCLK lo genera el periférico LCD_CAM |
-| Las compras del material aún no están hechas | El servo, el INA219, el PIR, el MOSFET y la tira LED de 12 V bloquean el firmware de la XIAO, la etapa de potencia y la lectura de energía. Son el camino crítico: la XIAO llega la semana del 4 nov, así que todo su firmware pasa al hito del 11 nov y, hasta entonces, la ingesta se prueba con el simulador (`herramientas/simular_energia.sh`). No contar con el servo ni el INA219 hasta que lleguen |
-| El INA219 y la SCCB de la cámara pueden terminar en el mismo puerto I2C | La SCCB de la cámara usa el puerto I2C0 con los pines GPIO39 y GPIO40 de la placa Sense, y el INA219 en D4/D5 (GPIO5 y GPIO6) también es I2C0. La forma más simple de separarlos es poner el INA219 en `Wire1` (I2C1) con los pines explícitos, `Wire1.begin(5, 6)`. La otra vía es que la cámara use un puerto ya inicializado, pero para eso el driver exige dejar `pin_sccb_sda` y `pin_sccb_scl` a -1 y pasar el número de puerto en `sccb_i2c_port`. Verificar al recibir la XIAO (hito del 11 nov) que la cámara sigue detectando el sensor con el INA219 conectado |
+| El servo, el buzzer y los LEDs RGB tienen que repartirse los 4 timers LEDC del ESP32-S3 | Cada timer fija la frecuencia de sus dos canales y todos los timers comparten reloj: el servo (50 Hz) necesita un timer propio, el buzzer otro, y los tres LEDs RGB pueden ocupar los dos que quedan. Repartir con `ledcAttach`/`ledcWrite` de Arduino 3.x, no con `ledcSetup`, y comprobar en cuanto llegue el servo (hito del 11 nov) que se mueve mientras la cámara captura. La cámara no consume canal LEDC: en el ESP32-S3 el XCLK lo genera el periférico LCD_CAM |
+| Las compras del material aún no están hechas | El servo, el INA219, el PIR, el MOSFET y la tira LED de 12 V bloquean el firmware de la XIAO, la etapa de potencia y la lectura de energía. Son el camino crítico: la XIAO y su cámara ya están, pero sus sensores y actuadores dependen de estas compras, así que ese firmware queda en el hito del 11 nov. La captura por HTTP puede avanzar desde ya y, hasta que llegue el INA219, la ingesta se prueba con el simulador (`herramientas/simular_energia.sh`). No contar con el servo ni el INA219 hasta que lleguen |
+| El INA219 y la SCCB de la cámara pueden terminar en el mismo puerto I2C | La SCCB de la cámara usa el puerto I2C0 con los pines GPIO39 y GPIO40 de la placa Sense, y el INA219 en D4/D5 (GPIO5 y GPIO6) también es I2C0. La forma más simple de separarlos es poner el INA219 en `Wire1` (I2C1) con los pines explícitos, `Wire1.begin(5, 6)`. La otra vía es que la cámara use un puerto ya inicializado, pero para eso el driver exige dejar `pin_sccb_sda` y `pin_sccb_scl` a -1 y pasar el número de puerto en `sccb_i2c_port`. Verificar en cuanto llegue el INA219 (hito del 11 nov) que la cámara sigue detectando el sensor con el INA219 conectado |
 | Un solo microcontrolador concentra sensores y actuadores: si la XIAO se cuelga, se cae todo el nodo de campo | Watchdog y reconexión automática a Wi-Fi y MQTT; plan B: una ESP32-C3 económica solo para actuadores |
 | El profesor exige MariaDB | Esquema portable (sección 7.2) |
 | Mala calidad de imagen | Foto bajo demanda en alta resolución, tira LED frontal, filtro de calidad |
@@ -597,4 +564,4 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 Sense son equipos físicos únicos, así 
 | Acceso no autorizado a datos biométricos desde el frontend | `httpNodeAuth` y `GALERIA_TOKEN` en Node-RED (11 nov) y ACL en Mosquitto (4 nov); los embeddings nunca llegan al navegador y el consentimiento solo lo escribe el endpoint HTTP del profesor. No se sirve `/api/galeria` sin `httpNodeAuth` y `GALERIA_TOKEN` (11 nov). No se registra a ninguna persona real sin `httpNodeAuth` y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo). |
 | Un registro dispara el pase de lista | El servicio de visión ignora el PIR mientras hay un registro en curso |
 | El firmware y la visión son un solo punto de fallo | Un mismo error de protocolo MQTT rompe a la vez el pase de lista, la ingesta de energía y los flujos de Node-RED. Fijar los payloads de los tópicos en el repositorio antes de escribir el firmware (que ahora empieza el 11 nov), y probar el broker con un cliente de línea de comandos antes de encadenar el resto. Ahora los dos los escribe la misma persona (Gustavo), lo que da coherencia al contrato MQTT, pero concentra la carga |
-| D2 (GPIO3) es un pin de strapping del ESP32-S3 | En el arranque elige el origen de las señales JTAG y por defecto está flotante. El pull-down de la compuerta del MOSFET lo fija a 0, así que hay que verificar al recibir la XIAO (hito del 11 nov) que el USB Serial/JTAG sigue funcionando: es la vía de consola y de programación de la placa |
+| D2 (GPIO3) es un pin de strapping del ESP32-S3 | En el arranque elige el origen de las señales JTAG y por defecto está flotante. El pull-down de la compuerta del MOSFET lo fija a 0, así que hay que verificar al conectar el MOSFET (hito del 11 nov) que el USB Serial/JTAG sigue funcionando: es la vía de consola y de programación de la placa |
