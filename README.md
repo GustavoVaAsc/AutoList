@@ -58,7 +58,7 @@ Tópicos MQTT y esquema de la base: [sección 7](docs/HIGH-LEVEL-PLAN.md#7-datos
 | Componente | Tecnología | Carpeta | Estado |
 |---|---|---|---|
 | Stack del edge | Docker: Mosquitto, Node-RED (HTTPS), Postgres + pgvector, Portainer | `orangepi/`, `nodered/` | Funcionando: ingesta y API de energía |
-| Servicio de visión | C++20 nativo con systemd, NPU (VIPLite), OpenCV 4.6 | `orangepi/vision` | Esqueleto con pruebas; faltan modelos y adaptadores reales |
+| Servicio de visión | C++20 nativo con systemd, NPU (VIPLite), OpenCV 4.6 | `orangepi/vision` | Proceso de producción, adaptadores reales de MQTT y HTTP, contrato MQTT v0.3, unidad systemd y pruebas; faltan los modelos `.nb`, el detector y el embedder sobre la NPU |
 | Firmware de campo | XIAO ESP32S3, Arduino C++, MQTT y HTTP | `firmware/xiao` | Placa y cámara disponibles; firmware sin iniciar |
 | Pantalla | Python en el host (systemd), ILI9341 + táctil XPT2046, RTC DS3231 | `orangepi/pantalla`, `orangepi/systemd` | Pantalla disponible; software sin iniciar |
 | Frontend web | Vite + React + TypeScript, servido por Node-RED | `web/` | Sin iniciar |
@@ -111,7 +111,7 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Entregable | Estado | Evidencia |
 |---|---|---|
 | Detección, alineación y embedding en la NPU | Parcial | Alineación a 112×112 implementada y probada; faltan el detector y el embedder sobre la NPU |
-| Galería y publicación del resultado | Parcial | Galería en RAM con similitud coseno y contrato MQTT tipado; falta el adaptador MQTT real |
+| Galería y publicación del resultado | Parcial | Galería en RAM con similitud coseno, contrato MQTT v0.3, adaptadores reales de MQTT y HTTP y proceso de producción con configuración y señales |
 | Orden de enrolar con captura de 5 poses | Parcial | Máquina de estados del registro probada con dobles en memoria |
 | MOSFET y tira LED de 12 V; orquestación de luz y captura | Pendiente | |
 | XIAO: `/capture`, PIR e INA219 por MQTT; servo y LEDs por MQTT | Pendiente | La placa y su cámara ya están; el PIR, el INA219 y el servo dependen de las compras |
@@ -157,7 +157,7 @@ Para el 4 nov falta esto del primer avance:
 - Arrancar el esqueleto del frontend.
 - Escribir las ACL de Mosquitto y los usuarios por rol.
 
-Después, en orden de dependencia, siguen los modelos `.nb`, el detector y el embedder en la NPU, los adaptadores reales de MQTT y HTTP en la visión, los flujos de pase de lista y de registro, y el frontend de registro. La captura de fotos de la XIAO (`/capture`) puede empezar ya; sus sensores y actuadores esperan las compras. Dependencias completas: [sección 12.3](docs/HIGH-LEVEL-PLAN.md#123-dependencias-entre-tareas).
+Después, en orden de dependencia, siguen los modelos `.nb`, el detector y el embedder en la NPU, el primer pase de lista real, los flujos de pase de lista y de registro, y el frontend de registro. Los adaptadores reales de MQTT y HTTP en la visión y el proceso de producción (configuración, señales y unidad systemd) se adelantaron, porque dependían del toolchain de modelos, que todavía no está: sin los `.nb` no hay detector ni embedder, pero el cableado entre broker, cámara, galería y servicio sí se puede dejar cerrado y probado. La captura de fotos de la XIAO (`/capture`) puede empezar ya; sus sensores y actuadores esperan las compras. Dependencias completas: [sección 12.3](docs/HIGH-LEVEL-PLAN.md#123-dependencias-entre-tareas).
 
 ## Riesgos abiertos
 
@@ -209,7 +209,7 @@ Para generar lecturas de prueba, ejecuta `herramientas/simular_energia.sh 5 1` d
 
 ### Servicio de visión (en la Orange Pi)
 
-Requisitos: g++ 12, CMake 3.16 o posterior, `libopencv-dev` 4.6 y el runtime VIPLite del fabricante. Guía completa: [`orangepi/vision/README.md`](orangepi/vision/README.md).
+Requisitos: g++ 12, CMake 3.16 o posterior, `libopencv-dev` 4.6, `libmosquitto-dev`, `libcpp-httplib-dev`, `nlohmann-json3-dev` y el runtime VIPLite del fabricante. Guía completa: [`orangepi/vision/README.md`](orangepi/vision/README.md).
 
 ```bash
 cd orangepi/vision
@@ -218,7 +218,14 @@ cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ```
 
-Hoy `build/vision_service` es un recorrido en seco con dobles en memoria, y `build/npu_smoke` mide una inferencia en la NPU. Los modelos `.nb` no se versionan.
+`build/vision_service` es el binario de producción: el que lanza systemd, el que lee `/etc/pase-lista/vision.conf`, se conecta al broker y pide las fotos a la cámara. `build/vision_dry_run` es el recorrido en seco con dobles en memoria. `build/npu_smoke` mide una inferencia en la NPU. Los modelos `.nb` no se versionan.
+
+La prueba de humo (`tools/humo.sh`) verifica el cableado completo de punta a punta con su propio broker de pruebas (puerto 1884) y su propia cámara falsa: publica un PIR y comprueba que llega el resultado, que se publica el estado y que la luz se enciende y se apaga. No toca los contenedores del proyecto `pase-lista`.
+
+```bash
+cd orangepi/vision
+tools/humo.sh
+```
 
 ### Por definir
 

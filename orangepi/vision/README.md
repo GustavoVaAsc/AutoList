@@ -139,14 +139,17 @@ Imprime los tensores (forma `w x h x c x n`, formato, cuantización) y el tiempo
 
 El proceso (plan 6.2, un solo hilo de trabajo):
 
-- **Configuración**: lee el archivo JSON (por omisión `/etc/pase-lista/vision.conf`, o el que se pase con `--config`). Si el archivo no existe, arranca con los valores por omisión y lo avisa por stderr, para poder probarlo sin instalar nada. Un archivo inválido (un tipo equivocado, un valor fuera de rango o una clave desconocida) hace fallar el arranque.
-- **Credenciales**: la contraseña del broker y el token de la galería se leen de variables de entorno, nunca del archivo de configuración (ver "La configuración").
+- **Configuración**: lee el archivo JSON (por omisión `/etc/pase-lista/vision.conf`, o el que se pase con `--config`). Un archivo inválido (un tipo equivocado, un valor fuera de rango o una clave desconocida) hace fallar el arranque. Si el archivo no existe, el proceso **falla cerrado**: en producción termina con error, porque arrancar a ciegas con los valores por omisión es peor que no arrancar. Con `--dry-run` avisa por stderr y sigue con los valores por omisión, para poder probarlo sin instalar nada.
+- **Credenciales**: la contraseña del broker y el token de la galería se leen de variables de entorno, nunca del archivo de configuración (ver "La configuración"). En producción, si falta la contraseña del broker o el token de la galería, el proceso **falla cerrado** y termina con error: es preferible que el servicio no esté a que esté sin autenticar.
+- **Modo anónimo**: conectar sin usuario y sin contraseña solo tiene sentido con el broker de pruebas. En producción no se permite; con `--dry-run` es posible, y el modo tolerante exige `--permitir-anonimo` explícito. Sin ese flag, `--dry-run` avisa por stderr y conecta sin usuario.
 - **Bus MQTT**: `MosquittoBus` contra el broker del borde. El proceso se suscribe a `aula/camara/pir` y `aula/vision/cmd` (lo hace la propia `VisionService`) y además a `aula/vision/galeria/alta` y `aula/vision/galeria/baja` (las suscripciones las hace el proceso, no el servicio).
 - **Galería**: al arrancar y en cada reconexión al broker, el proceso recarga la galería completa con `GalleryStore::reload()` (lo dice el contrato v0.3, sección 4). El aviso de conexión lo da el bus (`MosquittoBus::set_connect_listener`); el manejador solo marca una bandera y la recarga se hace en el hilo de trabajo, no en el hilo de red del bus. Si la recarga falla, se registra en stderr y el servicio sigue: se reintenta en la próxima reconexión. Las altas y las bajas que llegan por MQTT también se aplican en el hilo de trabajo (la galería en RAM la lee el servicio en ese hilo y no debe cambiar mientras la lee).
 - **Bucle**: `VisionService::poll()` cada `poll_ms` (20 ms por omisión) y una espera corta entre llamadas. Todo el trabajo ocurre en el hilo que llama a `poll()`; el hilo de red de libmosquitto solo encola mensajes.
 - **Señales**: `SIGINT` y `SIGTERM` paran el bucle. El manejador solo pone una bandera (`volatile std::sig_atomic_t`): no hace trabajo bloqueante ni lanza.
-- **Salida ordenada**: al parar, el proceso publica `aula/vision/estado` con `en_linea: false` (retenido) y cierra el bus en orden. Así el frontend no se queda con el servicio "en línea" y el Will no hace falta en la salida ordenada (sigue puesto para la caída sin cerrar limpio).
+- **Salida ordenada**: al parar, el proceso (1) cancela el registro en curso y publica su estado `cancelado`, apaga la luz y deja el modo del servicio en `inactivo` (`VisionService::shutdown()`); (2) publica `aula/vision/estado` con `en_linea: false` y el esquema completo (retenido); (3) vacía la cola de salida del bus (`MosquittoBus::flush()`) y solo entonces cierra el bus. Sin el paso (1), un `SIGTERM` en mitad de un registro dejaba la luz encendida y el enrolamiento a medias. Así el frontend no se queda con el servicio "en línea" y no queda retenido un "en línea" fantasma (ver "El bus MQTT"). El Will no hace falta en la salida ordenada: sigue puesto para la caída sin cerrar limpio.
 - **Detector y embedder**: hoy son los dobles en memoria de `fakes.hpp`, así que el proceso solo arranca en `--dry-run` (ver "Probar sin modelos"). Cuando existan los modelos `.nb`, se enchufan en `src/main.cpp`, donde ya está el punto de extensión.
+
+**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error** (código 1): es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código 78 (`EX_CONFIG`) es el de "faltan los modelos `.nb`".
 
 ```bash
 build/vision_service --config /etc/pase-lista/vision.conf
@@ -172,7 +175,7 @@ El archivo de configuración es JSON, con las claves en español como el resto d
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN", "timeout_ms": 5000},
   "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45},
   "servicio": {"poll_ms": 20, "max_inbox_events": 16, "modelo": "w600k_mbf-uint8-v1", "acepta_png": false},
-  "http": {"allow_invalid_certificates": false}
+  "http": {"allow_invalid_certificates": false, "ca_file": ""}
 }
 ```
 
@@ -197,7 +200,8 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
 | | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
 | | `acepta_png` | aceptar PNG además de JPEG (pruebas) | `false` |
-| `http` | `allow_invalid_certificates` | aceptar el certificado autofirmado de Node-RED | `false` |
+| `http` | `allow_invalid_certificates` | aceptar cualquier certificado (modo inseguro) | `false` |
+| | `ca_file` | ruta al CA (o al certificado de Node-RED) con el que se valida el servidor | `""` (los CA del sistema) |
 
 El mapeo a `ServiceConfig` está en `ProcessConfig::to_service_config()` (`src/process_config.cpp`).
 
@@ -208,13 +212,31 @@ El mapeo a `ServiceConfig` está en `ProcessConfig::to_service_config()` (`src/p
 - `mqtt.clave_env` (por omisión `MQTT_PASSWORD`): la contraseña del usuario MQTT.
 - `galeria.token_env` (por omisión `GALERIA_TOKEN`): el token del encabezado `X-Galeria-Token`.
 
-Si la variable no está, el proceso **arranca igual** y lo avisa por stderr: el broker de pruebas acepta clientes anónimos y la galería se pide sin token. Si hay usuario MQTT pero no hay contraseña, se conecta sin usuario (un usuario sin contraseña no pasa la autenticación del broker).
+Si la variable no está, el comportamiento depende del modo:
+
+- **Producción (sin `--dry-run`):** el proceso **falla cerrado** y termina con error. Sin contraseña del broker, la conexión sería anónima; sin token, la galería se pediría sin autenticar.
+- **Con `--dry-run`:** el proceso avisa por stderr y sigue. Con `--permitir-anonimo` se acepta explícitamente conectar sin usuario; sin ese flag, solo avisa. Si hay usuario MQTT pero no hay contraseña, se conecta sin usuario (un usuario sin contraseña no pasa la autenticación del broker).
+
+El token de la galería **solo se manda por `https://`**, o por `http://` contra `127.0.0.1`, `localhost` o `::1`. Con una URL de otro tipo y con token configurado, la carga de la galería se rechaza: el token no puede viajar en claro por la red.
 
 El archivo de credenciales de la instalación real es `/etc/pase-lista/vision.env` (permisos 600), que systemd pasa al proceso con `EnvironmentFile`. El ejemplo con placeholders está en `vision.env.example`.
 
 ### El certificado autofirmado
 
-`http.allow_invalid_certificates` viene en `false` por omisión: **no** se acepta ningún certificado inválido. El certificado de Node-RED es autofirmado, así que con `false` la conexión a `https://127.0.0.1:1880` se rechaza y la galería no carga. Hay que ponerlo en `true` a mano hasta que haya un certificado válido. Es un riesgo conocido y aceptado (ver "Limitaciones conocidas"), no un olvido.
+`http.allow_invalid_certificates` viene en `false` por omisión: **no** se acepta ningún certificado inválido. El certificado de Node-RED es autofirmado, así que con `false` la conexión a `https://127.0.0.1:1880` se rechaza y la galería no carga.
+
+Hay dos caminos:
+
+- **Confiar en el certificado concreto (recomendado):** `http.ca_file` con la ruta al certificado de Node-RED. El cliente valida el servidor contra ese certificado (`set_ca_cert_path`), sin desactivar toda la verificación. El certificado está en el volumen de Node-RED (`/data/certs/nodered.crt`); la llave privada se queda ahí y no sale. Exportarlo lo hace **una persona**, por ejemplo con `docker compose cp nodered:/data/certs/nodered.crt ~/nodered.crt`, y la ruta se pone en `http.ca_file` (por omisión, vacía: se usan los CA del sistema).
+- **Modo inseguro (desaconsejado):** `allow_invalid_certificates: true` acepta cualquier certificado. Cuando está activo, el cliente lo avisa por log al arrancar:
+
+  ```
+  [vision] ATENCION: se aceptan certificados invalidos
+  ```
+
+  (Si además hay un `ca_file` configurado, el aviso añade que el CA no se usa, porque la validación está desactivada.)
+
+El modo inseguro es un riesgo conocido y aceptado (ver "Limitaciones conocidas"), no un olvido; con `ca_file` bien puesto ya no hace falta.
 
 ## Recorrido en seco
 
@@ -254,7 +276,10 @@ Notas:
 - El endurecimiento es moderado: `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectHome=yes` y `ProtectSystem=full`. Con `ProtectSystem=full`, `/usr`, `/boot` y `/etc` son de solo lectura: el servicio lee su configuración de ahí y no necesita escribir nada.
 - `EnvironmentFile=/etc/pase-lista/vision.env` tiene que existir: si falta, systemd no arranca la unidad. Para probarlo sin credenciales, se puede dejar el archivo con los placeholders.
 - `Restart=on-failure` y `RestartSec=5`: el servicio vuelve a levantarse solo si se cae. La salida por `SIGTERM` (código 0) no lo rearranca.
-- Sin los modelos `.nb`, el servicio arranca, avisa por stderr y sale: es lo esperado hasta que existan (ver "Lo que falta"). Con `--dry-run` en el `ExecStart` se puede verificar el cableado sin modelos.
+- `TimeoutStopSec=30`: la salida ordenada necesita margen (el bucle puede estar en una recarga de la galería o en una captura), y 30 s lo dan.
+- `RestartPreventExitStatus=78`: el código 78 (`EX_CONFIG`) es el de "faltan los modelos `.nb`". Es una configuración que falta, no un fallo del proceso: sin esta línea systemd lo relanzaría cada 5 s para siempre y llenaría el journal.
+- Endurecimiento del núcleo (`LimitCORE=0` para no dejar volcados de core y `UMask=0077` para que los archivos que cree el servicio solo los vea su usuario): está decidido, pero todavía no está en la unidad. Queda pendiente.
+- Sin los modelos `.nb`, el proceso no arranca: avisa por stderr y sale con el código 78. Es lo esperado hasta que existan (ver "Lo que falta"). Con `--dry-run` en el `ExecStart` se puede verificar el cableado sin modelos.
 
 ## Las herramientas de prueba
 
@@ -271,9 +296,14 @@ build/mqtt_probe --host 127.0.0.1 --puerto 1883 --escuchar aula/vision/resultado
 
 # Con usuario (el broker real no acepta anónimos)
 build/mqtt_probe --usuario vision --clave "$MQTT_PASSWORD" --escuchar aula/vision/estado
+
+# Mejor: la contraseña se lee del entorno, no de la línea de órdenes
+MQTT_PASSWORD=... build/mqtt_probe --usuario vision --clave-env MQTT_PASSWORD --escuchar aula/vision/estado
 ```
 
 Cada mensaje que llega se imprime como `fecha tópico cuerpo`. Con `--publicar` y `--escuchar` a la vez, se suscribe primero y después publica.
+
+`--clave-env NOMBRE` lee la contraseña de la variable de entorno `NOMBRE`. Es la forma recomendada: escrita en la línea de órdenes, la contraseña queda en la tabla de procesos y la puede leer cualquiera del equipo.
 
 ### `camara_falsa`: la cámara sintética
 
@@ -302,6 +332,12 @@ La prueba:
 5. espera el resultado y lo imprime;
 6. limpia todo lo que levantó (la cámara, el servicio, la sonda y su broker), aunque falle.
 
+Además del resultado, comprueba tres cosas:
+
+- que el mensaje de `aula/vision/resultado` trae `decision`, `modo` y `motivo` con los valores esperados (en `--dry-run` la galería está vacía, así que el veredicto es `desconocido` con motivo `galeria_vacia`, en modo `pase`);
+- que se publicó `aula/vision/estado` con `en_linea: true`;
+- que la luz se enciende y se apaga: tiene que verse el encendido (`luz: 1`) antes que el apagado (`luz: 0`).
+
 No toca los contenedores del proyecto `pase-lista`: el broker real corre en el 1883 y ahí no se entra. Sale con código 0 si llegó el resultado y con código distinto de cero si no.
 
 ### Probar el servicio sin modelos
@@ -325,6 +361,8 @@ Los payloads tipados de `include/vision/mqtt_contract.hpp` son el único lugar c
 El servicio estampa `ts` (ISO 8601 con zona) en los cuatro mensajes que publica: `resultado`, `enrolamiento`, `embedding` y `estado`. La hora la da el `WallClock` inyectado (`SystemWallClock` usa `system_clock` y `localtime_r`); el `Clock` de milisegundos no lleva fecha.
 
 `aula/vision/estado` lo publica el servicio en cada cambio de modo (`inactivo`, `pase`, `enrolando`), con el número de embeddings en RAM y el nombre del modelo. El LWT `{"en_linea": false}` lo pone el adaptador MQTT, no el servicio.
+
+En `aula/vision/estado` hay **dos formas**: la que publica el servicio lleva el esquema completo (`ts`, `en_linea`, `modo`, `galeria` y `modelo`), y el Will que registra el broker lleva la forma **mínima**, `{"en_linea": false}`: no puede llevar `ts` ni el resto, porque el Will se registra al conectar. En el estado, `en_linea` es el único campo obligatorio y el resto se acepta ausente, así que un consumidor con esta capa no descarta el Will. El estado final de la salida ordenada lleva el esquema completo.
 
 ## El bus MQTT
 
@@ -352,6 +390,14 @@ El QoS y la retención los aplica el propio bus, con las reglas de `find_topic_r
 
 Al caer la conexión sin cerrar limpio, el broker publica `{"en_linea": false}` en `aula/vision/estado`, retenido y con QoS 1. Es el LWT que registra `MosquittoOptions` por omisión. El frontend ve así que la visión ya no está en línea.
 
+### `flush()`: vaciar la cola de salida antes de cerrar
+
+`MosquittoBus::flush(timeout)` espera a que se vacíen las publicaciones en vuelo (las de QoS 1, con su PUBACK recibido, y las de QoS 0 que ya salieron hacia el sistema operativo). Devuelve `true` si se vaciaron dentro del plazo y `false` si se agotó.
+
+Hace falta en la salida ordenada: la publicación es asíncrona, así que el estado final `en_linea: false` puede quedarse en la cola de salida y no llegar nunca al broker. Y como la desconexión es limpia, el Will no salta. **El costo de no hacerlo es un "en línea" fantasma**: el valor retenido en `aula/vision/estado` se queda en `en_linea: true` para siempre, aunque el servicio ya no esté.
+
+Por eso el proceso, al parar, hace en este orden: `VisionService::shutdown()`, publicar el estado final, `bus.flush()` y solo entonces `bus.stop()`. El hilo de red tiene que seguir vivo durante el `flush()`, así que `flush()` va antes que `stop()`.
+
 ### `mosquitto_unsubscribe` no se llama nunca
 
 El bus no llama nunca a `mosquitto_unsubscribe`. La baja de una suscripción se hace solo en memoria, sin tocar el broker. El motivo es medido: llamar a `mosquitto_unsubscribe` desde un hilo distinto del bucle de red provoca un ABBA entre los mutex internos de libmosquitto y cuelga el proceso. En la placa se midió 10 de 10 colgones con la llamada y 0 de 10 sin ella.
@@ -362,17 +408,23 @@ El costo es tráfico inútil hasta la desconexión: el broker sigue mandando men
 
 Lo que llega por MQTT y por HTTP se trata como no fiable (ver `ServiceConfig`):
 
+- **Límites de entrada.** El JSON que llega de la red tiene dos topes, comprobados antes de parsearlo: 64 KiB de tamaño y 32 niveles de anidamiento (`kMaxDocumentBytes` y `kMaxDocumentDepth` en `json_payload.hpp`). El parser de nlohmann es descendente y recursivo, así que un documento muy anidado podría agotar la pila; un documento que supera los topes se rechaza sin lanzar y sin tumbar el proceso. El cliente MQTT pone su propio tope de paquete, también de 64 KiB, por debajo del que permite el broker (256 KiB).
+
 - Cola de eventos acotada (`max_inbox_events`, 16, mínimo 4). Lo que llega con la cola llena se descarta sin responder y se deja una línea en stderr por poll, sin el contenido. Un PIR, un `enrolar` y un `probar` en cola cuentan uno cada uno; un `enrolar` con cuenta inválida se descarta antes de ocupar lugar (Node-RED valida al alumno antes de publicar, plan 5.4 paso 2); un lugar queda reservado para `cancelar`.
 - `no_cuenta` de exactamente 9 dígitos ASCII (`is_valid_account`); `enrolar` con otra cosa se rechaza con `cuenta_invalida`, y `Gallery::upsert` la rechaza con `std::invalid_argument`. Los rechazos de órdenes (`ocupado`, `cuenta_invalida`) salen con estado `error`, paso 0 y sin pose; un registro en curso que falla sale con estado `error` y motivo `npu` (o `inconsistente` si las poses dan embeddings de distinta dimensión).
 - Fotos: el adaptador HTTP debe cortar la transferencia al pasar `max_body_bytes` y respetar el plazo de toda la petición (`HttpClient::get`). El servicio vuelve a comprobar el tamaño y lee el formato y las dimensiones de la cabecera antes de decodificar; solo acepta JPEG baseline o secuencial extendido de 8 bits con un único scan entrelazado (nunca progresivo, aritmético ni de varios scans, que se pueden construir para gastar CPU al decodificar) y PNG solo con `accept_png` (pruebas).
 
 ## El cliente HTTP
 
-`HttplibClient` (`include/vision/httplib_client.hpp`, `src/httplib_client.cpp`) es el `HttpClient` real sobre cpp-httplib. `get` nunca lanza: cualquier fallo de red, un estado distinto de 200 o una excepción de la biblioteca devuelven status 0 y cuerpo vacío. El plazo de `get` es el de la petición entera (conexión, cabeceras y cuerpo), no el de una operación: cpp-httplib solo da plazos por operación, así que el adaptador acota el plazo de socket y además vigila el reloj desde otro hilo; en cuanto se pasa el plazo total, `get` devuelve status 0. Tampoco sigue redirecciones: una redirección a otro host sería una fuga de la petición. Acepta cabeceras adicionales (`Nombre: valor`), que es como viaja el token de la galería.
+`HttplibClient` (`include/vision/httplib_client.hpp`, `src/httplib_client.cpp`) es el `HttpClient` real sobre cpp-httplib. `get` nunca lanza: cualquier fallo de red, un estado distinto de 200 o una excepción de la biblioteca devuelven status 0 y cuerpo vacío. El plazo de `get` es el de la petición entera (conexión, cabeceras y cuerpo), no el de una operación: cpp-httplib solo da plazos por operación, así que el adaptador acota el plazo de socket y además vigila el reloj desde el hilo de la petición; en cuanto se pasa el plazo total, `get` devuelve status 0. Tampoco sigue redirecciones: una redirección a otro host sería una fuga de la petición. Acepta cabeceras adicionales (`Nombre: valor`), que es como viaja el token de la galería.
+
+**No quedan hilos huérfanos.** Cuando se pasa el plazo total, el adaptador cierra el socket (`stop()`) y espera al hilo de la petición (`join()`): el hilo termina solo y no queda colgado. Antes el hilo se desacoplaba (`detach`) y se quedaba colgado para siempre con un servidor que gotea bytes, porque los plazos de cpp-httplib son por operación: con ráfaga 4 quedaban cuatro hilos colgados por intento, sin cota.
+
+**El token de la galería solo se manda por `https://`**, o por `http://` contra `127.0.0.1`, `localhost` o `::1` (`url_admite_token` en `process_config.cpp`). Con una URL de otro tipo, la petición de la galería no se hace: el token no puede viajar en claro por la red.
 
 ### Certificado autofirmado
 
-La comunicación con Node-RED por HTTPS usa un certificado autofirmado. `HttpClientOptions::allow_invalid_certificates` viene en `false` por omisión: no se acepta ningún certificado inválido. Hay que activarlo a mano (`allow_invalid_certificates = true`) hasta que haya un certificado válido. Es un riesgo conocido y aceptado, no un olvido: con el certificado autofirmado tal cual, la conexión se rechaza.
+La comunicación con Node-RED por HTTPS usa un certificado autofirmado. `HttpClientOptions::allow_invalid_certificates` viene en `false` por omisión: no se acepta ningún certificado inválido. En su lugar está `HttpClientOptions::ca_file`: con esa ruta se valida el servidor contra ese certificado concreto (`set_ca_cert_path`), sin desactivar toda la verificación. Es la opción recomendada frente a `allow_invalid_certificates`, que es el modo inseguro y avisa por log al arrancar (ver "El certificado autofirmado", en la sección de la configuración).
 
 ## La galería en RAM
 
@@ -382,6 +434,7 @@ La comunicación con Node-RED por HTTPS usa un certificado autofirmado. `HttpCli
 - **Alta.** `aula/vision/galeria/alta` solo trae la cuenta, no el embedding: así el embedding no viaja otra vez por MQTT y la galería siempre sale de la base. Por eso el alta recarga la galería entera con `GET /api/galeria`.
 - **Baja.** `aula/vision/galeria/baja` borra esa cuenta de la galería en RAM.
 - **Recarga completa.** `reload()` deja la galería en RAM igual que la que devuelve el servidor (quita las cuentas que ya no están). Si la petición falla o la respuesta no se entiende, devuelve `false` y la galería en RAM no se toca. Las recargas se serializan: la última que termina es la que se queda.
+- **Dimensión mayoritaria.** Al cargar, la dimensión no la fija la primera entrada, sino la que trae más entradas (la mayoritaria; en un empate se queda la menor). Las entradas cuya dimensión no cuadra con esa se descartan, y se avisa por stderr con cuántas son. Si la fijara la primera entrada, una entrada corrupta al principio dejaría la galería con una sola entrada y con la dimensión equivocada, y cada pase de lista acabaría en `decision: error`.
 
 ### Formato provisional
 
@@ -398,14 +451,15 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 ## Limitaciones conocidas
 
 - **La cámara no se autentica.** Las fotos se piden por HTTP plano, sin autenticación ni comprobación de integridad. Quien esté en la LAN puede inyectar fotos (fraude de asistencia, envenenamiento del registro) y también leerlas. El adaptador real de `HttpClient` y el firmware de la XIAO no deben salir a producción sin una de estas tres: HMAC-SHA256 sobre un nonce más el cuerpo, un punto de acceso dedicado o TLS. No protegen lo mismo: el HMAC solo garantiza integridad y frescura, así que las fotos siguen viajando en claro por la LAN; el punto de acceso dedicado y TLS también cubren la confidencialidad. Sea cual sea la opción, `capture_url` debe apuntar a una IP fija, no a un nombre mDNS que se pueda suplantar. La decisión está pendiente con el equipo; este esqueleto no la resuelve.
-- **El certificado de Node-RED es autofirmado.** La comunicación por HTTPS con el borde usa un certificado autofirmado, así que `allow_invalid_certificates` tiene que estar en `true` (por omisión está en `false` y la conexión se rechaza). Es un riesgo conocido y aceptado hasta que haya un certificado válido, no un olvido. Ver la sección "El cliente HTTP".
+- **El certificado de Node-RED es autofirmado.** La comunicación por HTTPS con el borde usa un certificado autofirmado. Se puede confiar en el certificado concreto (`http.ca_file`, que valida el servidor contra ese certificado) en vez de desactivar toda la verificación (`allow_invalid_certificates`, modo inseguro que avisa por log). Ver las secciones "El certificado autofirmado" y "El cliente HTTP".
 
 ## Lo que falta
 
-- Detector y embedder concretos sobre la NPU (decodificación de salidas, preproceso, `.nb`). Se construyen sobre `npu::Network`; el punto de extensión está en `src/main.cpp`, donde hoy van los dobles en memoria. Sin ellos, el proceso de producción solo arranca en `--dry-run`.
+- Los modelos `.nb` (RetinaFace y `w600k_mbf`) y el detector y el embedder concretos sobre la NPU (decodificación de salidas, preproceso). Se construyen sobre `npu::Network`; el punto de extensión está en `src/main.cpp`, donde hoy van los dobles en memoria. Sin ellos, el proceso de producción no arranca: solo arranca en `--dry-run`.
 - Scripts de prueba en la placa (broker de pruebas propio, arranque y parada del servicio) más allá de `tools/humo.sh` y `mqtt_probe`.
 - Miniaturas en el progreso del registro.
 - Chequeo antifraude y descarte de outliers.
 - Validaciones por pose del registro (rostro único, tamaño, giro).
 - Mejora de imagen (CLAHE y gamma).
 - Umbrales calibrados: `min_sharpness`, `min_recognized_score` y `min_dudoso_score` de `ServiceConfig` son valores provisionales (la calibración con LFW es el hito del 18 de noviembre).
+- Endurecimiento del núcleo en la unidad systemd: `LimitCORE=0` y `UMask=0077` (decididos, pendientes de aplicarlos a `orangepi/systemd/orangepi-vision.service`).

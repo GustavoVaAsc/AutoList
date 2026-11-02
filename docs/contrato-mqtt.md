@@ -1,6 +1,6 @@
 # Contrato MQTT
 
-> **Borrador v0.3.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
+> **Borrador v0.4.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
 
 ## 1. Convenciones generales
 
@@ -194,11 +194,17 @@ Salud del servicio de visión, con LWT `{"en_linea": false}`. Le dice a Node-RED
 
 | Campo | Tipo | Obligatorio | Notas |
 |---|---|---|---|
-| `ts` | string | sí | ISO 8601 con zona. |
-| `en_linea` | bool | sí | `false` solo lo publica el LWT del broker. |
-| `modo` | string | sí | `inactivo`, `pase`, `enrolando` |
-| `galeria` | int | sí | Número de embeddings en RAM |
-| `modelo` | string | sí | Nombre y versión del `.nb` |
+| `ts` | string | no | ISO 8601 con zona. Lo lleva el estado que publica el servicio; el Will del broker no lo lleva (ver abajo). |
+| `en_linea` | bool | sí | `false` lo publica el LWT del broker y el estado final de la salida ordenada. |
+| `modo` | string | no | `inactivo`, `pase`, `enrolando` |
+| `galeria` | int | no | Número de embeddings en RAM |
+| `modelo` | string | no | Nombre y versión del `.nb` |
+
+**Las dos formas del estado.** El Will que registra el broker lleva la forma **mínima**, `{"en_linea": false}`: no puede llevar `ts` ni el resto, porque el Will se registra al conectar, antes de que el servicio exista. El estado que publica el servicio, y el estado final de la salida ordenada, llevan el **esquema completo** (`ts`, `en_linea`, `modo`, `galeria` y `modelo`).
+
+La forma mínima es válida para los consumidores: `en_linea` es el único campo obligatorio del estado y el resto es opcional cuando `en_linea` es `false`. Un consumidor que use la capa JSON del contrato (`orangepi/vision/include/vision/json_payload.hpp`) acepta las dos formas y no descarta el Will por faltar campos.
+
+**Cuándo se publica.** El servicio publica `aula/vision/estado` en cada cambio de modo (`inactivo`, `pase`, `enrolando`), con el número de embeddings en RAM y el nombre del modelo. En la salida ordenada publica el estado final con `en_linea: false` **antes** de cerrar la conexión: la publicación es asíncrona y, como la desconexión es limpia, el Will no salta. Si el estado final no llegara al broker, el valor retenido se quedaría en `en_linea: true` para siempre (un "en línea" fantasma). Para eso el proceso vacía la cola de salida del bus antes de pararlo.
 
 ### `aula/vision/galeria/alta` y `aula/vision/galeria/baja`
 La galería en RAM solo cambia por orden de Node-RED, que publica estos tópicos **después** de escribir en Postgres (plan, sección 5.4). La visión nunca agrega una entrada por su cuenta, ni siquiera tras publicar `aula/vision/embedding`. Así la base es la única fuente de verdad. Los dos van con QoS 1 y sin retención.
@@ -260,3 +266,4 @@ El `frontend` nunca lee `aula/vision/embedding` ni `aula/vision/galeria/#`. Solo
 | v0.1 | Borrador inicial a partir de la sección 7.1 del plan, con las propuestas marcadas |
 | v0.2 | `aula/galeria/cambio` se reemplaza por `aula/vision/galeria/alta` y `aula/vision/galeria/baja` (solo `cuenta`; la visión recarga con `GET /api/galeria`), acordado entre Gustavo y Yordi. En la ACL, `vision` escribe sus tópicos uno por uno y lee `aula/vision/galeria/#`; solo `nodered` publica en la galería. Se retira la acción `confirmar` de `aula/vision/cmd`: la advertencia de parecido es informativa |
 | v0.3 | El servicio de visión implementa el contrato: `decision` sustituye a `motivo` en `aula/vision/resultado` (el servicio es quien aplica los dos umbrales, `reconocido` y `dudoso`) y se añade `motivo` como detalle fino de la `decision`; `decision: "error"` con `motivo: "error_interno"` para el fallo interno; `ts` en los cuatro mensajes que publica el servicio (`resultado`, `enrolamiento`, `embedding` y `estado`); `aula/vision/estado` con `en_linea`, `modo`, `galeria` y `modelo`; `dim` y `modelo` en `aula/vision/embedding`; el nombre del comando `enrolar` se copia al progreso del registro; la quinta pose es `frente_2`; `cuenta_invalida` como motivo de `error` (extensión). El vocabulario de `motivo` del enrolamiento es el de este documento: una captura fallida es `fallo_captura` y un fallo interno del pipeline es `error` con `npu` |
+| v0.4 | Se fija la forma del estado de `aula/vision/estado`: el Will del broker lleva la forma **mínima** `{"en_linea": false}` (no puede llevar `ts` ni el resto, porque el Will se registra al conectar), mientras que el estado que publica el servicio y el estado final de la salida ordenada llevan el **esquema completo** (`ts`, `en_linea`, `modo`, `galeria`, `modelo`). `en_linea` es el único campo obligatorio del estado: el resto es opcional cuando `en_linea` es `false`, así que la forma mínima es válida para los consumidores. Se documenta que el servicio publica el estado en cada cambio de modo y que, en la salida ordenada, publica el estado final con `en_linea: false` **antes** de cerrar la conexión (la publicación es asíncrona y la desconexión es limpia, así que el Will no salta: sin eso quedaría retenido un "en línea" fantasma) |
