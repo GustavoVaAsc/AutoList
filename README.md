@@ -74,7 +74,7 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Fecha | Hito | Estado |
 |---|---|---|
 | 28 oct | Proyecto y planeación | Hecho; la lista de compras pasó al 4 nov |
-| 4 nov | Primer avance | Parcial: 7 de 11 entregables listos y 1 a medias |
+| 4 nov | Primer avance | Parcial: 5 de 9 entregables listos y 3 a medias (la ingesta y el gráfico de energía esperan al INA219); el toolchain Pegasus y el `.nb` pasaron al 11 nov |
 | 11 nov | Segundo avance | Parcial: la alineación y la galería del servicio de visión, y el armazón del frontend, ya están adelantados |
 | 18 nov | Tercer avance | Parcial: el filtro de nitidez y la parte de energía de la pestaña de Métricas ya están adelantados |
 | 25 nov | Entrega final | Pendiente |
@@ -96,13 +96,11 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 |---|---|---|
 | Lista de compras (reprogramada desde el 28 oct) | Pendiente | |
 | NPU verificada en la imagen oficial de Orange Pi | Hecho | `vipcore` 1.13.0, `vpm_run` a 2.76 ms; prueba `orangepi/vision/apps/npu_smoke.cpp` |
-| Toolchain Pegasus en la PC | Pendiente | Versión decidida: Acuity v2.0.10.2 |
-| Modelo de la NPU convertido a `.nb` | Pendiente | |
 | Overlays de SPI (`/dev/spidev*`) y unidad systemd de la pantalla | Parcial | La placa expone `/dev/spidev3.0` y `/dev/spidev3.1`; falta `orangepi/systemd/orangepi-pantalla.service` |
 | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer) | Hecho | [`orangepi/docker-compose.yml`](orangepi/docker-compose.yml) |
 | Esquema de Postgres | Hecho | [`orangepi/sql/schema.sql`](orangepi/sql/schema.sql) y rol de Node-RED con privilegios mínimos |
-| Ingesta a `metricas_energia` | Hecho | Flujo de energía en Node-RED; la probamos con `herramientas/simular_energia.sh` hasta tener el INA219 |
-| Primer gráfico de energía | Hecho | Vista de energía en `https://<ip>:1880/app/`: gráfica de potencia de los últimos 30 min y tabla de lecturas sobre `GET /api/metricas/energia` |
+| Ingesta a `metricas_energia` | Parcial | El flujo de energía en Node-RED ya está; solo falta el medidor (INA219) para probarlo con lecturas reales, y esa prueba pasa al 11 nov. No usamos datos simulados como evidencia |
+| Primer gráfico de energía | Parcial | La vista de energía en `https://<ip>:1880/app/` ya está (gráfica de potencia de los últimos 30 min y tabla de lecturas sobre `GET /api/metricas/energia`); sin el INA219 muestra su estado vacío. La prueba con datos reales pasa al 11 nov |
 | Arranque del esqueleto del frontend (adelantado del 11 nov) | Hecho | [`web/`](web/README.md), compilado dentro de la imagen de Node-RED |
 | ACL de Mosquitto y usuarios por rol (adelantado del 25 nov) | Hecho | [`orangepi/mosquitto/acl`](orangepi/mosquitto/acl) y [contrato MQTT v0.5](docs/contrato-mqtt.md), sección 6; verificada en la placa con permitidos y denegados por usuario |
 
@@ -110,6 +108,8 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 
 | Entregable | Estado | Evidencia |
 |---|---|---|
+| Toolchain Pegasus en la PC (movido del 4 nov) | Pendiente | Versión decidida: Acuity v2.0.10.2 |
+| Modelo de la NPU convertido a `.nb` (movido del 4 nov) | Pendiente | |
 | Detección, alineación y embedding en la NPU | Parcial | Alineación a 112×112 implementada y probada; faltan el detector y el embedder sobre la NPU |
 | Galería y publicación del resultado | Parcial | Galería en RAM con similitud coseno, contrato MQTT v0.3, adaptadores reales de MQTT y HTTP y proceso de producción con configuración y señales |
 | Orden de enrolar con captura de 5 poses | Parcial | Máquina de estados del registro probada con dobles en memoria |
@@ -124,6 +124,7 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Esqueleto del frontend | Parcial | Adelantado al 4 nov: navegación, selector de tema y vista de energía; Alumnos y Registro solo tienen su estado vacío |
 | Menú base de la pantalla (sesión, lista y guía de registro) | Pendiente | |
 | `httpNodeAuth` en Node-RED y `GALERIA_TOKEN` | Pendiente | La variable ya está en `orangepi/.env.example` |
+| Prueba de la ingesta y del gráfico de energía con el INA219 (pospuesta del 4 nov) | Pendiente | El flujo y la vista ya están; depende de la compra del INA219 y de su publicación MQTT desde la XIAO |
 
 ### 18 nov: Tercer avance
 
@@ -151,8 +152,9 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 
 Para el 4 nov falta esto del primer avance:
 - Hacer las compras. Ya tenemos la Orange Pi, la pantalla y la XIAO con su cámara; faltan el servo, el INA219, el PIR, el MOSFET y la tira LED de 12 V, sin los cuales no avanzan los sensores y actuadores de la XIAO ni la etapa de potencia.
-- Instalar el toolchain Pegasus (Acuity v2.0.10.2) y convertir RetinaFace y `w600k_mbf` a `.nb`.
 - Crear la unidad systemd de la pantalla (los overlays de SPI ya exponen `/dev/spidev3.0` y `/dev/spidev3.1`).
+
+Movido al 11 nov: instalar el toolchain Pegasus (Acuity v2.0.10.2) y convertir RetinaFace y `w600k_mbf` a `.nb`, y probar la ingesta y el gráfico de energía con el INA219.
 
 Después, en orden de dependencia, siguen los modelos `.nb`, el detector y el embedder en la NPU, el primer pase de lista real, los flujos de pase de lista y de registro, y el frontend de registro. Los adaptadores reales de MQTT y HTTP en la visión y el proceso de producción (configuración, señales y unidad systemd) se adelantaron, porque dependían del toolchain de modelos, que todavía no está: sin los `.nb` no hay detector ni embedder, pero el cableado entre broker, cámara, galería y servicio sí se puede dejar cerrado y probado. La captura de fotos de la XIAO (`/capture`) puede empezar ya; sus sensores y actuadores esperan las compras. Dependencias completas: [sección 12.3](docs/HIGH-LEVEL-PLAN.md#123-dependencias-entre-tareas).
 
@@ -162,7 +164,7 @@ Resumen de la [sección 13](docs/HIGH-LEVEL-PLAN.md#13-riesgos) y de los pendien
 
 | Riesgo | Impacto | Mitigación |
 |---|---|---|
-| Compras sin hacer (servo, INA219, PIR, MOSFET y tira LED) | Los sensores, los actuadores y la etapa de potencia se acumulan en el hito del 11 nov | Comprar en la semana del 4 nov; mientras tanto, avanzar la captura de la XIAO y probar la ingesta con el simulador |
+| Compras sin hacer (servo, INA219, PIR, MOSFET y tira LED) | Los sensores, los actuadores y la etapa de potencia se acumulan en el hito del 11 nov | Comprar en la semana del 4 nov; mientras tanto, avanzar la captura de la XIAO. La prueba de la ingesta y del gráfico de energía espera al INA219: no usamos datos simulados como evidencia |
 | Compatibilidad del `.nb` con el driver de la NPU | Un `.nb` incompatible o una actualización del kernel rompen la inferencia | Acuity v2.0.10.2 para `vipcore` 1.13.0; no actualizar el kernel sin volver a verificar la NPU |
 | Precisión del modelo cuantizado | Más falsos positivos o rechazos | Pasar a cuantización int16 o mixta, o a `w600k_r50` (mismo embedding de 512) |
 | Conflictos de hardware en la XIAO: timers LEDC, I²C compartido con la cámara y GPIO3 de strapping | El servo, el INA219 o la consola USB pueden fallar | Las verificaciones que describe el plan, en cuanto se conecten los componentes |
