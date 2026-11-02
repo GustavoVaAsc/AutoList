@@ -1,10 +1,10 @@
 # Contrato MQTT
 
-> **Borrador v0.4.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
+> **Borrador v0.5.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
 
 ## 1. Convenciones generales
 
-- **Broker:** Mosquitto en la Orange Pi. Listener `1883` (TCP, servicios del borde y XIAO) y `9001` (WebSocket, frontend). Usuario y contraseña por cliente (sección 6).
+- **Broker:** Mosquitto en la Orange Pi. Un solo listener, el `1883` (TCP, servicios del edge y XIAO). No hay listener WebSocket (el `9001` se quitó en v0.5): el frontend no habla MQTT y recibe todo por la API de Node-RED. Sin acceso anónimo; usuario y contraseña por rol (sección 6).
 - **Formato:** JSON en UTF-8, un objeto por mensaje. Nombres de campo en español, `snake_case`, sin acentos.
 - **Campos desconocidos se ignoran.** Un consumidor no debe fallar si llega un campo que no conoce; así se pueden agregar campos sin romper a nadie. Quitar o renombrar un campo sí es un cambio incompatible y se anota en la sección 7.
 - **Números de cuenta** siempre como *string* de 9 dígitos (`"320068234"`), nunca como número: un cero a la izquierda se perdería.
@@ -12,27 +12,28 @@
 - **Unidades** en el nombre o en la tabla: `lat_ms` en milisegundos, `v` en volts, `i` en amperes, `p` en watts, `temp` en °C.
 - **Tamaño en la XIAO:** PubSubClient trae un búfer de 256 bytes por defecto. Todo lo que la XIAO publica o recibe debe caber ahí, o el firmware debe llamar a `setBufferSize()`. Ningún mensaje hacia la XIAO lleva miniaturas ni embeddings.
 - **Retained:** solo para estados (lo último que se sabe de algo). Nunca para eventos ni órdenes: un `cmd` retenido se volvería a ejecutar al reconectar.
+- **Los consumidores ignoran los mensajes con la bandera retain y los de payload vacío, en todo tópico cuya columna Retain sea "no" en la tabla de la sección 2 (obligación nueva de v0.5).** La ACL de Mosquitto no puede impedir el retain por tópico, así que quien tenga credenciales de un publicador (o su Will) podría dejar retenida una orden o una lectura falsa, que se repetiría en cada reconexión del consumidor. Por eso todo consumidor de esos tópicos ignora cualquier mensaje con retain y cualquiera con payload vacío (no es una orden ni una lectura válida), y no solo en los `*/cmd`: la XIAO en `aula/actuador/cmd`, el servicio de visión en `aula/vision/cmd` y en `aula/camara/pir`, y Node-RED en `aula/sesion/cmd`, `aula/camara/energia` y los demás. **Afecta al firmware de la XIAO y al servicio de visión (en `aula/camara/pir` y en `aula/vision/cmd`, además de las órdenes de la XIAO), que son de Gustavo.** Además, Node-RED, en cada conexión al broker (al arrancar y tras reconectar, por ejemplo al reiniciar Mosquitto), borra los retenidos que haya en `aula/actuador/cmd`, `aula/sesion/cmd`, `aula/vision/cmd`, `aula/camara/pir` y `aula/camara/energia` (flujo "Limpieza de retenidos" de `flows.json`). **Esa limpieza provoca, en cada conexión al broker, un mensaje vacío en vivo (sin bandera retain) en cada tópico de su lista**, que los suscriptores deben ignorar por vacío. El flujo de ingesta descarta `aula/camara/energia` con retain (con aviso) y en silencio con payload vacío. **Pendiente para los flujos del 11 nov:** los demás tópicos con Retain = no que la limpieza no cubre (`aula/vision/resultado`, `aula/vision/embedding`, `aula/vision/enrolamiento`, `aula/vision/galeria/alta`, `aula/vision/galeria/baja`, `aula/pantalla/reinicio` y `aula/sistema/metricas`) deben descartar retain en el flujo que los consuma. La alternativa es ampliar la lista de la limpieza; se prefiere descartar en el consumidor, porque la limpieza solo borra al conectar y no protege entre conexiones.
 
 ## 2. Resumen de tópicos
 
 | Tópico | Publica | Consume | QoS | Retain |
 |---|---|---|---|---|
 | `aula/camara/pir` | XIAO | visión | 0 | no |
-| `aula/camara/energia` | XIAO | Node-RED | 0 | no |
-| `aula/camara/estado` | XIAO (+ LWT) | Node-RED, frontend | 1 | sí |
-| `aula/actuador/cmd` | Node-RED, pantalla, visión | XIAO | 1 | no |
-| `aula/actuador/estado` | XIAO | Node-RED, pantalla, frontend | 1 | sí |
-| `aula/vision/resultado` | visión | Node-RED, frontend (solo `modo: prueba`) | 1 | no |
+| `aula/camara/energia` | XIAO (y `simulador`, solo pruebas) | Node-RED | 0 | no |
+| `aula/camara/estado` | XIAO (+ LWT) | Node-RED | 1 | sí |
+| `aula/actuador/cmd` | Node-RED (incluye las órdenes del frontend), pantalla, visión | XIAO | 1 | no |
+| `aula/actuador/estado` | XIAO | Node-RED, pantalla | 1 | sí |
+| `aula/vision/resultado` | visión | Node-RED (el frontend recibe por la API los de `modo: prueba`) | 1 | no |
 | `aula/vision/cmd` | Node-RED | visión | 1 | no |
-| `aula/vision/enrolamiento` | visión | frontend, pantalla | 0 | no |
+| `aula/vision/enrolamiento` | visión | pantalla, Node-RED (el frontend lo recibe por la API) | 0 | no |
 | `aula/vision/embedding` | visión | Node-RED | 1 | no |
-| `aula/vision/estado` | visión (+ LWT) | Node-RED, frontend | 1 | sí |
+| `aula/vision/estado` | visión (+ LWT) | Node-RED (el frontend lo recibe por la API) | 1 | sí |
 | `aula/vision/galeria/alta` | Node-RED | visión | 1 | no |
 | `aula/vision/galeria/baja` | Node-RED | visión | 1 | no |
-| `aula/sesion/cmd` | pantalla, frontend | Node-RED | 1 | no |
-| `aula/sesion/estado` | Node-RED | todos | 1 | sí |
+| `aula/sesion/cmd` | pantalla, Node-RED (a nombre del frontend) | Node-RED | 1 | no |
+| `aula/sesion/estado` | Node-RED | XIAO, pantalla | 1 | sí |
 | `aula/pantalla/reinicio` | Node-RED | pantalla | 1 | no |
-| `aula/sistema/metricas` | Orange Pi | Node-RED | 0 | no |
+| `aula/sistema/metricas` | Node-RED | Node-RED | 0 | no |
 
 ## 3. Nodo de campo (XIAO ESP32S3)
 
@@ -88,7 +89,7 @@ Orden a los actuadores. Todos los campos son opcionales: solo se aplica lo que v
 | `buzzer` | int | `0`, `1`, `2` | **[decidir]** `1` = pitido corto de éxito, `2` = doble pitido de error |
 | `luz` | int | `0`, `1` | Tira LED de 12 V vía MOSFET |
 
-Publican: Node-RED (retroalimentación del pase de lista), la pantalla (botones "Abrir puerta" y "Probar luz LED") y el servicio de visión (solo `luz`, para la orquestación luz–captura).
+Publican: Node-RED (retroalimentación del pase de lista y las órdenes manuales que llegan del frontend por la API), la pantalla (botones "Abrir puerta" y "Probar luz LED") y el servicio de visión (solo `luz`, para la orquestación luz–captura).
 
 ### `aula/actuador/estado` (retenido)
 La XIAO lo publica cada vez que cambia un actuador.
@@ -171,7 +172,7 @@ Progreso del registro, un mensaje por cambio de estado. QoS 0: si se pierde uno,
 | `miniatura` | string | no | JPEG en base64, como máximo 160×120 y unos 8 KB. Solo con `aceptada` o `rechazada`. La pantalla la ignora. El servicio de visión todavía no emite miniaturas. |
 
 ### `aula/vision/embedding`
-Embedding final de un registro. **El usuario MQTT del frontend no puede leer este tópico (ACL).**
+Embedding final de un registro. **Solo el usuario `nodered` puede leer este tópico (ACL, sección 6).** El frontend no es cliente MQTT y nunca lo recibe.
 
 ```json
 {"ts": "2026-11-04T09:12:33.120-06:00", "cuenta": "320068234", "dim": 512, "modelo": "w600k_mbf-uint8-v1", "embedding": [0.0123, -0.0456, "…"]}
@@ -186,7 +187,7 @@ Embedding final de un registro. **El usuario MQTT del frontend no puede leer est
 | `embedding` | float[] | sí | Normalizado L2, 4 decimales (unos 4 KB en JSON con 512 floats) |
 
 ### `aula/vision/estado` (retenido)
-Salud del servicio de visión, con LWT `{"en_linea": false}`. Le dice a Node-RED y al frontend si se puede registrar o pasar lista.
+Salud del servicio de visión, con LWT `{"en_linea": false}`. Le dice a Node-RED, y por la API al frontend, si se puede registrar o pasar lista.
 
 ```json
 {"ts": "2026-11-04T09:12:33.120-06:00", "en_linea": true, "modo": "inactivo", "galeria": 38, "modelo": "w600k_mbf-uint8-v1"}
@@ -218,7 +219,7 @@ La galería en RAM solo cambia por orden de Node-RED, que publica estos tópicos
 - **Recarga completa** con `GET /api/galeria` también al arrancar y en cada reconexión al broker; cubre una `baja` perdida mientras la visión estaba desconectada.
 - Desde el 11 nov, `GET /api/galeria` exige `httpNodeAuth` y el encabezado `X-Galeria-Token` (`GALERIA_TOKEN`), que solo tienen Node-RED y la visión (plan, secciones 6.2 y 6.7).
 
-## 5. Borde (Node-RED, pantalla, Orange Pi)
+## 5. Edge (Node-RED, pantalla, Orange Pi)
 
 ### `aula/sesion/cmd`
 ```json
@@ -241,7 +242,7 @@ Va retenido para que la XIAO y la pantalla recuperen el estado al reconectar (LE
 ```
 
 ### `aula/sistema/metricas`
-Cada 10 s.
+Cada 10 s. Lo publica Node-RED con el usuario `nodered`, que ya tiene escritura en `aula/#`, con la temperatura, la CPU y la RAM de la placa. El flujo que lo publica aún no existe. Condición futura: si lo publica otro proceso del host, ese proceso necesita un usuario MQTT propio, y eso es un cambio de este contrato (sección 6) y de la ACL.
 ```json
 {"ts": "…", "temp": 52.1, "cpu": 34, "ram": 61}
 ```
@@ -249,15 +250,26 @@ Cada 10 s.
 
 ## 6. Control de acceso (ACL de Mosquitto)
 
+La aplica `orangepi/mosquitto/acl` (versionado, sin secretos) con `acl_file`, y los usuarios salen del archivo de contraseñas que genera el entrypoint del broker. Los nombres de usuario son fijos; cada uno tiene su propia contraseña en `orangepi/.env` (`MQTT_<USUARIO>_PASSWORD`).
+
 | Usuario | Lee | Escribe |
 |---|---|---|
-| `xiao` | `aula/actuador/cmd`, `aula/sesion/estado` | `aula/camara/#`, `aula/actuador/estado` |
+| `xiao` | `aula/actuador/cmd`, `aula/sesion/estado` | `aula/camara/pir`, `aula/camara/energia`, `aula/camara/estado`, `aula/actuador/estado` |
 | `vision` | `aula/camara/pir`, `aula/vision/cmd`, `aula/vision/galeria/#` | `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/embedding`, `aula/vision/estado`, `aula/actuador/cmd` |
 | `nodered` | `aula/#` | `aula/#` |
 | `pantalla` | `aula/sesion/estado`, `aula/vision/enrolamiento`, `aula/actuador/estado`, `aula/pantalla/reinicio` | `aula/sesion/cmd`, `aula/actuador/cmd` |
-| `frontend` (WS) | `aula/vision/enrolamiento`, `aula/vision/resultado`, `aula/vision/estado`, `aula/sesion/estado`, `aula/actuador/estado`, `aula/camara/estado` | `aula/actuador/cmd`, `aula/sesion/cmd` |
+| `simulador` | nada | `aula/camara/energia` |
 
-El `frontend` nunca lee `aula/vision/embedding` ni `aula/vision/galeria/#`. Solo `nodered` publica en `aula/vision/galeria/#`: por eso `vision` escribe sus tópicos uno por uno y no `aula/vision/#`. **[decidir]** ¿El frontend publica directo en `aula/actuador/cmd`, o pasa por la API de Node-RED? Pasar por la API deja un solo punto de control y de registro.
+Notas:
+
+- **No hay usuario `frontend`.** El navegador no habla MQTT (decisión de Yordi, v0.5): todo pasa por la API HTTP de Node-RED, que publica en `aula/actuador/cmd` y `aula/sesion/cmd` con el usuario `nodered`. Eso deja un solo punto de control y de registro de las órdenes manuales, y resuelve el **[decidir]** de v0.4. El mecanismo con que la API entrega al frontend el progreso en vivo del registro se decide el 11 de noviembre; este contrato no define endpoints.
+- `xiao` escribe los tres tópicos de cámara uno por uno y no `aula/camara/#`: es la clave que viaja en claro por la LAN, y así no sirve para publicar en tópicos que se añadan después bajo `aula/camara/`.
+- `simulador` lo usa solo `herramientas/simular_energia.sh`, para publicar lecturas falsas de energía. No lee nada.
+- Solo `nodered` publica en `aula/vision/galeria/#` y en `aula/vision/cmd`: por eso `vision` escribe sus tópicos uno por uno y no `aula/vision/#`. Solo `nodered` lee `aula/vision/embedding`.
+- **`use_username_as_clientid true`.** El broker usa el nombre de usuario como client id e ignora el que traiga el cliente (el `client_id` de `vision.conf`, el `clientid` del nodo MQTT de Node-RED). Consecuencia: dos clientes con el mismo usuario se expulsan entre sí (el segundo desconecta al primero, y si ambos reconectan solos se desconectan en bucle). Cada rol tiene una sola instancia; para depurar no se usa el usuario de un servicio en marcha.
+- Mosquitto descarta **en silencio** la publicación que la ACL deniega: el publicador no recibe error. Para comprobar un permiso, verificar con un suscriptor autorizado, no con el código de salida del publicador. Una suscripción denegada tampoco recibe mensajes.
+- El Will (LWT) también pasa por la ACL: el de `xiao` va en `aula/camara/estado` y el de `vision` en `aula/vision/estado`.
+- La ACL no impide el retain por tópico: los consumidores descartan lo retenido en los tópicos con Retain = no (sección 1).
 
 ## 7. Historial de cambios
 
@@ -267,3 +279,4 @@ El `frontend` nunca lee `aula/vision/embedding` ni `aula/vision/galeria/#`. Solo
 | v0.2 | `aula/galeria/cambio` se reemplaza por `aula/vision/galeria/alta` y `aula/vision/galeria/baja` (solo `cuenta`; la visión recarga con `GET /api/galeria`), acordado entre Gustavo y Yordi. En la ACL, `vision` escribe sus tópicos uno por uno y lee `aula/vision/galeria/#`; solo `nodered` publica en la galería. Se retira la acción `confirmar` de `aula/vision/cmd`: la advertencia de parecido es informativa |
 | v0.3 | El servicio de visión implementa el contrato: `decision` sustituye a `motivo` en `aula/vision/resultado` (el servicio es quien aplica los dos umbrales, `reconocido` y `dudoso`) y se añade `motivo` como detalle fino de la `decision`; `decision: "error"` con `motivo: "error_interno"` para el fallo interno; `ts` en los cuatro mensajes que publica el servicio (`resultado`, `enrolamiento`, `embedding` y `estado`); `aula/vision/estado` con `en_linea`, `modo`, `galeria` y `modelo`; `dim` y `modelo` en `aula/vision/embedding`; el nombre del comando `enrolar` se copia al progreso del registro; la quinta pose es `frente_2`; `cuenta_invalida` como motivo de `error` (extensión). El vocabulario de `motivo` del enrolamiento es el de este documento: una captura fallida es `fallo_captura` y un fallo interno del pipeline es `error` con `npu` |
 | v0.4 | Se fija la forma del estado de `aula/vision/estado`: el Will del broker lleva la forma **mínima** `{"en_linea": false}` (no puede llevar `ts` ni el resto, porque el Will se registra al conectar), mientras que el estado que publica el servicio y el estado final de la salida ordenada llevan el **esquema completo** (`ts`, `en_linea`, `modo`, `galeria`, `modelo`). `en_linea` es el único campo obligatorio del estado: el resto es opcional cuando `en_linea` es `false`, así que la forma mínima es válida para los consumidores. Se documenta que el servicio publica el estado en cada cambio de modo y que, en la salida ordenada, publica el estado final con `en_linea: false` **antes** de cerrar la conexión (la publicación es asíncrona y la desconexión es limpia, así que el Will no salta: sin eso quedaría retenido un "en línea" fantasma) |
+| v0.5 | Se activa la ACL de Mosquitto (sección 6) con un usuario por rol: `xiao`, `vision`, `nodered`, `pantalla` y `simulador` (nuevo, solo escribe `aula/camara/energia`). **Sin usuario `frontend`:** el navegador no habla MQTT y todo pasa por la API de Node-RED, que publica `aula/actuador/cmd` y `aula/sesion/cmd`; se resuelve así el **[decidir]** de v0.4. Se quita el listener WebSocket `9001` (sección 1). Los tópicos que listaban al frontend como consumidor directo (`aula/camara/estado`, `aula/actuador/estado`, `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/estado`) y como publicador (`aula/sesion/cmd`) pasan a la API; el mecanismo del progreso en vivo se decide el 11 nov. Se fija `use_username_as_clientid true` (el client id es el usuario; dos clientes con el mismo usuario se expulsan). Los consumidores de todo tópico con Retain = no ignoran los mensajes con retain y los de payload vacío (sección 1; afecta al firmware de la XIAO y al servicio de visión, incluidos `aula/camara/pir` y `aula/vision/cmd`). Node-RED borra los retenidos de los `*/cmd`, `aula/camara/pir` y `aula/camara/energia` en cada conexión al broker, lo que provoca un mensaje vacío en vivo en cada uno de esos tópicos. `xiao` escribe `aula/camara/pir`, `aula/camara/energia` y `aula/camara/estado` en vez de `aula/camara/#`. `aula/camara/energia` la publica también `simulador` (solo pruebas). El publicador de `aula/sistema/metricas` es Node-RED (usuario `nodered`, con la temperatura, la CPU y la RAM de la placa); el flujo que lo publica aún no existe, y no lleva usuario MQTT propio. Sin cambios en los payloads |
