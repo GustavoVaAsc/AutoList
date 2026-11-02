@@ -38,14 +38,16 @@ interface CajaIndicador {
   x: number
   y: number
   ancho: number
+  alto: number
 }
 
 /**
- * Posición del indicador de la pestaña activa. Propósito: al cambiar de
- * pestaña, el indicador se desliza de una a otra (continuidad espacial). Solo
- * se anima el cambio de ruta: medir de nuevo por un cambio de tamaño o por la
- * carga de la fuente recoloca la barra sin transición. Se mide con el DOM
- * porque la navegación puede partirse en dos filas en pantallas angostas.
+ * Posición y tamaño del segmento activo del control segmentado. Propósito: al
+ * cambiar de vista, el segmento blanco se desliza de una a otra (continuidad
+ * espacial). Solo se anima el cambio de ruta: medir de nuevo por un cambio de
+ * tamaño o por la carga de la fuente recoloca el segmento sin transición. Se
+ * mide con el DOM porque en pantallas angostas los segmentos cambian de ancho
+ * y de alto (el texto se parte en dos líneas).
  */
 function useIndicador(lista: React.RefObject<HTMLUListElement | null>, ruta: string) {
   const [caja, setCaja] = useState<CajaIndicador | null>(null)
@@ -75,12 +77,17 @@ function useIndicador(lista: React.RefObject<HTMLUListElement | null>, ruta: str
         return
       }
       const x = activo.offsetLeft
-      const y = activo.offsetTop + activo.offsetHeight - 2
+      const y = activo.offsetTop
       const ancho = activo.offsetWidth
-      setCaja((previa) => (previa !== null && previa.x === x && previa.y === y && previa.ancho === ancho ? previa : { x, y, ancho }))
+      const alto = activo.offsetHeight
+      setCaja((previa) =>
+        previa !== null && previa.x === x && previa.y === y && previa.ancho === ancho && previa.alto === alto
+          ? previa
+          : { x, y, ancho, alto },
+      )
     }
     medir()
-    // La lista y cada enlace: el ancho de un enlace cambia con la fuente o el texto.
+    // La lista y cada enlace: el tamaño de un enlace cambia con la fuente o el texto.
     const observador = new ResizeObserver(medir)
     observador.observe(ul)
     ul.querySelectorAll('a').forEach((enlace) => observador.observe(enlace))
@@ -146,7 +153,7 @@ export function App() {
         <header className="encabezado">
           <div className="contenedor encabezado__interior">
             {/* Wordmark tipográfico, sin símbolo: el verde de "List" es el mismo
-                verde de "en vivo" y de la gráfica (identidad: verde asistencia). */}
+                verde de "en vivo" y de la línea de la gráfica (el único acento). */}
             <span className="marca">
               Auto<span className="marca__acento">List</span>
             </span>
@@ -168,7 +175,7 @@ export function App() {
               {caja !== null && (
                 <span
                   className={`navegacion__indicador${animado ? ' navegacion__indicador--animado' : ''}`}
-                  style={{ transform: `translate(${caja.x}px, ${caja.y}px)`, width: caja.ancho }}
+                  style={{ transform: `translate(${caja.x}px, ${caja.y}px)`, width: caja.ancho, height: caja.alto }}
                   aria-hidden="true"
                 />
               )}
@@ -177,7 +184,7 @@ export function App() {
             <SelectorTema />
           </div>
         </header>
-        <main ref={principal} className="contenedor principal">
+        <main ref={principal} className="principal">
           {/* key: al cambiar de vista se remonta y entra con un fundido corto. */}
           <div key={ruta} className="vista">
             <Contenido />

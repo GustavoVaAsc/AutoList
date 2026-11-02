@@ -17,7 +17,7 @@ Panel del profesor, en Vite + React + TypeScript (plan, sección 6.7). Se compil
 
 | Vista | Estado |
 |---|---|
-| Métricas y asistencia | Funciona solo la sección de energía: tres cifras actuales, gráfica de la potencia y tabla de lecturas recientes. Consulta `GET /api/metricas/energia` cada 5 s. |
+| Métricas y asistencia | Funciona solo la sección de energía: potencia actual y datos de la ventana de 30 min, gráfica de la potencia y tabla de lecturas recientes. Consulta `GET /api/metricas/energia` cada 5 s. |
 | Alumnos | Armazón, con la etiqueta "Pronto" en la navegación y un aviso de que llega en un avance posterior. |
 | Registro | Armazón, con la etiqueta "Pronto" en la navegación y un aviso de que llega en un avance posterior. |
 
@@ -96,8 +96,8 @@ web/
   index.html
   vite.config.ts           base '/app/' y proxy de /api para desarrollo
   src/
-    main.tsx               arranque y fuentes
-    estilos.css            tokens (variables CSS), temas claro y oscuro, movimiento y estilos
+    main.tsx               arranque
+    estilos.css            fuente Inter (@font-face), tokens (variables CSS), temas claro y oscuro, movimiento y estilos
     tema.ts                preferencia de tema (Sistema, Claro, Oscuro) y su almacenamiento
     lecturasContexto.ts    reparte el estado del sondeo a la cabecera y a las vistas
     serie.ts               ventana visible y huecos de la gráfica
@@ -106,8 +106,8 @@ web/
     useLecturas.ts         consulta periódica (5 s, en pausa con la pestaña oculta)
     formato.ts             horas (America/Mexico_City) y cifras
     vistas/                Alumnos, Registro, Metricas
-    componentes/           TarjetaCifra, GraficaPotencia, TablaLecturas, EstadoVacio,
-                           IndicadorEstado, SelectorTema
+    componentes/           Hero, Cifra, GraficaPotencia, TablaLecturas, EstadoVacio,
+                           AvisoObsoleta, IndicadorEstado, SelectorTema
   public/
     tema.js                aplica el tema guardado antes de pintar (archivo externo por la CSP)
 ```
@@ -120,7 +120,7 @@ web/
 | `vite`, `@vitejs/plugin-react` | Servidor de desarrollo y build |
 | `typescript`, `@types/react`, `@types/react-dom` | Tipos y revisión estática |
 | `recharts` | Gráficas. La vista de métricas sumará asistencia, latencia y confianza (plan, sección 6.6), y con recharts son más series del mismo tipo de componente. |
-| `@fontsource/ibm-plex-sans`, `@fontsource/ibm-plex-mono` | Tipografías empaquetadas con el build: el aula puede no tener internet, así que no se carga nada de Google Fonts ni de un CDN. IBM Plex Sans (400, 500 y 600) e IBM Plex Mono (400), solo los subconjuntos latin y latin-ext, que se importan en `src/main.tsx`. La razón de elegir Plex está en el comentario de `src/estilos.css`. |
+| `@fontsource-variable/inter` | Tipografía Inter variable empaquetada con el build: el aula puede no tener internet, así que no se carga nada de Google Fonts ni de un CDN. Solo se empaquetan los subconjuntos latin y latin-ext, que `src/estilos.css` declara con `@font-face` (el `wght.css` del paquete traería también cirílico, griego y vietnamita). |
 
 ## Decisiones
 
@@ -133,8 +133,15 @@ web/
 - **Navegación por hash.** Node-RED sirve archivos estáticos y no sabe resolver rutas de una SPA: con `#/metricas`, recargar la página no da 404.
 - **Zona horaria.** Todas las horas se muestran en `America/Mexico_City`, sin importar la zona de la laptop.
 - **Sin cifras inventadas.** Una vista sin datos dice que no hay datos. Alumnos y Registro no muestran ejemplos.
-- **Identidad.** Base de Vercel (tokens, espaciado, elevación) con una capa propia: wordmark tipográfico "AutoList" (sin símbolo) y un solo color de marca, el verde asistencia (`--acento`). Se usa solo en el wordmark, la pestaña activa, la cifra de potencia, la línea y el relleno de la gráfica, el punto "en vivo" y el anillo de foco. Está medido: 5.0:1 sobre blanco y 4.8:1 sobre `#fafafa` en claro; 8.5:1 y 8.9:1 en oscuro. No se usa como texto sobre `--acento-suave` (4.4:1): ahí el texto es `--tinta`.
+- **Lenguaje visual inspirado en Apple: gramática y tokens, nunca la marca.** Se toman las secciones a todo el ancho que alternan fondo, la escala tipográfica, los radios y la barra translúcida. No hay logo, nombres de productos ni textos que hagan confundible la página con apple.com. Cada decisión visual tiene su razón en un comentario de `src/estilos.css`.
+- **Un solo acento: el verde asistencia.** Cumple el papel que Apple da a su azul: enlaces, control activo (el anillo del segmento), foco, línea de la gráfica, punto "en vivo", "List" del wordmark y el botón primario si llega a existir. En superficies claras es `#1a7f4b` (5.02:1 sobre blanco, 4.6:1 sobre perla); sobre las secciones casi negras, la variante clara `#4cc38a` (6.7:1 sobre `#272729`). El rojo y el ámbar son solo estados de error y advertencia. La cifra de potencia va en tinta, no en el acento.
+- **Tipografía.** `-apple-system, BlinkMacSystemFont, "Inter Variable", "Inter", sans-serif`: en una Mac sale la fuente del sistema y en Windows o Android sale Inter, nunca Segoe ni Roboto (por eso no hay `system-ui` antes de Inter). Escala: hero 56 px (40 px bajo 1068 px y 34 px bajo 640 px), peso 600, interlínea 1.07 y tracking de -0.28 px; display de 40 px para el `h1`; titular de sección de 28 px; cuerpo de 17 px con interlínea 1.47 y tracking de -0.374 px; caption de 14 px con -0.224 px. Pesos 300, 400 y 600, nunca 500. Las horas y las unidades usan `tabular-nums` y no una fuente monoespaciada. Excepciones a la escala, con su razón en el CSS: la etiqueta "Pronto" (12 px, dentro del segmento) y la entradilla en pantallas angostas (21 px).
+- **Secciones que alternan fondo.** La vista Métricas y asistencia es una pila de secciones a todo el ancho, con el contenido centrado a un máximo de 1200 px; el cambio de color es el separador, sin bordes ni sombras entre ellas. Cada vista tiene un `h1` y sus secciones llevan `h2` (en Métricas: Energía, que solo leen los lectores de pantalla, la gráfica y la tabla). Hero en gris perla `#f5f5f7` (`h1`, entradilla, la potencia como cifra protagonista, datos de la ventana de 30 min, hora de la última lectura y aviso de lecturas viejas), gráfica en `#272729` y tabla en blanco, dentro de una tarjeta. Alumnos y Registro usan el mismo hero con su estado vacío.
+- **Barra superior fija y translúcida.** Perla al 92 % con `backdrop-filter: saturate(180%) blur(20px)`, el único desenfoque de la página; con `prefers-reduced-transparency: reduce` el fondo es sólido. Lleva el wordmark, las tres vistas como control segmentado en píldora (con `aria-current`; Alumnos y Registro conservan su "Pronto"), el indicador de estado y el selector de tema con su etiqueta "Tema". Solo es fija (`sticky`) desde 960 px de ancho y 600 px de alto, donde mide 56 px en una sola fila; ahí `html` lleva `scroll-padding-top` y el `h1` y los titulares de sección `scroll-margin-top`, para que el foco programático no quede tapado. En el resto se desplaza con la página: bajo 960 px el control pasa a su propia fila, y a 360 px el estado baja a una tercera, con lo que la barra mide hasta unos 136 px; fija, taparía media ventana en horizontal o con zoom al 400 % (WCAG 1.4.10 y 2.4.11).
+- **Modo oscuro.** Barra translúcida oscura (`#1d1d1f` al 92 %), hero y tabla en negro, gráfica en `#272729` y tarjeta en `#1d1d1f`: la alternancia sigue leyéndose sin bordes. La sección de la gráfica usa los mismos tokens (`--g-*`) en ambos temas. Contrastes medidos en ambos temas (texto sobre perla, blanco y casi negro, acento, ejes, "Pronto" y contornos de controles): todo el texto cumple 4.5:1 y lo no textual 3:1, con una excepción: el wordmark, que es un logotipo y está exento (WCAG 1.4.3). Su peor caso, "List" sobre la barra con la sección oscura debajo (fondo `#e5e5e7`), mide 4.0:1 en claro y 7.5:1 en oscuro. El texto secundario claro es `#515154` y no el gris habitual, porque la barra translúcida sobre la sección oscura baja a `#e5e5e7` de fondo (6.3:1).
+- **Radios y sombras.** Radios de 8 px (controles compactos y tooltip), 18 px (tarjetas y avisos) y píldora (acciones, control segmentado y selector). No hay sombras en tarjetas, botones ni texto: la elevación sale del cambio de superficie y del desenfoque de la barra. El segmento activo lleva un anillo de 1 px (un borde) en el acento. El relleno degradado de la gráfica es el único degradado, y su propósito está escrito en `GraficaPotencia.tsx`.
+- **Antislop.** Sin rayas largas, sin emoji, sin mayúsculas sostenidas con tracking amplio y sin degradados decorativos. Los encabezados llevan mayúscula inicial y no terminan en punto.
 - **Estado de la placa en la cabecera.** Sale del sondeo, no de un dato inventado: "En vivo" si la última lectura tiene menos de 60 s según la hora de la placa, "Sin lecturas recientes" si es más vieja y "Sin conexión con la placa" si la API falla (mientras llega la primera respuesta dice "Conectando con la placa"). El texto es la información; el punto es redundante. El pulso del punto corre una vez por cada lectura nueva y nunca en bucle. Un `role="status"` oculto anuncia solo el cambio de estado, no el contador de segundos.
 - **Tema.** Selector nativo con Sistema, Claro y Oscuro, guardado en `localStorage` y aplicado como `data-theme` en `<html>`. `public/tema.js` lo aplica antes de pintar para evitar el parpadeo; es un archivo externo porque la CSP prohíbe scripts en línea.
-- **Movimiento.** Solo transiciones con propósito (curva `cubic-bezier(0.23, 1, 0.32, 1)`, de 100 a 200 ms): el indicador de la pestaña activa se desliza entre pestañas, la vista entra con opacidad y 4 px de desplazamiento, la gráfica se revela una sola vez al montar, y los botones tienen hover, active (`scale(0.97)`) y disabled. Las cifras y los datos que se refrescan cada 5 s no se animan. Todo se desactiva con `prefers-reduced-motion: reduce`.
+- **Movimiento.** Solo transiciones con propósito (curva `cubic-bezier(0.23, 1, 0.32, 1)`, de 100 a 200 ms): el segmento activo se desliza entre vistas (200 ms) y solo al cambiar de ruta, la vista entra con opacidad y 4 px de desplazamiento, la gráfica se revela una sola vez al montar, y botones, segmentos y selector se encogen a `scale(0.95)` al presionar (100 ms). Las cifras y los datos que se refrescan cada 5 s no se animan. Todo se desactiva con `prefers-reduced-motion: reduce`.
 - **Navegación honesta.** Alumnos y Registro llevan la etiqueta "Pronto" en la propia navegación, porque sus vistas todavía no funcionan.
