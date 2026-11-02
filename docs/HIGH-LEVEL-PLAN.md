@@ -57,7 +57,7 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 
 ![Arquitectura del sistema](diagramas/arquitectura.png)
 
-La fuente editable del diagrama es [`diagramas/arquitectura.svg`](diagramas/arquitectura.svg).
+Los diagramas de este documento están en `diagramas/`. Cada uno tiene su fuente editable `.excalidraw`, que se abre en [excalidraw.com](https://excalidraw.com), y su exportación en `.svg` y `.png`.
 
 | Capa | Dispositivo | Responsabilidad |
 |---|---|---|
@@ -76,24 +76,7 @@ La fuente editable del diagrama es [`diagramas/arquitectura.svg`](diagramas/arqu
 
 ### 5.1 Pase de lista (flujo directo)
 
-```mermaid
-sequenceDiagram
-  participant X as XIAO (cámara y actuadores)
-  participant V as Visión (NPU)
-  participant N as Node-RED
-  participant D as Postgres
-  participant L as Pantalla
-
-  X->>V: aula/camara/pir
-  V->>X: aula/actuador/cmd {luz:1}
-  V->>X: GET /capture (ráfaga de 3 a 5)
-  V->>V: filtro de calidad, detección, alineación, embedding, comparación
-  V->>N: aula/vision/resultado
-  N->>N: reglas de sesión (lista, duplicado, retardo)
-  N->>D: asistencia y métricas
-  N->>X: aula/actuador/cmd {servo:abrir, led:verde, luz:0}
-  N->>L: actualización en pantalla
-```
+![Secuencia del pase de lista](diagramas/pase-de-lista.png)
 
 1. El PIR de la XIAO detecta movimiento y lo publica.
 2. El servicio de visión enciende la tira LED, espera unos 300 ms a que la exposición se estabilice y pide una ráfaga de fotos en alta resolución.
@@ -129,36 +112,9 @@ El registro tiene dos partes: primero se da de alta al alumno en la lista maestr
 
 **Parte 2: registro del rostro.**
 
-```mermaid
-sequenceDiagram
-  participant W as Frontend web
-  participant N as Node-RED
-  participant V as Visión (NPU)
-  participant X as XIAO (cámara)
-  participant L as Pantalla ILI9341
-  participant D as Postgres
+![Secuencia del registro del rostro](diagramas/registro-rostro.png)
 
-  W->>N: POST /api/enrolamiento {cuenta, consentimiento} (tras la autenticación de la API)
-  N->>D: UPDATE alumnos SET consentimiento = true, consentimiento_fecha = now()
-  N->>N: inscripción pendiente de la cuenta (vence tras 5 min sin progreso)
-  N->>V: aula/vision/cmd {accion: enrolar}
-  loop 5 poses
-    V-->>L: aula/vision/enrolamiento {paso, pose}
-    V->>X: GET /capture
-    V-->>N: aula/vision/enrolamiento {paso, estado, motivo, miniatura}
-    N->>W: progreso por la API (mecanismo por decidir el 11 nov)
-  end
-  V->>V: consistencia entre fotos y comparación contra la galería
-  V->>N: aula/vision/embedding
-  N->>D: UPDATE alumnos SET embedding (si la cuenta está pendiente, hay consentimiento y aún no tiene rostro)
-  N->>V: aula/vision/galeria/alta
-  W->>N: POST /api/enrolamiento/probar
-  N->>V: aula/vision/cmd {accion: probar}
-  V-->>N: aula/vision/resultado {modo: prueba}
-  N->>W: resultado y confianza por la API
-```
-
-> Las flechas punteadas desde la visión son mensajes MQTT por Mosquitto, a la pantalla y a Node-RED. Las flechas de Node-RED al frontend son la API HTTP: el frontend no habla MQTT, así que lo que visión publica para él entra por Node-RED y sale por su API (contrato MQTT, sección 2). El mecanismo del progreso en vivo se decide el 11 nov.
+> Las flechas continuas son mensajes MQTT por Mosquitto; las discontinuas, HTTP(S), y las punteadas, SQL. Las flechas de Node-RED al frontend son la API HTTP: el frontend no habla MQTT, así que lo que visión publica para él entra por Node-RED y sale por su API (contrato MQTT, sección 2). El mecanismo del progreso en vivo se decide el 11 nov.
 
 1. El profesor elige a un alumno pendiente en el frontend y marca el consentimiento, que el alumno firmó antes. Sin consentimiento, el botón de inicio está deshabilitado. La versión del formato de consentimiento es `docs/consentimiento.md`, aún pendiente de redactar.
 2. `POST /api/enrolamiento {"cuenta","consentimiento":true}` va detrás de la autenticación de la API (HTTP Basic del profesor, sección 6.7). Node-RED registra el consentimiento con `UPDATE alumnos SET consentimiento = true, consentimiento_fecha = now() WHERE no_cuenta = $1 AND embedding IS NULL`; si no actualiza ninguna fila (la cuenta no existe o ya tiene rostro), rechaza la petición. Si ya hay una inscripción pendiente para esa cuenta (doble clic, segunda pestaña), responde 409 sin tocar nada. Guarda una inscripción pendiente de esa cuenta en el contexto del flujo, que vence tras 5 minutos sin progreso (cada mensaje `aula/vision/enrolamiento` de esa cuenta renueva el plazo), y publica la orden `enrolar`. Así el consentimiento lo escribe solo el profesor, autenticado por HTTP; nada que llegue por MQTT puede darlo.
@@ -299,6 +255,8 @@ GET    /api/galeria                 embeddings para el servicio de visión (no l
 
 ### 7.1 Tópicos MQTT
 
+![Tópicos MQTT y ACL de Mosquitto](diagramas/mqtt-acl.png)
+
 ```
 aula/camara/pir          XIAO → visión           {"mov":1}
 aula/camara/energia      XIAO (y simulador, solo pruebas) → Node-RED          {"v":12.1,"i":0.85,"p":10.3}
@@ -331,6 +289,8 @@ aula/sistema/metricas    Node-RED → Node-RED    {"ts":"...","temp":52.1,"cpu":
 > `aula/sistema/metricas` lo publica Node-RED con el usuario `nodered`, que ya tiene escritura en `aula/#`; el flujo aún no existe (contrato MQTT, sección 5).
 
 ### 7.2 Esquema de Postgres (`orangepi/sql/schema.sql`)
+
+![Modelo de datos](diagramas/modelo-datos.png)
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -520,17 +480,15 @@ El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardwar
 
 | Fecha | Hito | Gustavo | Arnau | Yordi |
 |---|---|---|---|---|
-| **28 oct** | Proyecto y planeación | Especificación y exposición | Lista de compras (reprogramada al 4 nov) | Repo y estructura |
-| **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms) | Lista de compras (reprogramada desde el 28 oct); overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; ingesta a `metricas_energia` y primer gráfico de energía (el código ya está; la prueba con el INA219 pasa al 11 nov); arranque del esqueleto del frontend; ACL de Mosquitto y usuarios por rol |
-| **11 nov** | Segundo avance | Toolchain Pegasus en la PC y modelo de la NPU convertido a `.nb` (movidos del 4 nov); detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura; XIAO (la placa y su cámara ya están; los sensores y actuadores dependen de las compras): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro); autenticación de la API en Node-RED (`httpNodeMiddleware`); prueba de la ingesta y del gráfico de energía con el INA219 (pospuesta del 4 nov) |
+| **28 oct** | Proyecto y planeación | Especificación y exposición | — | Repo y estructura |
+| **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms); adaptadores reales de MQTT y HTTP, proceso de producción y unidad systemd del servicio de visión | Lista de compras; overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; arranque del esqueleto del frontend; ACL de Mosquitto y usuarios por rol |
+| **11 nov** | Segundo avance | Toolchain Pegasus en la PC y modelo de la NPU convertido a `.nb`; detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura; XIAO (la placa y su cámara ya están; los sensores y actuadores dependen de las compras): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro); autenticación de la API en Node-RED (`httpNodeMiddleware`); ingesta a `metricas_energia` y primer gráfico de energía con el INA219 |
 | **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E5; umbral con LFW | — | Frontend de registro completo, con la pestaña de Métricas y Asistencia; pantalla completa con sus 3 vistas y los botones de control |
 | **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend y de la pantalla; E6 |
 
 La fila del 25 de noviembre es de integración: el comprimido de código lo aporta todo el equipo.
 
-**Lo que se adelantó al hito del 11 de noviembre.** Los adaptadores reales de MQTT y HTTP, el proceso de producción (configuración, señales y salida ordenada) y la unidad systemd del servicio de visión se adelantaron, porque dependían del toolchain de modelos, que todavía no está: sin los `.nb` no hay detector ni embedder, pero el cableado entre broker, cámara, galería y servicio sí se puede dejar cerrado y probado (con `tools/humo.sh`). Lo que sigue atado al toolchain es la detección y el embedding en la NPU, y con ellos el primer pase de lista real.
-
-**Lo que se movió del 4 al 11 de noviembre.** El toolchain Pegasus y la conversión de los modelos a `.nb` pasan al segundo avance, junto con la detección y el embedding que dependen de ellos. También la prueba de la ingesta y del gráfico de energía con el INA219: el código ya está, pero no se usan datos simulados como evidencia. El 11 de noviembre queda cargado para Gustavo (toolchain, conversión, detección y embedding en cadena, más el firmware de la XIAO); si la conversión se atrasa, la detección y el embedding son lo primero que se recorre al 18 de noviembre.
+El 11 de noviembre queda cargado para Gustavo: el toolchain, la conversión, la detección y el embedding van en cadena, junto con el firmware de la XIAO. La detección y el embedding siguen atados a los `.nb`. Si la conversión se atrasa, lo primero que se recorre al 18 de noviembre es la detección y el embedding.
 
 ### 12.2 Reparto
 
@@ -545,8 +503,8 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 | Tarea | Persona | Depende de | Bloquea a |
 |---|---|---|---|
 | Verificación de la NPU en la imagen oficial (hecho) | Gustavo | — | El ejemplo de detección en la NPU |
-| Adaptadores reales de MQTT y HTTP (adelantado) | Gustavo | El contrato MQTT v0.3 | El proceso de producción del servicio de visión (adelantado) |
-| Proceso de producción y unidad systemd (adelantado) | Gustavo | Los adaptadores reales de MQTT y HTTP | El primer pase de lista real, que sigue atado al toolchain de modelos |
+| Adaptadores reales de MQTT y HTTP | Gustavo | El contrato MQTT v0.3 | El proceso de producción del servicio de visión |
+| Proceso de producción y unidad systemd | Gustavo | Los adaptadores reales de MQTT y HTTP | El primer pase de lista real, que sigue atado al toolchain de modelos |
 | Toolchain Pegasus en la PC | Gustavo | — | La conversión del modelo a `.nb` |
 | Modelo convertido a `.nb` | Gustavo | El toolchain Pegasus | La detección y el embedding en la NPU |
 | Captura, PIR e INA219 por MQTT en la XIAO (11 nov) | Gustavo | La compra del INA219 y el PIR (la XIAO y su cámara ya están) | La ingesta de energía real a Postgres |
