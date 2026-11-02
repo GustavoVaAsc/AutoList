@@ -5,6 +5,19 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- Zona horaria de la base del proyecto (plan, sección 7.2). Los timestamptz se
+-- guardan siempre en UTC; esto solo decide en qué día cae una hora al hacer
+-- ::date, date_trunc('day', ...) o CURRENT_DATE. Aplica a las sesiones nuevas de
+-- cualquier rol, sin tocar la zona de los logs (log_timezone sigue en UTC).
+-- ALTER DATABASE no acepta current_database() directo, de ahí el EXECUTE.
+-- Las consultas de reporte igual escriben la zona (AT TIME ZONE 'America/Mexico_City').
+DO $$
+BEGIN
+  EXECUTE format('ALTER DATABASE %I SET timezone = %L',
+                 current_database(), 'America/Mexico_City');
+END
+$$;
+
 CREATE TABLE alumnos (
   no_cuenta      VARCHAR(9) PRIMARY KEY CHECK (no_cuenta ~ '^[0-9]{9}$'),
   nombre         TEXT        NOT NULL,

@@ -65,6 +65,7 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 
   La función anterior al nodo fija `msg.params = [datos.v, datos.i, datos.p];`, con valores ya validados.
 
+- La base tiene `timezone = America/Mexico_City` (`orangepi/sql/schema.sql`), pero una consulta que agrupe o compare por día escribe la zona explícita: `(columna AT TIME ZONE 'America/Mexico_City')::date`, no `columna::date` ni `CURRENT_DATE` a secas. Los `timestamptz` siguen en UTC. Si una consulta nueva depende de la zona de la sesión, el pool de Node-RED la toma al reconectar: tras cambiar la zona de la base, `docker compose restart nodered`.
 - Nunca concatenes en `query` valores que llegan por MQTT o HTTP. Los embeddings viajan siempre como parámetros enlazados (`$1::vector`).
 - Los nodos catch y debug de las rutas de embeddings (`aula/vision/embedding`, `/api/galeria`, registro) registran solo `msg.error.message`, nunca el mensaje ni el payload completos: un embedding en el log es un dato biométrico.
 - El nodo se conecta con el rol `NODERED_DB_USER`, nunca con el superusuario. Para tablas nuevas, ver [orangepi/AGENTS.md](../orangepi/AGENTS.md#cambios-de-esquema).

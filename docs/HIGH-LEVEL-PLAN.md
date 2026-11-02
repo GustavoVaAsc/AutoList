@@ -387,6 +387,8 @@ CREATE INDEX IF NOT EXISTS metricas_energia_origen_hora_idx
   ON metricas_energia (origen, hora DESC, id DESC);
 ```
 
+Zona horaria: `schema.sql` fija `timezone = America/Mexico_City` en la base del proyecto (`ALTER DATABASE ... SET`, sin `ALTER ROLE`: la heredan todos los roles). Los `timestamptz` se guardan en UTC; la zona decide el día que calculan `::date`, `date_trunc('day', ...)` y `CURRENT_DATE`, para que una clase a las 19:00 de CDMX no caiga en el día siguiente. `log_timezone` sigue en UTC, así que los logs no cambian. Un volumen creado antes de este ajuste lo recibe con el paso de `orangepi/README.md`, sección Volúmenes existentes.
+
 Si el profesor exige MariaDB, solo cambian `vector` → `BLOB` y `TIMESTAMPTZ` → `DATETIME`; el resto es SQL estándar.
 
 ### 7.3 Reporte de asistencia (port de `Asistencia.py`)
@@ -401,6 +403,8 @@ LEFT JOIN asistencias s
 WHERE a.grupo = (SELECT grupo FROM sesiones WHERE id = $1)
 ORDER BY a.no_cuenta;
 ```
+
+Regla: toda consulta de reporte que agrupe o compare por día (promedios diarios de consumo, asistencia por fecha, presente o retardo por sesión) escribe la zona explícita, `(columna AT TIME ZONE 'America/Mexico_City')::date`, aunque la base ya la tenga por defecto (sección 7.2). Así el resultado no depende de la configuración de la sesión. El reporte de arriba filtra por `sesion_id`, no por día, y no la necesita.
 
 ### 7.4 Auditoría con pgvector
 
