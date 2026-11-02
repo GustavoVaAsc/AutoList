@@ -6,7 +6,8 @@ interface Props {
   serie: Serie
 }
 
-const COLOR_TEXTO = 'var(--cuerpo)'
+// Colores de la sección oscura (--g-*, estilos.css): fijos en ambos temas.
+const COLOR_TEXTO = 'var(--g-texto)'
 const ID_RELLENO = 'relleno-potencia'
 
 interface PropsTooltip {
@@ -14,7 +15,7 @@ interface PropsTooltip {
   payload?: ReadonlyArray<{ value?: unknown; payload?: { t?: number } }>
 }
 
-/** Tooltip con el estilo de las tarjetas: la hora en mono y la cifra tabular. */
+/** Tooltip sobre la sección oscura: la hora y la cifra en tipografía tabular. */
 function TooltipPotencia({ active, payload }: PropsTooltip) {
   const punto = payload?.[0]
   const t = punto?.payload?.t
@@ -32,9 +33,11 @@ function TooltipPotencia({ active, payload }: PropsTooltip) {
 }
 
 /**
- * Área de la potencia (W) de la ventana visible. La línea y el relleno llevan
- * el acento: el relleno da peso visual a la magnitud de la potencia y separa
- * la serie de la cuadrícula. Los huecos largos cortan también el relleno.
+ * Área de la potencia (W) de la ventana visible, en estilo oscuro. La línea
+ * lleva el verde claro y el relleno es un degradado que se desvanece hacia el
+ * eje: su propósito es dar peso visual a la magnitud de la potencia y separar
+ * la serie de la cuadrícula, no adornar. Los huecos largos cortan también el
+ * relleno.
  * La tabla de lecturas tiene los mismos datos.
  * Movimiento: la gráfica se revela una sola vez al montar (animación CSS del
  * contenedor, en estilos.css). Los datos que se refrescan cada 5 s no se
@@ -57,42 +60,42 @@ export function GraficaPotencia({ serie }: Props) {
           <ComposedChart data={puntos} margin={{ top: 8, right: cruzaDias ? 44 : 32, bottom: 0, left: 0 }} accessibilityLayer={false}>
             <defs>
               <linearGradient id={ID_RELLENO} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--acento)" stopOpacity={0.18} />
-                <stop offset="100%" stopColor="var(--acento)" stopOpacity={0} />
+                <stop offset="0%" stopColor="var(--g-acento)" stopOpacity={0.3} />
+                <stop offset="100%" stopColor="var(--g-acento)" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid stroke="var(--linea)" vertical={false} />
+            <CartesianGrid stroke="var(--g-rejilla)" strokeDasharray="3 4" vertical={false} />
             <XAxis
               dataKey="t"
               type="number"
               scale="time"
               domain={['dataMin', 'dataMax']}
               tickFormatter={cruzaDias ? formatearDiaYHoraCorta : formatearHora}
-              tick={{ fill: COLOR_TEXTO, fontSize: 12 }}
-              stroke="var(--linea-fuerte)"
+              tick={{ fill: COLOR_TEXTO, fontSize: 14 }}
+              stroke="var(--g-eje)"
               minTickGap={cruzaDias ? 72 : 48}
             />
             <YAxis
               domain={[0, 'auto']}
-              tick={{ fill: COLOR_TEXTO, fontSize: 12 }}
-              stroke="var(--linea-fuerte)"
-              width={36}
+              tick={{ fill: COLOR_TEXTO, fontSize: 14 }}
+              stroke="var(--g-eje)"
+              width={40}
               tickFormatter={(valor: number) => String(Math.round(valor * 10) / 10)}
             />
             <Tooltip
               isAnimationActive={false}
-              cursor={{ stroke: 'var(--linea-fuerte)' }}
+              cursor={{ stroke: 'var(--g-eje)' }}
               content={(props) => <TooltipPotencia {...props} />}
             />
             <Area
               dataKey="p"
               name="Potencia"
               type="linear"
-              stroke="var(--acento)"
+              stroke="var(--g-acento)"
               strokeWidth={2}
               fill={`url(#${ID_RELLENO})`}
               dot={false}
-              activeDot={{ r: 4, fill: 'var(--acento)', stroke: 'var(--lienzo)' }}
+              activeDot={{ r: 4, fill: 'var(--g-acento)', stroke: 'var(--g-fondo)' }}
               connectNulls={false}
               isAnimationActive={false}
             />
@@ -100,7 +103,7 @@ export function GraficaPotencia({ serie }: Props) {
             <Line
               dataKey="suelta"
               stroke="none"
-              dot={{ r: 3, fill: 'var(--acento)', stroke: 'var(--acento)' }}
+              dot={{ r: 3, fill: 'var(--g-acento)', stroke: 'var(--g-acento)' }}
               activeDot={false}
               isAnimationActive={false}
               tooltipType="none"

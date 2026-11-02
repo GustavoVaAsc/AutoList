@@ -315,7 +315,7 @@ Los nombres de servicio son `mosquitto`, `postgres`, `nodered` y `portainer`.
 
 Usar `--build` después de cambiar `nodered/settings.js`, `nodered/Dockerfile`, `nodered/package.json`, `nodered/package-lock.json` o cualquier archivo de `web/`. Estos archivos se copian a la imagen (los de `web/` se compilan en ella), así que sin reconstruirla el cambio no tiene efecto.
 
-La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-9`). Al reconstruir por un cambio, subir el sufijo (`-10`, `-11`...), como indica el comentario del archivo.
+La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-11`). Al reconstruir por un cambio, subir el sufijo (`-12`, `-13`...), como indica el comentario del archivo.
 
 Para aplicar solo un cambio de Node-RED o del frontend, sin tocar los demás servicios, desde `orangepi/`:
 
