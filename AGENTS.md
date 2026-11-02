@@ -105,7 +105,7 @@ La Orange Pi y la XIAO ESP32S3 Sense son equipos físicos únicos que se turnan 
 
 ## Verificación
 
-- El repo no tiene suite de pruebas automatizada. El plan prevé pruebas unitarias de cámara, INA219 y servo (sección 11), que no están en este checkout.
+- El repo no tiene suite de pruebas automatizada completa. El plan prevé pruebas unitarias de cámara, INA219 y servo (sección 11), que no están en este checkout. Lo único automatizado fuera de `orangepi/vision/` son las pruebas de `nodered/pruebas/` (`node --test nodered/pruebas/*.test.js`, sin dependencias): el middleware de la API y las funciones del flujo `Alumnos`.
 - La verificación se hace en la placa, con la lista de cada `AGENTS.md` anidado. Para `orangepi/`, ver [Verificación](orangepi/AGENTS.md#verificación).
 - No digas que algo está listo sin haberlo verificado. Si no pudiste ejecutar la verificación, di qué falta y por qué.
 

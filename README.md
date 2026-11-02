@@ -120,10 +120,10 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | RTC DS3231 e integración del hardware de la pantalla | Pendiente | |
 | Flujos de pase de lista y de sesiones en Node-RED | Pendiente | |
 | Reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV | Pendiente | |
-| API de alumnos e importación de CSV | Pendiente | |
+| API de alumnos e importación de CSV | Parcial: implementado en el repo, falta desplegar y verificar en la placa | `GET /api/alumnos`, `POST /api/alumnos/importar` (CSV, con 400 y 409 antes de escribir) y `GET /api/galeria` en `nodered/flows/flows.json`; formato en el [plan, sección 6.7](docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript) |
 | Esqueleto del frontend | Parcial | Adelantado al 4 nov: navegación, selector de tema y vista de energía; Alumnos y Registro solo tienen su estado vacío |
 | Menú base de la pantalla (sesión, lista y guía de registro) | Pendiente | |
-| `httpNodeAuth` en Node-RED y `GALERIA_TOKEN` | Pendiente | La variable ya está en `orangepi/.env.example` |
+| Autenticación de la API en Node-RED (`httpNodeMiddleware`) y `GALERIA_TOKEN` (antes "`httpNodeAuth`") | Parcial: implementado en el repo, falta desplegar y verificar en la placa | Basic del profesor en `/api/*` y solo `X-Galeria-Token` en `/api/galeria` (`nodered/autenticacion-api.js`); variables nuevas en `orangepi/.env.example` |
 | Prueba de la ingesta y del gráfico de energía con el INA219 (pospuesta del 4 nov) | Pendiente | El flujo y la vista ya están; depende de la compra del INA219 y de su publicación MQTT desde la XIAO |
 
 ### 18 nov: Tercer avance
@@ -169,7 +169,7 @@ Resumen de la [sección 13](docs/HIGH-LEVEL-PLAN.md#13-riesgos) y de los pendien
 | Precisión del modelo cuantizado | Más falsos positivos o rechazos | Pasar a cuantización int16 o mixta, o a `w600k_r50` (mismo embedding de 512) |
 | Conflictos de hardware en la XIAO: timers LEDC, I²C compartido con la cámara y GPIO3 de strapping | El servo, el INA219 o la consola USB pueden fallar | Las verificaciones que describe el plan, en cuanto se conecten los componentes |
 | La cámara no se autentica | Alguien en la LAN podría inyectar o leer fotos | Decisión pendiente del equipo: HMAC, punto de acceso dedicado o TLS ([`orangepi/vision/README.md`](orangepi/vision/README.md#limitaciones-conocidas)) |
-| La API HTTP aún sin autenticación | Cualquier equipo de la red llega a la API de Node-RED | MQTT ya tiene ACL con usuarios por rol (contrato v0.5); `httpNodeAuth` y `GALERIA_TOKEN` el 11 nov; mientras tanto no registramos a ninguna persona real |
+| La API HTTP de la placa desplegada aún sin autenticación | Cualquier equipo de la red llega a la API de Node-RED desplegada | MQTT ya tiene ACL con usuarios por rol (contrato v0.5); la autenticación de la API (Basic del profesor y `GALERIA_TOKEN`) está en el repo y falta desplegarla y verificarla; mientras tanto no registramos a ninguna persona real |
 | MQTT (1883) sin TLS | La contraseña de la XIAO viaja en claro por la LAN; con una clave filtrada se expulsa al cliente legítimo y se inyectan lecturas | Los consumidores descartan mensajes retenidos y vacíos; quedan pendientes limitar el 1883 a la IP de la XIAO en el firewall del host y decidir TLS ([`orangepi/README.md`](orangepi/README.md#seguridad-y-riesgos-aceptados)) |
 | Todo el stack en 4 GB de RAM | Visión, Docker y pantalla compiten por memoria | Vigilar la RAM con las métricas del SoC |
 

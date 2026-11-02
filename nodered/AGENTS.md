@@ -20,10 +20,12 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 | Archivo | Función | ¿Va dentro de la imagen? |
 |---|---|---|
 | `flows/flows.json` | Flujos de Node-RED. Es la única ruta de `nodered/` que el compose monta en el contenedor (`/flows`). El volumen `/data` es aparte y no es de este repo. | No. Se monta (`orangepi/docker-compose.yml`, servicio `nodered`). |
-| `settings.js` | Ajustes: `adminAuth`, HTTPS, credenciales MQTT, bloqueo de módulos, `httpStatic` (el frontend en `/app/`, con CSP solo en esa ruta) y cabeceras de seguridad: `nosniff` y `X-Frame-Options: DENY` en el editor y la API (`httpAdminMiddleware` y `httpNodeMiddleware`). | Sí, en `/etc/nodered/settings.js`. |
+| `settings.js` | Ajustes: `adminAuth`, HTTPS, credenciales MQTT, bloqueo de módulos, `httpStatic` (el frontend en `/app/`, con CSP solo en esa ruta), cabeceras de seguridad (`nosniff` y `X-Frame-Options: DENY` en el editor, con `httpAdminMiddleware`) y la autenticación de la API (`httpNodeMiddleware`). | Sí, en `/etc/nodered/settings.js`. |
+| `autenticacion-api.js` | El `httpNodeMiddleware` de la API: Basic del profesor en `/api/*` y solo `X-Galeria-Token` en `GET /api/galeria`. Lo carga `settings.js` con `require("./autenticacion-api")`. | Sí, en `/etc/nodered/autenticacion-api.js` (mismo directorio de root que `settings.js`). |
+| `pruebas/` | Pruebas con `node:test` (sin dependencias) del middleware y de las funciones del flujo `Alumnos`. Ver [Verificación](#verificación). | No (`.dockerignore`). |
 | `package.json`, `package-lock.json` | Versiones de Node-RED (5.0.9) y de `node-red-contrib-postgresql` (0.16.2). | Sí, para `npm ci`. |
 | `Dockerfile` | Receta de la imagen `pase-lista/nodered`, en dos etapas: la primera compila `web/` con Node 22 y la final copia solo su `dist/` a `/usr/share/nodered-web`. | No. Lo usa `docker compose up -d --build`. |
-| `.dockerignore` | Limita el contexto del build a `settings.js`, `package.json` y `package-lock.json`. | No aplica. |
+| `.dockerignore` | Limita el contexto del build a `settings.js`, `autenticacion-api.js`, `package.json` y `package-lock.json`. Un archivo nuevo que deba entrar a la imagen se agrega aquí y en el `COPY` del `Dockerfile`. | No aplica. |
 
 ## Flujos
 
@@ -36,8 +38,8 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 
 ## Settings e imagen
 
-- Cambiar `settings.js`, `Dockerfile`, `package.json`, `package-lock.json` o cualquier archivo de `web/` exige reconstruir la imagen desde `orangepi/`: `docker compose up -d --build`.
-- Antes de reconstruir, sube el sufijo de la etiqueta en la línea `image:` del servicio `nodered` de `orangepi/docker-compose.yml`: de `5.0.9-11` a `-12`, `-13` y así sucesivamente. El comentario del compose sobre la etiqueta de Node-RED lo pide.
+- Cambiar `settings.js`, `autenticacion-api.js`, `Dockerfile`, `package.json`, `package-lock.json` o cualquier archivo de `web/` exige reconstruir la imagen desde `orangepi/`: `docker compose up -d --build`.
+- Antes de reconstruir, sube el sufijo de la etiqueta en la línea `image:` del servicio `nodered` de `orangepi/docker-compose.yml`: de `5.0.9-12` a `-13`, `-14` y así sucesivamente. El comentario del compose sobre la etiqueta de Node-RED lo pide.
 - `settings.js` vive en `/etc/nodered`, un directorio de root que el contenedor no puede modificar (comentarios del `Dockerfile`). No lo muevas a `flows/` ni a `/data`.
 - Node-RED no instala módulos. `settings.js` bloquea la instalación desde la paleta y desde los nodos function (bloque `externalModules` y `functionExternalModules`). Las dependencias van en `package.json` y `package-lock.json`.
 - La imagen instala con `npm ci --omit=dev --ignore-scripts` (instrucción `RUN` del `Dockerfile`). Ninguna dependencia necesita scripts de instalación.
@@ -54,6 +56,7 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 - `credentialSecret: false` solo es seguro mientras las credenciales sean referencias `${VAR}`, como indica el comentario junto a esa opción en `settings.js`.
 - El id del broker en `ID_BROKER_MQTT` (`settings.js`) debe coincidir con el id del nodo "Mosquitto" en `flows.json`. Si cambias uno, cambia el otro en el mismo cambio.
 - El editor usa `NODERED_ADMIN_USER` y `NODERED_ADMIN_PASSWORD`. Sin ellas, `settings.js` no arranca (la excepción al inicio del archivo).
+- La API usa `NODERED_PROFESOR_USER` y `NODERED_PROFESOR_PASSWORD` (HTTP Basic) y `GALERIA_TOKEN` (`GET /api/galeria`). Sin cualquiera de las tres, `settings.js` lanza una excepción y Node-RED no arranca: la API falla cerrado y no responde 503. El usuario no puede llevar `:`. Tampoco arranca si `NODERED_PROFESOR_PASSWORD`, `GALERIA_TOKEN` o `NODERED_ADMIN_PASSWORD` contienen `cambiar_esta_clave` (cae también `cambiar_esta_clave_larga`), si dos de esos tres son iguales, si `GALERIA_TOKEN` tiene menos de 32 caracteres o `NODERED_PROFESOR_PASSWORD` menos de 16, o si alguno de esos dos tiene menos de 8 caracteres distintos (`validarSecretosApi`; los mensajes nombran variables, nunca valores). `NODERED_ADMIN_PASSWORD` solo se sujeta al placeholder y a no repetirse, sin mínimos de longitud ni de variedad. Los tres valores van por el compose y nunca en `flows.json`.
 
 ## SQL
 
@@ -67,7 +70,7 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 
 - La base tiene `timezone = America/Mexico_City` (`orangepi/sql/schema.sql`), pero una consulta que agrupe o compare por día escribe la zona explícita: `(columna AT TIME ZONE 'America/Mexico_City')::date`, no `columna::date` ni `CURRENT_DATE` a secas. Los `timestamptz` siguen en UTC. Si una consulta nueva depende de la zona de la sesión, el pool de Node-RED la toma al reconectar: tras cambiar la zona de la base, `docker compose restart nodered`.
 - Nunca concatenes en `query` valores que llegan por MQTT o HTTP. Los embeddings viajan siempre como parámetros enlazados (`$1::vector`).
-- Los nodos catch y debug de las rutas de embeddings (`aula/vision/embedding`, `/api/galeria`, registro) registran solo `msg.error.message`, nunca el mensaje ni el payload completos: un embedding en el log es un dato biométrico.
+- Los nodos catch y debug de las rutas de embeddings (`aula/vision/embedding`, `/api/galeria`, registro) registran solo el error, nunca el mensaje ni el payload completos: un embedding en el log es un dato biométrico. En la pestaña `Alumnos`, "Responder 500" registra solo el SQLSTATE (`msg.error.code`) y, sin él, un mensaje truncado con las secuencias de 9 dígitos enmascaradas: ni números de cuenta ni el `detail` de Postgres llegan al log.
 - El nodo se conecta con el rol `NODERED_DB_USER`, nunca con el superusuario. Para tablas nuevas, ver [orangepi/AGENTS.md](../orangepi/AGENTS.md#cambios-de-esquema).
 
 ## Validación de payloads
@@ -87,13 +90,15 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 ## API HTTP
 
 - El editor y la API responden en `https://<ip>:1880` con un certificado autofirmado. Desde la placa: `curl -k "https://127.0.0.1:1880/api/..."`. `-k` no verifica el certificado.
-- La API no tiene autenticación hoy. El comentario sobre `httpNodeAuth` en `settings.js` indica dónde se añade, y `httpNodeAuth` entra el 11 de noviembre. No lo implementes ni lo quites en silencio.
+- La API se autentica con el `httpNodeMiddleware` de `settings.js` (`autenticacion-api.js`), no con `httpNodeAuth` (global: bloquearía al servicio de visión). Todo lo que sirva un `http in` exige Basic del profesor, salvo `GET /api/galeria`, que solo acepta `X-Galeria-Token`. No quites ni debilites esa excepción ni agregues otra sin decisión humana: las credenciales del profesor no deben bastar para descargar embeddings. Una ruta nueva no necesita autenticación en el flujo: ya la tiene. Contra CSRF, el middleware exige en todo método que no sea `GET` ni `HEAD` la cabecera `X-Pase-Lista: 1` y rechaza (403) un `Origin` o un `Sec-Fetch-Site` de otro origen; un endpoint nuevo que cambie datos hereda esa protección, y el frontend debe mandar la cabecera en cada `fetch` que lo llame. La importación del CSV además exige `Content-Type: text/csv` (415). **Ningún `http in` con método GET o HEAD cambia datos ni publica en MQTT**: esos métodos no exigen `X-Pase-Lista`, así que la defensa contra CSRF depende de esta regla. `nodered/pruebas/get-solo-lectura.test.js` la comprueba sobre `flows.json` (desde cada `http in` GET sigue los cables, los `link out` y los `catch`, y falla si llega a un `mqtt out` o a un `postgresql` con INSERT, UPDATE, DELETE, TRUNCATE o ALTER, o sin consulta fija): un flujo nuevo que la rompa hace fallar `node --test`. Una operación que cambie datos va en POST, PUT, PATCH o DELETE. El middleware también limita el cuerpo a 256 KiB; el flujo del CSV repite ese tope (`MAX_BYTES` en "Validar CSV y existentes"): si cambias uno, cambia el otro.
 - El frontend no habla MQTT: no hay usuario `frontend` ni listener WebSocket. Sus comandos al actuador y a la sesión entran por la API, y Node-RED los publica en `aula/actuador/cmd` y `aula/sesion/cmd` con el usuario `nodered` (contrato MQTT, sección 6). El mecanismo del progreso en vivo se decide el 11 de noviembre.
-- `GET /api/galeria` es para el servicio de visión, no para el frontend. Sus embeddings nunca llegan al navegador (plan, secciones 5.4 y 6.7).
+- `GET /api/galeria` es para el servicio de visión, no para el frontend. Sus embeddings nunca llegan al navegador (plan, secciones 5.4 y 6.7). Responde `{"embeddings":[{"cuenta","embedding"}]}`, el formato que lee `orangepi/vision/src/gallery_store.cpp`: si lo cambias, avisa a Gustavo y actualiza el contrato MQTT (sección 4).
+- `GET /api/alumnos` nunca selecciona la columna `embedding` (solo `embedding IS NULL` para el estado del rostro). La importación del CSV tiene dos 409: el de las cuentas existentes sin decisión del profesor (`escrito: false`, no se importó nada, trae `existentes`) y el de la carrera con otra importación (`escrito: true`, las filas nuevas ya se escribieron, trae los conteos); quien consume la respuesta debe leer `escrito`. Escribe con una sola sentencia SQL (una transacción), solo toca `nombre` y `grupo` de las existentes y no usa DELETE; el rol de Node-RED tampoco lo tiene.
 - Los endpoints de plan, sección 6.7, son el contrato con el frontend. Si cambias una ruta o un campo, actualiza esa sección en el mismo cambio.
 
 ## Verificación
 
+- Antes de la placa, desde la raíz del repo y sin Docker: `node --test nodered/pruebas/*.test.js`. Prueba el middleware (Basic, token de la galería, tiempo constante, tope de cuerpo, falla cerrado) y las funciones del flujo `Alumnos` (validación del CSV, 400, 409, formato de la galería), que se extraen del propio `flows.json`. No prueba el nodo de Postgres ni Express: eso es de la placa. Si cambias una función de esos flujos, el cambio va en `flows.json` y la prueba lo lee de ahí.
 - Valida los cambios en la placa con la lista de [orangepi/AGENTS.md](../orangepi/AGENTS.md#verificación). Incluye el simulador, el broker (autenticación y ACL) y la API.
 - Tras un Deploy, revisa las últimas líneas del log con `docker compose logs --tail=50 nodered` desde `orangepi/`. Los descartes y los errores de ingesta aparecen en el log, porque sus nodos de depuración tienen `console: true`.
 - El estado `healthy` de Node-RED llega después de su periodo de arranque de 60 s (servicio `nodered` de `docker-compose.yml`). Revisa con `docker compose ps`.
