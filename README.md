@@ -39,9 +39,9 @@ Alcance completo (incluye, opcional y fuera de alcance): [plan, sección 2](docs
 
 ## Arquitectura
 
-![Arquitectura de AutoList](docs/diagramas/arquitectura.png)
+![Arquitectura de AutoList](docs/diagramas/arquitectura-sistema.png)
 
-La fuente editable del diagrama es [`docs/diagramas/arquitectura.excalidraw`](docs/diagramas/arquitectura.excalidraw), que se abre en [excalidraw.com](https://excalidraw.com). Detalle de capas y protocolos: [sección 4](docs/HIGH-LEVEL-PLAN.md#4-arquitectura).
+La fuente editable del diagrama es [`docs/diagramas/arquitectura-sistema.excalidraw`](docs/diagramas/arquitectura-sistema.excalidraw), que se abre en [excalidraw.com](https://excalidraw.com). Detalle de capas y protocolos: [sección 4](docs/HIGH-LEVEL-PLAN.md#4-arquitectura).
 
 ## Cómo funciona
 
@@ -177,7 +177,7 @@ Resumen de la [sección 13](docs/HIGH-LEVEL-PLAN.md#13-riesgos) y de los pendien
 | [`orangepi/vision/README.md`](orangepi/vision/README.md) | Servicio de visión: estructura, compilación, pruebas y lo que falta |
 | [`web/README.md`](web/README.md) | Frontend web: desarrollo desde la laptop, despliegue y decisiones de diseño |
 | [`AGENTS.md`](AGENTS.md) | Reglas del repo: carriles, ramas, commits y seguridad de datos |
-| [`docs/diagramas/`](docs/diagramas/) | Diagramas (arquitectura, pase de lista, registro del rostro, modelo de datos, y tópicos MQTT con su ACL), cada uno con su fuente `.excalidraw` y su exportación `.svg` y `.png` |
+| [`docs/diagramas/`](docs/diagramas/) | Diagramas (arquitectura, pase de lista, registro del rostro, modelo de datos, y tópicos MQTT con su ACL), cada uno con su fuente `.excalidraw` y su exportación `.png` |
 
 ## Instalación y ejecución
 

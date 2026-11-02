@@ -55,9 +55,9 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 
 ## 4. Arquitectura
 
-![Arquitectura del sistema](diagramas/arquitectura.png)
+![Arquitectura del sistema](diagramas/arquitectura-sistema.png)
 
-Los diagramas de este documento están en `diagramas/`. Cada uno tiene su fuente editable `.excalidraw`, que se abre en [excalidraw.com](https://excalidraw.com), y su exportación en `.svg` y `.png`.
+Los diagramas de este documento están en `diagramas/`. Cada uno tiene su fuente editable `.excalidraw`, que se abre en [excalidraw.com](https://excalidraw.com), y su exportación en `.png`.
 
 | Capa | Dispositivo | Responsabilidad |
 |---|---|---|
