@@ -1,0 +1,6 @@
+# Contexto adicional "web" del build de Node-RED (orangepi/docker-compose.yml):
+# solo el código fuente, sin dependencias ni salidas locales.
+node_modules
+dist
+.env
+.env.*
