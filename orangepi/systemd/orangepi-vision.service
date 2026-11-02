@@ -1,6 +1,5 @@
 [Unit]
 Description=Servicio de vision de AutoList (pase de lista con reconocimiento facial)
-Documentation=file:///opt/autolist/vision/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -15,12 +14,18 @@ WorkingDirectory=/var/lib/autolist
 # archivo de configuracion: este lo puede leer cualquiera.
 EnvironmentFile=/etc/pase-lista/vision.env
 ExecStart=/usr/local/bin/vision_service --config /etc/pase-lista/vision.conf
-# SIGTERM: el servicio para el bucle, publica el estado final (en_linea false) y sale
-# con codigo 0. TimeoutStopSec le da margen para esa salida ordenada.
+# SIGTERM: el servicio para el bucle, cancela el enrolamiento en curso, apaga la luz,
+# publica el estado final (en_linea false) y sale con codigo 0. TimeoutStopSec le da
+# margen para esa salida ordenada: el bucle puede estar en una recarga de la galeria
+# (5 s) o en una captura (2 s).
 KillSignal=SIGTERM
-TimeoutStopSec=10
+TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
+# Codigo 78 (EX_CONFIG): "faltan los modelos .nb". Es una configuracion que falta, no
+# un fallo del proceso: sin esta linea, systemd lo relanzaria cada 5 s para siempre y
+# llenaria el journal.
+RestartPreventExitStatus=78
 # Endurecimiento moderado: el servicio solo necesita leer su configuracion y abrir la
 # NPU (/dev/vipcore). No se usa ProtectSystem=strict ni reglas de dispositivo, para no
 # impedirle el acceso a /dev/vipcore.

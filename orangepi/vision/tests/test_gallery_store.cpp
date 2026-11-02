@@ -230,3 +230,51 @@ TEST(galeria_json_invalido_no_toca_la_galeria) {
   CHECK(!store.reload());
   CHECK_EQ(gallery.size(), std::size_t{1});
 }
+
+// La primera entrada no fija la dimension: si es corrupta, la galeria se queda con una
+// sola entrada y la dimension equivocada, y cada pase de lista acaba en decision
+// "error". Gana la dimension mayoritaria de la respuesta.
+TEST(galeria_la_dimension_mayoritaria_gana_a_la_primera_entrada) {
+  fakes::FakeHttpClient http;
+  // La primera entrada tiene otra dimension; las otras tres, la misma.
+  http.responses.push_back(json_response(
+      R"({"embeddings":[{"cuenta":"320068234","embedding":[1,0,0,0]},{"cuenta":"320068235","embedding":[0,1,0]},{"cuenta":"320068236","embedding":[1,0,0]},{"cuenta":"320068237","embedding":[0,0,1]}]})"));
+  Gallery gallery;
+  GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+
+  CHECK(store.reload());
+  // La entrada de dimension 4 se descarta: la galeria queda con las tres de dimension 3.
+  CHECK_EQ(gallery.size(), std::size_t{3});
+  CHECK(gallery_has(gallery, "320068235", e1()));
+  CHECK(gallery_has(gallery, "320068236", e0()));
+}
+
+// El token no puede viajar en claro: con una URL http a un host que no es el
+// localhost, la peticion no se hace.
+TEST(galeria_no_manda_el_token_por_http_a_un_host_lejano) {
+  fakes::FakeHttpClient http;
+  Gallery gallery;
+  GalleryStore store(gallery, http, config("http://192.168.1.50/api/galeria"));
+
+  CHECK(!store.reload());
+  CHECK(http.requested_urls.empty());
+}
+
+// Un JSON muy anidado se rechaza sin tumbar el proceso.
+TEST(galeria_rechaza_un_json_muy_anidado) {
+  fakes::FakeHttpClient http;
+  std::string document = R"({"embeddings":)";
+  document += std::string(40, '[');
+  document += "1";
+  document += std::string(40, ']');
+  document += "}";
+  http.responses.push_back(json_response(document));
+
+  Gallery gallery;
+  gallery.upsert("320068234", e0());
+  GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+
+  CHECK(!store.reload());
+  // La galeria en RAM no se toca.
+  CHECK_EQ(gallery.size(), std::size_t{1});
+}

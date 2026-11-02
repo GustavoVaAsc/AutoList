@@ -180,3 +180,48 @@ TEST(config_archivo_invalido_falla) {
   CHECK(!error.empty());
   std::remove(ruta.c_str());
 }
+
+// El CA con el que se valida el certificado del servidor (el autofirmado de Node-RED).
+TEST(config_acepta_el_ca_del_certificado) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"http": {"allow_invalid_certificates": false, "ca_file": "/etc/pase-lista/nodered.crt"}})",
+      config, error));
+  CHECK_EQ(config.http.ca_file, std::string("/etc/pase-lista/nodered.crt"));
+}
+
+// Con token, la galeria tiene que ir por https (o por http contra el localhost): el
+// token no puede viajar en claro.
+TEST(config_rechaza_una_galeria_en_claro_con_token) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(
+      R"({"galeria": {"url": "http://192.168.1.50:1880/api/galeria", "token_env": "GALERIA_TOKEN"}})",
+      config, error));
+  CHECK(error.find("claro") != std::string::npos);
+}
+
+TEST(config_acepta_una_galeria_https_o_en_localhost) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"galeria": {"url": "https://nodered.local:1880/api/galeria", "token_env": "GALERIA_TOKEN"}})",
+      config, error));
+  CHECK(parse_process_config(
+      R"({"galeria": {"url": "http://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN"}})",
+      config, error));
+  // Sin token configurado, la galeria puede ir en claro (no viaja ninguna credencial).
+  CHECK(parse_process_config(
+      R"({"galeria": {"url": "http://192.168.1.50:1880/api/galeria", "token_env": ""}})",
+      config, error));
+}
+
+TEST(url_admite_token_solo_con_https_o_localhost) {
+  CHECK(url_admite_token("https://nodered.local:1880/api/galeria"));
+  CHECK(url_admite_token("http://127.0.0.1:1880/api/galeria"));
+  CHECK(url_admite_token("http://localhost:1880/api/galeria"));
+  CHECK(!url_admite_token("http://192.168.1.50:1880/api/galeria"));
+  CHECK(!url_admite_token("ftp://192.168.1.50/api/galeria"));
+  CHECK(!url_admite_token("esto-no-es-una-url"));
+}

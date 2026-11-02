@@ -92,6 +92,14 @@ class VisionService {
   // Atiende los mensajes pendientes y avanza el registro si ya toca la siguiente pose.
   void poll();
 
+  // Salida ordenada: cancela el enrolamiento en curso (publicando "cancelado"), apaga
+  // la luz (publicando aula/actuador/cmd con luz 0) y deja el estado en inactivo.
+  //
+  // Es una operacion explicita y no del destructor: cuando llega un SIGTERM el bus
+  // puede estar ya caido y no serviria de nada. La llama el proceso antes de publicar
+  // el estado final (aula/vision/estado con en_linea false).
+  void shutdown();
+
   ServiceState state() const { return state_; }
 
  private:

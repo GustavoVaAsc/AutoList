@@ -46,8 +46,12 @@ class Subscription {
 // Vida: la Subscription devuelta por subscribe() es la unica forma de darse de baja.
 // Cuando su baja retorna, ningun handler de esa suscripcion esta ejecutandose ni volvera
 // a ejecutarse (la baja espera a un handler en curso), asi que el propietario del handler ya
-// puede destruir lo que el handler captura. Por eso un handler no debe darse de baja a
-// si mismo (esperaria a su propia terminacion). La baja no lanza excepciones.
+// puede destruir lo que el handler captura.
+//
+// EXCEPCION: si la baja se pide desde el propio handler, no se espera (el handler no
+// puede terminar hasta que la baja vuelva) y se avisa por stderr. En ese caso el handler
+// sigue hasta que termina y el propietario todavia no puede destruir lo que el handler
+// captura. La baja no lanza excepciones.
 class MessageBus {
  public:
   virtual ~MessageBus() = default;

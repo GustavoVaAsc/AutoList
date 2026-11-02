@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -10,7 +11,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include "vision/json_payload.hpp"
 #include "vision/mqtt_contract.hpp"
+#include "vision/process_config.hpp"
 
 namespace vision {
 
@@ -42,6 +45,19 @@ enum class ParseOutcome {
 // Si la forma es la correcta pero NINGUNA entrada se puede cargar, se devuelve
 // kNothingUsable: la galeria en RAM no se toca (no se pierde lo que ya habia).
 ParseOutcome parse_entries(const std::vector<std::uint8_t>& body, std::vector<Entry>& entries) {
+  // Barreras antes de parsear: el tamano y la profundidad. El parser de nlohmann es
+  // descendente y recursivo: un cuerpo muy anidado podria agotar la pila.
+  if (body.size() > GalleryStore::kMaxBodyBytes) {
+    std::cerr << "[vision] la respuesta de la galeria es demasiado grande: " << body.size()
+              << " bytes (maximo " << GalleryStore::kMaxBodyBytes << ")\n";
+    return ParseOutcome::kMalformed;
+  }
+  const std::string_view texto(reinterpret_cast<const char*>(body.data()), body.size());
+  if (vision::json::exceeds_depth_limit(texto)) {
+    std::cerr << "[vision] la respuesta de la galeria tiene demasiados niveles de "
+                 "anidamiento: se rechaza\n";
+    return ParseOutcome::kMalformed;
+  }
   json document;
   try {
     document = json::parse(body.begin(), body.end());
@@ -147,6 +163,14 @@ bool GalleryStore::reload() {
 
   std::vector<std::string> headers;
   if (!config_.token.empty()) {
+    // El token no puede viajar en claro: si la URL no es https (ni http contra el
+    // localhost), la peticion no se hace.
+    if (!url_admite_token(config_.url)) {
+      std::cerr << "[vision] la galeria esta en " << config_.url
+                << " y el token no puede viajar en claro: se necesita https (o http "
+                   "contra 127.0.0.1/localhost)\n";
+      return false;
+    }
     if (!http_.supports_request_headers()) {
       std::cerr << "[vision] el cliente HTTP no admite cabeceras: el token de la galeria "
                    "no se envia\n";
@@ -166,10 +190,32 @@ bool GalleryStore::reload() {
   const ParseOutcome outcome = parse_entries(response.body, entries);
   if (outcome != ParseOutcome::kOk) return false;
 
-  // La galeria nueva se arma aparte: si una entrada no cuadra (por ejemplo, una
-  // dimension distinta de la del primer alumno), se descarta y el resto se carga igual.
+  // La galeria nueva se arma aparte: si una entrada no cuadra, se descarta y el resto
+  // se carga igual.
+  //
+  // La dimension se fija antes de cargar: la que mas entradas traen (la mayoritaria).
+  // Si la fijara la primera entrada, una entrada corrupta al principio dejaria la
+  // galeria con una sola entrada y la dimension equivocada, y cada pase de lista
+  // acabaria en decision "error".
+  std::map<std::size_t, std::size_t> por_dimension;
+  for (const Entry& entry : entries) ++por_dimension[entry.embedding.size()];
+  std::size_t dimension = 0;
+  std::size_t cuentas_de_la_dimension = 0;
+  for (const auto& [dim, cuentas] : por_dimension) {
+    // El mapa va en orden ascendente: en un empate se queda la dimension menor.
+    if (cuentas > cuentas_de_la_dimension) {
+      cuentas_de_la_dimension = cuentas;
+      dimension = dim;
+    }
+  }
+
   Gallery galeria_nueva;
+  std::size_t descartadas_por_dimension = 0;
   for (const Entry& entry : entries) {
+    if (entry.embedding.size() != dimension) {
+      ++descartadas_por_dimension;
+      continue;
+    }
     try {
       galeria_nueva.upsert(entry.account, entry.embedding);
     } catch (const EmbeddingError& error) {
@@ -178,6 +224,10 @@ bool GalleryStore::reload() {
     } catch (const std::invalid_argument&) {
       std::cerr << "[vision] cuenta descartada al cargar la galeria: no es valida\n";
     }
+  }
+  if (descartadas_por_dimension > 0) {
+    std::cerr << "[vision] entradas descartadas por dimension (" << dimension << "): "
+              << descartadas_por_dimension << '\n';
   }
 
   std::size_t cargadas = 0;

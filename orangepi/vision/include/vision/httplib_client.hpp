@@ -5,7 +5,8 @@
 // El plazo de `get` es el de la peticion ENTERA (conexion, cabeceras y cuerpo): un
 // servidor que gotea bytes no puede alargar la peticion. cpp-httplib solo da plazos por
 // operacion, asi que el adaptador acota el plazo de socket y, ademas, vigila el reloj
-// desde otro hilo: en cuanto se pasa el plazo total, `get` devuelve status 0.
+// desde el hilo de la peticion: en cuanto se pasa el plazo total, el llamador cierra el
+// socket (stop) y espera a que el hilo termine (join). Nunca queda un hilo colgado.
 
 #include <cstddef>
 #include <string>
@@ -21,6 +22,11 @@ struct HttpClientOptions {
   // true hasta que haya un certificado valido (README, seccion "Limitaciones
   // conocidas"). Por omision es false: no se acepta ningun certificado invalido.
   bool allow_invalid_certificates = false;
+  // Ruta a un CA (o al certificado autofirmado de Node-RED) con el que se valida el
+  // servidor. Con esta ruta se puede confiar en el certificado CONCRETO en vez de
+  // apagar la validacion: es la opcion recomendada frente a
+  // allow_invalid_certificates. Vacia = sin CA adicional (se usan los del sistema).
+  std::string ca_file;
   int connect_timeout_ms = 1000;
   int read_timeout_ms = 1000;
   int write_timeout_ms = 1000;

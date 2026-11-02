@@ -1,7 +1,8 @@
 // ARNES DE RECORRIDO EN SECO, NO el binario de produccion: cablea la maquina de estados
 // real con los dobles en memoria (sin camara, NPU ni broker) y reproduce un pase de lista
-// y un registro. Se queda asi hasta que esten los adaptadores reales de MQTT y HTTP y los
-// modelos; entonces aqui se cablean en lugar de los dobles.
+// y un registro. Los adaptadores reales de MQTT y HTTP ya existen (MosquittoBus,
+// HttplibClient y GalleryStore) y los usa el proceso de produccion; aqui lo unico que
+// se sustituye son el detector y el embedder, que siguen sin existir sobre la NPU.
 #include <iostream>
 #include <thread>
 

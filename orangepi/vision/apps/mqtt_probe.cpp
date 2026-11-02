@@ -2,7 +2,7 @@
 // llega. Es la herramienta para hacer sonar el broker a mano (en la placa no hay
 // mosquitto_pub).
 //
-// Uso: mqtt_probe [--host H] [--puerto P] [--usuario U] [--clave C]
+// Uso: mqtt_probe [--host H] [--puerto P] [--usuario U] [--clave C | --clave-env N]
 //                 [--publicar <topico> <json>] [--escuchar <topico>] [--segundos N]
 #include <chrono>
 #include <condition_variable>
@@ -103,13 +103,17 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--help" || arg == "-h") {
-      std::cout << "Uso: mqtt_probe [--host H] [--puerto P] [--usuario U] [--clave C]\n"
+      std::cout << "Uso: mqtt_probe [--host H] [--puerto P] [--usuario U]\n"
+                   "                [--clave C | --clave-env NOMBRE]\n"
                    "                [--publicar <topico> <json>] [--escuchar <topico>]\n"
                    "                [--segundos N]\n"
                    "\n"
                    "Publica un mensaje y/o escucha un topico e imprime lo que llega.\n"
                    "Con --publicar y --escuchar a la vez, se suscribe primero y despues\n"
-                   "publica.\n";
+                   "publica.\n"
+                   "\n"
+                   "La contrasena se lee del entorno con --clave-env NOMBRE: escrita en la\n"
+                   "linea de ordenes queda en la tabla de procesos (la puede leer cualquiera).\n";
       return 0;
     }
     if (arg == "--host" && i + 1 < argc) {
@@ -126,6 +130,17 @@ int main(int argc, char** argv) {
     }
     if (arg == "--clave" && i + 1 < argc) {
       clave = argv[++i];
+      continue;
+    }
+    if (arg == "--clave-env" && i + 1 < argc) {
+      // La contrasena no viaja en la linea de ordenes: se lee del entorno.
+      const std::string nombre = argv[++i];
+      const char* valor = std::getenv(nombre.c_str());
+      if (valor == nullptr) {
+        std::cerr << "no esta la variable de entorno " << nombre << '\n';
+        return 2;
+      }
+      clave = valor;
       continue;
     }
     if (arg == "--publicar" && i + 2 < argc) {

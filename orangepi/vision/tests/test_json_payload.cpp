@@ -547,3 +547,71 @@ TEST(los_mensajes_sin_hora_se_serializan) {
   CHECK(json::serialize(PirEvent{}).has_value());
   CHECK(json::serialize(GalleryAccount{"320068234"}).has_value());
 }
+
+// --- Will y forma minima del estado -----------------------------------------------
+
+// El Will del broker es {"en_linea":false}: la forma minima del estado. La capa JSON
+// la tiene que aceptar (si no, cualquier consumidor con esta capa lo descartaria).
+TEST(el_will_del_broker_se_acepta_como_estado) {
+  const json::ParseResult parsed = json::deserialize(topics::kVisionStatus, R"({"en_linea":false})");
+  CHECK(parsed.ok());
+  const auto* status = std::get_if<VisionStatus>(&*parsed.payload);
+  CHECK(status != nullptr);
+  CHECK(!status->online);
+  // Los campos que no vienen se quedan vacios: el Will no lleva hora ni galeria.
+  CHECK(status->timestamp.empty());
+  CHECK_EQ(status->gallery_size, std::size_t{0});
+}
+
+TEST(el_estado_minimo_sin_en_linea_se_rechaza) {
+  const json::ParseResult parsed = json::deserialize(topics::kVisionStatus, R"({"modo":"inactivo"})");
+  CHECK(!parsed.ok());
+  CHECK(parsed.error == json::Error::kMissingField);
+  CHECK_EQ(parsed.field, std::string("en_linea"));
+}
+
+// "cancelar" sin cuenta: la cuenta vacia significa "cancela el registro en curso", que
+// es lo que el servicio admite.
+TEST(cancelar_sin_cuenta_se_acepta) {
+  const json::ParseResult parsed =
+      json::deserialize(topics::kVisionCmd, R"({"accion":"cancelar"})");
+  CHECK(parsed.ok());
+  const auto* command = std::get_if<VisionCommand>(&*parsed.payload);
+  CHECK(command != nullptr);
+  CHECK(command->action == VisionAction::Cancel);
+  CHECK(command->account.empty());
+}
+
+// --- Topes de tamano y profundidad ---------------------------------------------------
+
+TEST(un_json_muy_anidado_se_rechaza_sin_lanzar) {
+  std::string document = R"({"accion":"enrolar","cuenta":"320068234","extra":)";
+  document += std::string(40, '[');
+  document += "1";
+  document += std::string(40, ']');
+  document += "}";
+
+  const json::ParseResult parsed = json::deserialize(topics::kVisionCmd, document);
+  CHECK(!parsed.ok());
+  CHECK(parsed.error == json::Error::kTooDeep);
+  CHECK(!parsed.payload.has_value());
+}
+
+TEST(un_json_muy_grande_se_rechaza_sin_lanzar) {
+  std::string document = R"({"accion":"enrolar","cuenta":"320068234","nombre":")";
+  document += std::string(json::kMaxDocumentBytes + 1, 'a');
+  document += R"("})";
+
+  const json::ParseResult parsed = json::deserialize(topics::kVisionCmd, document);
+  CHECK(!parsed.ok());
+  CHECK(parsed.error == json::Error::kTooLarge);
+  CHECK(!parsed.payload.has_value());
+}
+
+TEST(el_calculo_de_profundidad_ignora_las_cadenas) {
+  // Un texto con llaves y corchetes no anida nada.
+  CHECK(!json::exceeds_depth_limit(R"({"texto":"[[[[[[[[[["} )"));
+  CHECK(!json::exceeds_depth_limit(R"({"a":1})"));
+  CHECK(json::exceeds_depth_limit(std::string(33, '[')));
+  CHECK(!json::exceeds_depth_limit(std::string(32, '[')));
+}

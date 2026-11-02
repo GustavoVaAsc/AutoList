@@ -121,10 +121,9 @@ TEST(mqtt_bus_integracion) {
 
   MosquittoOptions options = options_para(broker, "integracion");
   MosquittoBus bus(options);
-  bus.start();
 
-  CHECK(wait_until([&bus] { return bus.connected(); }, std::chrono::milliseconds(3000)));
-
+  // Las suscripciones se hacen ANTES de start(): es el unico patron seguro (ver la
+  // restriccion en mqtt_bus.hpp).
   // --- recibir una orden en aula/vision/cmd ---------------------------------
   std::atomic<int> comandos{0};
   Received orden;
@@ -135,16 +134,6 @@ TEST(mqtt_bus_integracion) {
     orden.put(std::string(to_wire(command->action)));
   });
 
-  VisionCommand command;
-  command.action = VisionAction::Enroll;
-  command.account = "320068234";
-  command.name = "Ana Lopez";
-  bus.publish(topics::kVisionCmd, command);
-
-  CHECK(orden.wait(std::chrono::milliseconds(3000)));
-  CHECK_EQ(orden.value(), std::string("enrolar"));
-  CHECK_EQ(comandos.load(), 1);
-
   // --- recibir un resultado en aula/vision/resultado -------------------------
   std::atomic<int> resultados{0};
   Received resultado;
@@ -154,6 +143,20 @@ TEST(mqtt_bus_integracion) {
     ++resultados;
     resultado.put(std::string(to_wire(value->decision)));
   });
+
+  bus.start();
+
+  CHECK(wait_until([&bus] { return bus.connected(); }, std::chrono::milliseconds(3000)));
+
+  VisionCommand command;
+  command.action = VisionAction::Enroll;
+  command.account = "320068234";
+  command.name = "Ana Lopez";
+  bus.publish(topics::kVisionCmd, command);
+
+  CHECK(orden.wait(std::chrono::milliseconds(3000)));
+  CHECK_EQ(orden.value(), std::string("enrolar"));
+  CHECK_EQ(comandos.load(), 1);
 
   AttendanceResult attendance(AttendanceMode::Test);
   attendance.timestamp = "2026-11-04T09:12:33.120-06:00";
@@ -190,18 +193,20 @@ TEST(mqtt_bus_baja_espera_al_manejador) {
 
   MosquittoOptions options = options_para(broker, "baja");
   MosquittoBus bus(options);
-  bus.start();
 
   std::atomic<int> llamadas{0};
   std::atomic<bool> en_curso{false};
   std::atomic<bool> terminado{false};
 
+  // La suscripcion se hace antes de start() (ver la restriccion en mqtt_bus.hpp).
   Subscription sub = bus.subscribe(topics::kVisionCmd, [&](const Payload&) {
     ++llamadas;
     en_curso.store(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(600));
     terminado.store(true);
   });
+
+  bus.start();
 
   VisionCommand command;
   command.action = VisionAction::Enroll;
@@ -235,7 +240,6 @@ TEST(mqtt_bus_baja_desde_el_propio_manejador_no_se_bloquea) {
 
   MosquittoOptions options = options_para(broker, "autobaja");
   MosquittoBus bus(options);
-  bus.start();
 
   std::atomic<int> llamadas{0};
   // El manejador necesita su propia Subscription: se guarda en un puntero compartido
@@ -246,6 +250,12 @@ TEST(mqtt_bus_baja_desde_el_propio_manejador_no_se_bloquea) {
     sub->reset();  // baja desde el propio manejador
   });
 
+  // La segunda suscripcion tambien antes de start().
+  std::atomic<int> otras{0};
+  Subscription otra = bus.subscribe(topics::kVisionResult, [&](const Payload&) { ++otras; });
+
+  bus.start();
+
   VisionCommand command;
   command.action = VisionAction::Enroll;
   command.account = "320068234";
@@ -255,8 +265,6 @@ TEST(mqtt_bus_baja_desde_el_propio_manejador_no_se_bloquea) {
   CHECK(wait_until([&] { return llamadas.load() >= 1; }, std::chrono::milliseconds(3000)));
 
   // El bus sigue vivo: otra suscripcion recibe mensajes.
-  std::atomic<int> otras{0};
-  Subscription otra = bus.subscribe(topics::kVisionResult, [&](const Payload&) { ++otras; });
   AttendanceResult attendance(AttendanceMode::Test);
   attendance.timestamp = "2026-11-04T09:12:33.120-06:00";
   attendance.decision = Decision::Recognized;

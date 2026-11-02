@@ -10,6 +10,7 @@
 // Vida: el bus se destruye despues de sus suscripciones (la Subscription debe quedar
 // dada de baja antes que el bus).
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -28,6 +29,13 @@ namespace vision {
 // Ultimo Will del servicio de vision. El contrato lo fija en aula/vision/estado
 // (retenido, QoS 1) con {"en_linea":false}: si la conexion se cae sin cerrar limpio,
 // el broker publica ese mensaje y el frontend ve que la vision ya no esta en linea.
+//
+// El Will es la forma MINIMA del estado: solo lleva "en_linea". El estado que publica
+// el servicio (y el estado final de la salida ordenada) lleva el esquema completo
+// ("ts", "en_linea", "modo", "galeria" y "modelo"). La capa JSON acepta las dos formas
+// (ver include/vision/json_payload.hpp), asi que un consumidor con esta capa no
+// descarta el Will. El formato del cable no cambia: es el mismo topico y el mismo
+// JSON.
 struct Will {
   std::string topic;
   std::string payload;
@@ -80,6 +88,15 @@ class MosquittoBus final : public MessageBus {
   // Para el hilo de red, cancela las suscripciones y desconecta. Es idempotente.
   void stop();
 
+  // Espera a que se vacien las publicaciones en vuelo (las de QoS 1, con su PUBACK
+  // recibido) y devuelve true si se vaciaron dentro del plazo, false si se acabo el
+  // plazo. Sirve para la salida ordenada: el estado final (retenido) tiene que haber
+  // llegado al broker antes de desconectar, o el valor retenido se queda en el
+  // anterior.
+  //
+  // El hilo de red tiene que seguir vivo: hay que llamar a flush() ANTES de stop().
+  [[nodiscard]] bool flush(std::chrono::milliseconds timeout);
+
   // true si hay conexion con el broker ahora mismo.
   [[nodiscard]] bool connected() const;
 
@@ -90,6 +107,14 @@ class MosquittoBus final : public MessageBus {
 
   // Se suscribe a un topico del contrato. Los manejadores se invocan desde el hilo de
   // red. La Subscription devuelta es la unica forma de darse de baja.
+  //
+  // RESTRICCION: suscribir SOLO antes de start(). La llamada a mosquitto_subscribe()
+  // desde un hilo distinto del de red tiene el mismo riesgo de ABBA que
+  // mosquitto_unsubscribe() (ver la nota de remove_subscriber en src/mqtt_bus.cpp).
+  // Por eso el bus no llama a mosquitto_subscribe() desde aqui: la suscripcion en el
+  // broker la hace resubscribe_all(), en el hilo de red, en el ciclo de conexion. Una
+  // suscripcion registrada despues de start() queda anotada y se activa en la
+  // siguiente reconexion, no antes.
   [[nodiscard]] Subscription subscribe(std::string_view topic, MessageHandler handler) override;
 
   // Aviso de conexion: el manejador se invoca en CADA conexion al broker, incluida la
@@ -108,6 +133,9 @@ class MosquittoBus final : public MessageBus {
   static void handle_disconnect(struct mosquitto* mosq, void* obj, int rc);
   static void handle_message(struct mosquitto* mosq, void* obj,
                              const struct mosquitto_message* message);
+  // Aviso de publicacion: el broker confirmo el envio (QoS 1) o el mensaje salio
+  // hacia el sistema operativo (QoS 0).
+  static void handle_publish(struct mosquitto* mosq, void* obj, int mid);
 
   // Compartido con las suscripciones: si el bus ya no existe, la baja no hace nada.
   std::shared_ptr<Impl> impl_;

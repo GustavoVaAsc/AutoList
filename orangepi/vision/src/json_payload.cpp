@@ -377,9 +377,11 @@ ParseResult parse_command(const json& doc) {
     result.field = ctx.field;
     return result;
   }
-  // "cuenta" es obligatoria para enrolar y cancelar; en probar es opcional.
+  // "cuenta" es obligatoria solo para enrolar. En probar es opcional y en cancelar
+  // tambien: una cuenta vacia significa "cancela el registro en curso", que es lo que
+  // el servicio admite.
   std::optional<std::string> account;
-  read_string(doc, "cuenta", command.action != VisionAction::Test, false, account, ctx);
+  read_string(doc, "cuenta", command.action == VisionAction::Enroll, false, account, ctx);
   read_string(doc, "nombre", false, false, command.name, ctx);
   if (ctx.failed()) {
     result.error = ctx.error;
@@ -549,10 +551,15 @@ ParseResult parse_status(const json& doc) {
   ParseResult result;
   Ctx ctx;
   VisionStatus payload;
-  read_string(doc, "ts", true, payload.timestamp, ctx);
+  // El estado tiene dos formas (ver json_payload.hpp): el estado completo que publica
+  // el servicio y el Will del broker, que solo lleva "en_linea". Por eso "en_linea" es
+  // el unico campo obligatorio y los demas se aceptan ausentes.
+  std::optional<std::string> timestamp;
+  read_string(doc, "ts", false, true, timestamp, ctx);
+  if (timestamp.has_value()) payload.timestamp = *timestamp;
   read_bool(doc, "en_linea", true, payload.online, ctx);
   std::optional<std::string> mode;
-  read_string(doc, "modo", true, false, mode, ctx);
+  read_string(doc, "modo", false, false, mode, ctx);
   check_optional_vocabulary(mode, "modo",
                    {vision_modes::kIdle, vision_modes::kAttendance, vision_modes::kEnrolling},
                    ctx);
@@ -566,11 +573,13 @@ ParseResult parse_status(const json& doc) {
     }
   }
   std::optional<int> gallery;
-  read_int(doc, "galeria", true, false, gallery, ctx);
+  read_int(doc, "galeria", false, false, gallery, ctx);
   if (gallery.has_value() && *gallery < 0) ctx.fail(Error::kInvalidValue, "galeria");
   payload.gallery_size = gallery.has_value() ? static_cast<std::size_t>(*gallery) : 0;
-  read_string(doc, "modelo", true, payload.model, ctx);
-  check_timestamp(payload.timestamp, "ts", ctx);
+  std::optional<std::string> model;
+  read_string(doc, "modelo", false, false, model, ctx);
+  if (model.has_value()) payload.model = *model;
+  if (timestamp.has_value()) check_timestamp(*timestamp, "ts", ctx);
   if (ctx.failed()) {
     result.error = ctx.error;
     result.field = ctx.field;
@@ -597,6 +606,35 @@ ParseResult parse_gallery(const json& doc) {
 
 }  // namespace
 
+bool exceeds_depth_limit(std::string_view document) noexcept {
+  // Cuenta los niveles de llaves y corchetes, sin contar los que estan dentro de una
+  // cadena (un texto con "{" no anida nada).
+  int depth = 0;
+  bool en_cadena = false;
+  bool escapado = false;
+  for (const char caracter : document) {
+    if (en_cadena) {
+      if (escapado) {
+        escapado = false;
+      } else if (caracter == '\\') {
+        escapado = true;
+      } else if (caracter == '"') {
+        en_cadena = false;
+      }
+      continue;
+    }
+    if (caracter == '"') {
+      en_cadena = true;
+    } else if (caracter == '{' || caracter == '[') {
+      if (++depth > kMaxDocumentDepth) return true;
+    } else if (caracter == '}' || caracter == ']') {
+      // Una llave de mas no es un problema de profundidad: lo rechaza el parser.
+      if (depth > 0) --depth;
+    }
+  }
+  return false;
+}
+
 std::optional<std::string> serialize(const Payload& payload) {
   json doc = std::visit(Writer{}, payload);
   if (!doc.is_object()) {
@@ -619,6 +657,17 @@ std::optional<std::string> serialize(const Payload& payload) {
 
 ParseResult deserialize(std::string_view topic, std::string_view document) {
   ParseResult result;
+  // Barreras antes de parsear: el tamano y la profundidad. El parser de nlohmann es
+  // descendente y recursivo, asi que un documento muy largo o muy anidado se rechaza
+  // antes de tocarlo (un "[[[[..." de 256 KiB tumbaba el proceso con SIGSEGV).
+  if (document.size() > kMaxDocumentBytes) {
+    result.error = Error::kTooLarge;
+    return result;
+  }
+  if (exceeds_depth_limit(document)) {
+    result.error = Error::kTooDeep;
+    return result;
+  }
   json doc;
   try {
     doc = json::parse(std::string(document));

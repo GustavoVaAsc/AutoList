@@ -1,5 +1,6 @@
 #include <atomic>
 #include <cmath>
+#include <memory>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -1922,4 +1923,56 @@ TEST(el_nombre_del_comando_enrolar_llega_al_registro) {
 
   CHECK_EQ(h.progress()[0].name.value(), std::string("Ana López"));
   CHECK_EQ(h.progress()[0].account, std::string("100000001"));
+}
+
+// La salida ordenada: con un SIGTERM en mitad de un registro, la luz se queda
+// encendida y el registro a medias. shutdown() cancela el enrolamiento, apaga la luz
+// y deja el servicio inactivo.
+TEST(shutdown_cancela_el_registro_apaga_la_luz_y_deja_el_servicio_inactivo) {
+  Harness h;
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  CHECK(h.service->state() == ServiceState::Enrolling);
+  CHECK(h.light_commands() == (std::vector<int>{1}));
+
+  h.service->shutdown();
+
+  // El registro en curso se cancela (el frontend y Node-RED lo ven).
+  bool cancelado = false;
+  for (const EnrollmentProgress& p : h.progress()) {
+    if (p.status == EnrollmentStatus::Cancelled) cancelado = true;
+  }
+  CHECK(cancelado);
+
+  // La luz se apaga.
+  CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+
+  // Y el servicio queda inactivo: no queda un registro a medias.
+  CHECK(h.service->state() == ServiceState::Idle);
+}
+
+// La salida ordenada sin enrolamiento en curso: la luz se apaga igual (puede haber
+// quedado encendida por un pase de lista).
+TEST(shutdown_sin_registro_apaga_la_luz) {
+  Harness h;
+  h.service->shutdown();
+  CHECK(h.light_commands() == (std::vector<int>{0}));
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.progress().empty());
+}
+
+// La excepcion del contrato de Subscription: si la baja se pide desde el propio
+// manejador, no se espera (el manejador no puede terminar hasta que la baja vuelva) y
+// se avisa por stderr. El bus real hace lo mismo (ver remove_subscriber en
+// src/mqtt_bus.cpp).
+TEST(la_baja_desde_el_propio_manejador_no_se_bloquea) {
+  fakes::FakeMessageBus bus;
+  auto subscription = std::make_shared<Subscription>();
+  *subscription = bus.subscribe(topics::kCameraPir, [&](const Payload&) {
+    subscription->reset();  // baja desde el propio manejador
+  });
+
+  CHECK_EQ(bus.inject(topics::kCameraPir, PirEvent{}), std::size_t{1});
+  // La baja ya se aplico: el manejador no vuelve a ejecutarse.
+  CHECK_EQ(bus.inject(topics::kCameraPir, PirEvent{}), std::size_t{0});
 }

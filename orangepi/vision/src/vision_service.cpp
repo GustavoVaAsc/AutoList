@@ -577,7 +577,9 @@ void VisionService::advance_enrollment() {
 }
 
 // Sin cuenta, o con la del registro en curso, cancela; con cualquier otra (distinta o que ni
-// siquiera es un no_cuenta valido) no hace nada.
+// siquiera es un no_cuenta valido) no hace nada. La capa JSON admite las dos formas:
+// {"accion":"cancelar"} (cuenta vacia = el registro en curso) y
+// {"accion":"cancelar","cuenta":"320068234"}.
 void VisionService::cancel_enrollment(const std::string& account) {
   if (state_ != ServiceState::Enrolling) return;
   if (!account.empty() && account != enrollment_->account) return;
@@ -592,6 +594,24 @@ void VisionService::finish_enrollment() {
   state_ = ServiceState::Idle;
   publish_light(false);
   publish_status();
+}
+
+// Salida ordenada (la llama el proceso al recibir SIGTERM o SIGINT).
+//
+// Sin esto, un SIGTERM en mitad de un registro dejaba la luz encendida y el registro
+// a medias: el actuador queda con luz 1 y Node-RED y la pantalla esperando un registro
+// que nunca termino. Aqui se cancela el enrolamiento en curso (publicando "cancelado"),
+// se apaga la luz y el estado queda en inactivo.
+//
+// No se publica el estado: el proceso publica despues el estado final con el esquema
+// completo (en_linea false), que es el que queda retenido.
+void VisionService::shutdown() {
+  if (state_ == ServiceState::Enrolling && enrollment_.has_value()) {
+    publish_progress(*enrollment_, EnrollmentStatus::Cancelled);
+  }
+  enrollment_.reset();
+  state_ = ServiceState::Idle;
+  publish_light(false);
 }
 
 // `paso` es 1-based.

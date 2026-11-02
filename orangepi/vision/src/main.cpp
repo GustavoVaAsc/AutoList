@@ -8,12 +8,20 @@
 // El cableado completo (bus MQTT real, cliente HTTP real, galeria real) se puede
 // verificar sin los modelos .nb con --dry-run: lo unico que se sustituye son el
 // detector y el embedder.
+//
+// Modo de fallo: en produccion (sin --dry-run) el proceso NO arranca con una
+// configuracion ausente, sin la contrasena del broker o sin el token de la galeria.
+// Los tres casos son de "fallar cerrado": es preferible que el servicio no este a que
+// este sin autenticar. El modo tolerante queda para --dry-run, que es el recorrido de
+// pruebas.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -58,6 +66,9 @@ void uso(const char* programa) {
       << "                   (por omision /etc/pase-lista/vision.conf)\n"
       << "  --dry-run        Bus MQTT y cliente HTTP reales, pero detector y embedder\n"
       << "                   falsos: verifica el cableado sin los modelos .nb\n"
+      << "  --permitir-anonimo\n"
+      << "                   Solo con --dry-run: permite conectar sin usuario ni\n"
+      << "                   contrasena (para el broker de pruebas)\n"
       << "  --help           Muestra esta ayuda y sale\n";
 }
 
@@ -65,6 +76,12 @@ void uso(const char* programa) {
 // espera encontrarlos; el nombre del modelo de reconocimiento sale de la
 // configuracion ("servicio.modelo").
 constexpr const char* kRutaDetector = "/opt/autolist/models/detector.nb";
+
+// Codigo de salida propio para "faltan los modelos" (EX_CONFIG de sysexits.h). Es
+// un problema de configuracion de la maquina, no un fallo del proceso: con
+// Restart=on-failure, systemd lo reiniciaria cada 5 s para siempre (y llenaria el
+// journal). La unidad lleva RestartPreventExitStatus=78.
+constexpr int kSalidaFaltanModelos = 78;
 
 std::string ruta_embedding(const ProcessConfig& config) {
   return "/opt/autolist/models/" + config.service.model_name + ".nb";
@@ -80,6 +97,10 @@ bool leer_entorno(const std::string& nombre, std::string& valor) {
 // El estado que ve el frontend (contrato v0.3). El proceso lo publica al arrancar
 // (en_linea true) y al salir limpio (en_linea false, retenido), para que el frontend
 // no se quede con el servicio "en linea" cuando el proceso ya no esta.
+//
+// El estado que sale aqui lleva el esquema COMPLETO (ts, en_linea, modo, galeria y
+// modelo). El Will del broker es la forma MINIMA del mismo topico (solo "en_linea");
+// la capa JSON acepta las dos formas (ver include/vision/json_payload.hpp).
 void publicar_estado(MessageBus& bus, const GalleryStore& galeria, const ProcessConfig& config,
                      bool en_linea) {
   VisionStatus status;
@@ -105,24 +126,64 @@ struct CambioGaleria {
   std::string account;
 };
 
+// Cola de los cambios de la galeria.
+//
+// Acotada: si se llena, lo que llega se descarta (con un aviso). El mensaje del broker
+// solo trae la cuenta y lo que hay que hacer es recargar la galeria entera, asi que
+// una cola sin cota solo gastaria memoria.
+//
+// Las altas se agrupan: un alta mientras hay otra alta pendiente se descarta, porque
+// la recarga que viene descarga todo. Asi, un lote de altas produce UNA peticion HTTP
+// (no una por alta), y el servicio no se queda sin atender el PIR ni las capturas
+// mientras recarga.
 class ColaGaleria {
  public:
-  void encolar(bool alta, const std::string& account) {
+  bool encolar(bool alta, const std::string& account) {
     std::lock_guard lock(mutex_);
+    if (alta && alta_pendiente_) {
+      ++altas_agrupadas_;
+      std::cerr << "[vision] alta de galeria agrupada en la recarga pendiente\n";
+      return false;
+    }
+    if (cambios_.size() >= kMaximo) {
+      ++descartados_;
+      std::cerr << "[vision] cola de la galeria llena (" << kMaximo
+                << "): se descarta un cambio\n";
+      return false;
+    }
     cambios_.push_back(CambioGaleria{alta, account});
+    if (alta) alta_pendiente_ = true;
+    return true;
   }
 
   // Saca todos los cambios pendientes.
-  std::vector<CambioGaleria>Vaciar() {
+  std::vector<CambioGaleria> Vaciar() {
     std::lock_guard lock(mutex_);
     std::vector<CambioGaleria> cambios;
     cambios.swap(cambios_);
+    alta_pendiente_ = false;
     return cambios;
   }
 
+  // Altas que se agruparon en una recarga pendiente.
+  std::size_t altas_agrupadas() const {
+    std::lock_guard lock(mutex_);
+    return altas_agrupadas_;
+  }
+
+  // Cambios que se descartaron por cola llena.
+  std::size_t descartados() const {
+    std::lock_guard lock(mutex_);
+    return descartados_;
+  }
+
  private:
-  std::mutex mutex_;
+  static constexpr std::size_t kMaximo = 64;
+  mutable std::mutex mutex_;
   std::vector<CambioGaleria> cambios_;
+  bool alta_pendiente_ = false;
+  std::size_t altas_agrupadas_ = 0;
+  std::size_t descartados_ = 0;
 };
 
 }  // namespace
@@ -130,6 +191,7 @@ class ColaGaleria {
 int main(int argc, char** argv) {
   std::string ruta_config = "/etc/pase-lista/vision.conf";
   bool dry_run = false;
+  bool permitir_anonimo = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -149,8 +211,17 @@ int main(int argc, char** argv) {
       dry_run = true;
       continue;
     }
+    if (arg == "--permitir-anonimo") {
+      permitir_anonimo = true;
+      continue;
+    }
     std::cerr << "opcion desconocida: " << arg << '\n';
     uso(argv[0]);
+    return 2;
+  }
+
+  if (permitir_anonimo && !dry_run) {
+    std::cerr << "[vision] --permitir-anonimo solo tiene sentido con --dry-run\n";
     return 2;
   }
 
@@ -164,20 +235,50 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (!encontrado) {
-    std::cerr << "[vision] no existe " << ruta_config << ": se usan los valores por omision\n";
+    if (!dry_run) {
+      // En produccion, arrancar sin configuracion es arrancar a ciegas: el proceso
+      // sale con error en vez de usar los valores por omision.
+      std::cerr << "[vision] no existe " << ruta_config
+                << ": en produccion el servicio no arranca con los valores por omision\n";
+      return 1;
+    }
+    std::cerr << "[vision] no existe " << ruta_config
+              << ": se usan los valores por omision (--dry-run)\n";
   }
 
   // Las credenciales no estan en el archivo de configuracion: se leen del entorno.
   std::string contrasena;
-  if (!leer_entorno(config.mqtt.password_env, contrasena)) {
-    std::cerr << "[vision] no esta la variable de entorno " << config.mqtt.password_env
-              << ": se intenta conectar al broker sin usuario\n";
+  const bool hay_contrasena = leer_entorno(config.mqtt.password_env, contrasena);
+  if (!hay_contrasena && !config.mqtt.user.empty()) {
+    // La configuracion pide un usuario MQTT: sin contrasena no se puede autenticar y
+    // el proceso no debe seguir como anonimo (fallar cerrado).
+    if (!dry_run) {
+      std::cerr << "[vision] no esta la variable de entorno " << config.mqtt.password_env
+                << ": el broker exige usuario y contrasena\n";
+      return 1;
+    }
+    if (!permitir_anonimo) {
+      std::cerr << "[vision] AVISO: no esta la variable de entorno "
+                << config.mqtt.password_env
+                << ": se conecta sin usuario (--dry-run). Con --permitir-anonimo se "
+                   "acepta explicitamente\n";
+    } else {
+      std::cerr << "[vision] sin contrasena: se conecta sin usuario (--permitir-anonimo)\n";
+    }
     contrasena.clear();
   }
+
   std::string token;
-  if (!leer_entorno(config.gallery.token_env, token)) {
-    std::cerr << "[vision] no esta la variable de entorno " << config.gallery.token_env
-              << ": la galeria se pedira sin token\n";
+  if (!config.gallery.token_env.empty() && !leer_entorno(config.gallery.token_env, token)) {
+    // Igual que la contrasena del broker: sin token la galeria se pediria sin
+    // autenticar.
+    if (!dry_run) {
+      std::cerr << "[vision] no esta la variable de entorno " << config.gallery.token_env
+                << ": la galeria se pediria sin token\n";
+      return 1;
+    }
+    std::cerr << "[vision] AVISO: no esta la variable de entorno " << config.gallery.token_env
+              << ": la galeria se pide sin token (--dry-run)\n";
     token.clear();
   }
 
@@ -190,7 +291,9 @@ int main(int argc, char** argv) {
     if (!std::filesystem::exists(detector) || !std::filesystem::exists(embedding)) {
       std::cerr << "[vision] faltan los modelos .nb (" << detector << ", " << embedding
                 << "); usa --dry-run para verificar el cableado\n";
-      return 1;
+      // Codigo propio: es una configuracion que falta, no un fallo del proceso. Con
+      // Restart=on-failure, systemd lo relanzaria cada 5 s sin parar.
+      return kSalidaFaltanModelos;
     }
     std::cerr << "[vision] el detector y el embedder sobre la NPU todavia no estan "
                  "implementados\n";
@@ -200,6 +303,7 @@ int main(int argc, char** argv) {
   // --- Adaptadores -------------------------------------------------------------
   HttpClientOptions http_options;
   http_options.allow_invalid_certificates = config.http.allow_invalid_certificates;
+  http_options.ca_file = config.http.ca_file;
   // El plazo del socket no puede ser menor que el plazo total de la peticion: si no,
   // una peticion lenta se cortaria antes de tiempo. El mayor de los dos plazos
   // (captura y galeria) acota los tres.
@@ -235,7 +339,8 @@ int main(int argc, char** argv) {
   galeria_config.timeout = Millis(config.gallery.timeout_ms);
   GalleryStore store(galeria, http, galeria_config);
 
-  // Las altas y las bajas de la galeria las suscribe el proceso, no el servicio.
+  // Las altas y las bajas de la galeria las suscribe el proceso, no el servicio. Las
+  // suscripciones se hacen ANTES de start() (ver la restriccion en mqtt_bus.hpp).
   Subscription suscripcion_alta =
       bus.subscribe(topics::kVisionGalleryAdd, [&cola_galeria](const Payload& payload) {
         if (const auto* cuenta = std::get_if<GalleryAccount>(&payload)) {
@@ -271,9 +376,20 @@ int main(int argc, char** argv) {
 
   SystemClock reloj;
   SystemWallClock reloj_pared;
-  VisionService servicio(
-      ServiceDeps{bus, http, detector, embedder, galeria, reloj, reloj_pared},
-      config.to_service_config());
+  // La construccion del servicio puede lanzar (configuracion invalida): sin try/catch
+  // el proceso terminaria con std::terminate.
+  std::unique_ptr<VisionService> servicio;
+  try {
+    servicio = std::make_unique<VisionService>(
+        ServiceDeps{bus, http, detector, embedder, galeria, reloj, reloj_pared},
+        config.to_service_config());
+  } catch (const std::exception& error) {
+    std::cerr << "[vision] no se pudo construir el servicio: " << error.what() << '\n';
+    return 1;
+  } catch (...) {
+    std::cerr << "[vision] no se pudo construir el servicio: excepcion desconocida\n";
+    return 1;
+  }
 
   instalar_senales();
 
@@ -289,27 +405,48 @@ int main(int argc, char** argv) {
   // --- Bucle -------------------------------------------------------------------
   while (g_salir == 0) {
     // Recarga de la galeria: al arrancar y en cada reconexion al broker.
-    if (recarga_pendiente.exchange(false)) {
+    bool recargar = recarga_pendiente.exchange(false);
+    // Altas y bajas de la galeria (las aplica el hilo de trabajo).
+    std::string cuenta_alta;
+    for (const CambioGaleria& cambio : cola_galeria.Vaciar()) {
+      if (cambio.alta) {
+        // Las altas del lote se resuelven con UNA recarga (el alta del contrato solo
+        // trae la cuenta: la galeria se recarga entera).
+        if (cuenta_alta.empty()) cuenta_alta = cambio.account;
+        recargar = true;
+      } else {
+        store.apply_remove(cambio.account);
+        // El estado retenido tiene que decir la verdad sobre la galeria.
+        publicar_estado(bus, store, config, true);
+      }
+    }
+    if (recargar) {
       if (!store.reload()) {
         std::cerr << "[vision] no se pudo cargar la galeria; se reintenta en la proxima "
                      "reconexion\n";
-      }
-    }
-    // Altas y bajas de la galeria (las aplica el hilo de trabajo).
-    for (const CambioGaleria& cambio : cola_galeria.Vaciar()) {
-      if (cambio.alta) {
-        store.apply_add(cambio.account);
       } else {
-        store.apply_remove(cambio.account);
+        publicar_estado(bus, store, config, true);
       }
     }
-    servicio.poll();
+    servicio->poll();
     reloj.sleep_for(Millis(config.service.poll_ms));
   }
 
   // --- Salida ordenada ---------------------------------------------------------
   std::cerr << "[vision] parando\n";
+  // El servicio cancela el enrolamiento en curso y apaga la luz: si no, el actuador se
+  // queda con luz 1 y el registro queda a medias.
+  servicio->shutdown();
+  // El estado final lleva el esquema completo (ts, en_linea false, modo, galeria y
+  // modelo) y queda retenido en el broker.
   publicar_estado(bus, store, config, false);
+  // La cola de salida tiene que vaciarse antes de cortar el bus: mosquitto_publish es
+  // asincrono y, si no, el estado final se puede quedar en la cola. Como la
+  // desconexion es limpia, el Will no salta y el valor retenido se queda en
+  // en_linea true para siempre.
+  if (!bus.flush(std::chrono::milliseconds(2000))) {
+    std::cerr << "[vision] la cola de salida no se vacio antes de cortar el bus\n";
+  }
   bus.stop();
   return 0;
 }

@@ -21,6 +21,8 @@ PUERTO_BROKER=1884
 PUERTO_CAMARA=18080
 HOST_BROKER=127.0.0.1
 TOPICO_RESULTADO="aula/vision/resultado"
+TOPICO_ESTADO="aula/vision/estado"
+TOPICO_ACTUADOR="aula/actuador/cmd"
 TOPICO_PIR="aula/camara/pir"
 ESPERA_RESULTADO=30
 NOMBRE_BROKER="vision-mosquitto-humo"
@@ -156,9 +158,11 @@ if ! kill -0 "$PID_SERVICIO" 2>/dev/null; then
 fi
 log "servicio arrancado (pid $PID_SERVICIO)"
 
-# --- Sonda: escuchar el resultado y publicar el PIR ---------------------------
+# --- Sonda: escuchar el trafico del servicio y publicar el PIR ----------------
+# La sonda escucha "aula/#": con una sola suscripcion se ven el resultado, el estado y
+# el actuador. Cada linea sale como "fecha topico cuerpo".
 "$BUILD/mqtt_probe" --host "$HOST_BROKER" --puerto "$PUERTO_BROKER" \
-  --escuchar "$TOPICO_RESULTADO" --segundos "$ESPERA_RESULTADO" \
+  --escuchar "aula/#" --segundos "$ESPERA_RESULTADO" \
   >"$TEMPORAL/resultado.txt" 2>"$TEMPORAL/resultado.err" &
 PID_SONDA=$!
 # La sonda se suscribe al conectarse: se le da un instante antes de publicar.
@@ -175,13 +179,13 @@ fi
 # --- Espera del resultado -----------------------------------------------------
 FIN=$((SECONDS + ESPERA_RESULTADO))
 while [ "$SECONDS" -lt "$FIN" ]; do
-  if [ -s "$TEMPORAL/resultado.txt" ]; then
+  if grep -q " $TOPICO_RESULTADO " "$TEMPORAL/resultado.txt" 2>/dev/null; then
     break
   fi
   sleep 0.5
 done
 
-if [ ! -s "$TEMPORAL/resultado.txt" ]; then
+if ! grep -q " $TOPICO_RESULTADO " "$TEMPORAL/resultado.txt" 2>/dev/null; then
   error "no llego ningun mensaje a $TOPICO_RESULTADO en $ESPERA_RESULTADO s"
   echo "--- log del servicio ---" >&2
   cat "$TEMPORAL/servicio.log" >&2
@@ -190,8 +194,51 @@ if [ ! -s "$TEMPORAL/resultado.txt" ]; then
   exit 1
 fi
 
-echo "--- resultado recibido en $TOPICO_RESULTADO ---"
+echo "--- trafico recibido ---"
 cat "$TEMPORAL/resultado.txt"
+
+# --- Comprobaciones del resultado ----------------------------------------------
+# En --dry-run la galeria esta vacia (el servidor del borde no esta), asi que el
+# veredicto es "desconocido" con motivo "galeria_vacia", en modo "pase" (el PIR).
+LINEA_RESULTADO="$(grep " $TOPICO_RESULTADO " "$TEMPORAL/resultado.txt" | head -1)"
+for esperado in '"decision":"desconocido"' '"modo":"pase"' '"motivo":"galeria_vacia"'; do
+  case "$LINEA_RESULTADO" in
+    *"$esperado"*) ;;
+    *)
+      error "el resultado no lleva $esperado"
+      error "linea: $LINEA_RESULTADO"
+      exit 1
+      ;;
+  esac
+done
+log "el resultado trae decision, modo y motivo con los valores esperados"
+
+# --- Comprobaciones del estado -------------------------------------------------
+if ! grep " $TOPICO_ESTADO " "$TEMPORAL/resultado.txt" 2>/dev/null | grep -q '"en_linea":true'; then
+  error "no se publico $TOPICO_ESTADO con en_linea true"
+  exit 1
+fi
+log "el servicio publico $TOPICO_ESTADO con en_linea true"
+
+# --- Comprobaciones del actuador ------------------------------------------------
+# La luz se enciende al empezar el pase y se apaga al terminar: tiene que verse el
+# encendido ANTES que el apagado.
+LINEA_LUZ_ON="$(grep " $TOPICO_ACTUADOR " "$TEMPORAL/resultado.txt" | grep -n '"luz":1' | head -1 | cut -d: -f1)"
+LINEA_LUZ_OFF="$(grep " $TOPICO_ACTUADOR " "$TEMPORAL/resultado.txt" | grep -n '"luz":0' | head -1 | cut -d: -f1)"
+if [ -z "$LINEA_LUZ_ON" ]; then
+  error "la luz no se encendio ($TOPICO_ACTUADOR con luz 1)"
+  exit 1
+fi
+if [ -z "$LINEA_LUZ_OFF" ]; then
+  error "la luz no se apago ($TOPICO_ACTUADOR con luz 0)"
+  exit 1
+fi
+if [ "$LINEA_LUZ_ON" -ge "$LINEA_LUZ_OFF" ]; then
+  error "la luz se apago antes de encenderse"
+  exit 1
+fi
+log "la luz se encendio y se apago"
+
 CODIGO=0
 log "prueba de humo correcta"
 exit "$CODIGO"

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -92,6 +93,16 @@ long long elapsed_ms(SteadyClock::time_point start) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(SteadyClock::now() - start).count();
 }
 
+// Numero de hilos del proceso (los que estan en /proc/self/task).
+std::size_t num_hilos() {
+  std::size_t count = 0;
+  for (const auto& entrada : std::filesystem::directory_iterator("/proc/self/task")) {
+    (void)entrada;
+    ++count;
+  }
+  return count;
+}
+
 }  // namespace
 
 TEST(httplib_200_con_cuerpo) {
@@ -140,7 +151,31 @@ TEST(httplib_plazo_total_no_lo_alarga_un_goteo) {
   CHECK(response.body.empty());
   // El servidor gotea un byte cada 100 ms: sin el plazo total, la peticion duraria
   // mas de 10 s.
-  CHECK(ms < 2000);
+  CHECK(ms < 800);
+}
+
+// Al vencer el plazo, el hilo de la peticion se cierra (stop) y se espera (join): no
+// queda ningun hilo huerfano. Antes el hilo se desacoplaba (detach) y se quedaba
+// colgado para siempre con un servidor que gotea bytes.
+TEST(httplib_plazo_vencido_no_deja_hilos_colgados) {
+  TestServer server;
+  HttplibClient client;
+  // Una peticion que va bien deja el servidor con su grupo de hilos ya en marcha: el
+  // numero de referencia no cambia por culpa del servidor.
+  const HttpResponse ok = client.get(server.url("/ok"), Millis(2000), 1024);
+  CHECK_EQ(ok.status, 200);
+  const std::size_t antes = num_hilos();
+
+  const SteadyClock::time_point start = SteadyClock::now();
+  const HttpResponse response = client.get(server.url("/goteo"), Millis(300), 1024);
+  const long long ms = elapsed_ms(start);
+  CHECK_EQ(response.status, 0);
+  CHECK(response.body.empty());
+  CHECK(ms < 800);
+
+  // El hilo de la peticion se espera (join) antes de volver: al salir de get() no queda
+  // ningun hilo huerfano.
+  CHECK(num_hilos() <= antes);
 }
 
 TEST(httplib_error_de_red_devuelve_status_0) {

@@ -65,6 +65,10 @@ struct HttpSettings {
   // El certificado de Node-RED es autofirmado: con false (por omision) la conexion a
   // https:// se rechaza. Hay que activarlo a mano hasta que haya un certificado valido.
   bool allow_invalid_certificates = false;
+  // Ruta a un CA (o al certificado autofirmado de Node-RED) con el que se valida el
+  // servidor. Con esta ruta se confía en el certificado concreto en vez de apagar la
+  // validacion. Vacia = sin CA adicional.
+  std::string ca_file;
 };
 
 // La configuracion completa del proceso.
@@ -83,6 +87,10 @@ struct ProcessConfig {
 // Analiza el documento JSON de la configuracion. Devuelve false y deja el motivo en
 // `error` si el documento no es valido.
 bool parse_process_config(const std::string& document, ProcessConfig& out, std::string& error);
+
+// true si la URL admite el token de la galeria: https, o http contra el propio
+// localhost. El token no puede viajar en claro por la red.
+bool url_admite_token(const std::string& url);
 
 // Carga el archivo de configuracion. `found` dice si el archivo existia: si no, `out`
 // queda con los valores por omision y el proceso avisa por stderr (para poder probar

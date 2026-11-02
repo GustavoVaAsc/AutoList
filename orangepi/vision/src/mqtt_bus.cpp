@@ -51,6 +51,10 @@ const char* error_name(json::Error error) {
       return "tipo_incorrecto";
     case json::Error::kInvalidValue:
       return "valor_invalido";
+    case json::Error::kTooLarge:
+      return "demasiado_grande";
+    case json::Error::kTooDeep:
+      return "demasiado_anidado";
   }
   return "error_desconocido";
 }
@@ -113,6 +117,10 @@ int qos_for_topic(std::string_view topic) {
   return rule != nullptr ? rule->qos : 0;
 }
 
+// Tope del cuerpo de un mensaje entrante (64 KiB). El broker permite 256 KiB por
+// paquete: este tope es la barrera del cliente.
+constexpr int kMaxIncomingPacketBytes = 64 * 1024;
+
 }  // namespace
 
 struct MosquittoBus::Impl {
@@ -132,22 +140,25 @@ struct MosquittoBus::Impl {
   // Manejador de conexion (ver set_connect_listener). Se invoca en el hilo de red.
   std::function<void()> connect_listener;
 
-  // Da de alta un manejador para el topico. Si hay conexion, se suscribe en el broker;
-  // si no, la suscripcion se hara en el proximo callback de conexion.
+  // Publicaciones en vuelo: las que todavia no ha confirmado el broker (QoS 1, con su
+  // PUBACK) o que no han salido todavia hacia el sistema operativo (QoS 0). El hilo de
+  // red las descuenta en el manejador de publicacion.
+  std::mutex out_mutex;
+  std::condition_variable out_cv;
+  int en_vuelo = 0;
+
+  // Da de alta un manejador para el topico.
+  //
+  // NO se llama a mosquitto_subscribe() aqui: esta funcion puede correr en un hilo
+  // distinto del de red (el ABBA de libmosquitto, medido en la placa, tambien afecta
+  // a subscribe). La suscripcion en el broker la hace resubscribe_all(), en el hilo de
+  // red, en el ciclo de conexion. Una suscripcion registrada despues de start() queda
+  // anotada y se activa en la siguiente reconexion.
   void add_subscriber(const std::string& topic, int qos, const SubscriptionStatePtr& state) {
     std::lock_guard lock(mutex);
     TopicState& topic_state = topics_[topic];
     topic_state.qos = qos;
     topic_state.subscribers.push_back(state);
-    if (topic_state.subscribed || mosq == nullptr || !connected.load()) return;
-    int mid = 0;
-    const int rc = mosquitto_subscribe(mosq, &mid, topic.c_str(), qos);
-    if (rc == MOSQ_ERR_SUCCESS) {
-      topic_state.subscribed = true;
-    } else {
-      std::cerr << "[vision] no se pudo suscribirse a " << topic << ": "
-                << mosquitto_strerror(rc) << '\n';
-    }
   }
 
   // Da de baja un manejador. Cuando retorna, ningun manejador de esa suscripcion esta
@@ -211,6 +222,21 @@ struct MosquittoBus::Impl {
                   << mosquitto_strerror(rc) << '\n';
       }
     }
+  }
+
+  // Anota una publicacion en vuelo. La descuenta el manejador de publicacion de
+  // libmosquitto (en el hilo de red) cuando el broker confirma la entrega.
+  void anotar_publicacion() {
+    std::lock_guard lock(out_mutex);
+    ++en_vuelo;
+  }
+
+  void confirmar_publicacion() {
+    {
+      std::lock_guard lock(out_mutex);
+      if (en_vuelo > 0) --en_vuelo;
+    }
+    out_cv.notify_all();
   }
 
   // Entrega un mensaje del broker a los manejadores del topico.
@@ -299,6 +325,10 @@ void MosquittoBus::start() {
   mosquitto_connect_callback_set(mosq, &MosquittoBus::handle_connect);
   mosquitto_disconnect_callback_set(mosq, &MosquittoBus::handle_disconnect);
   mosquitto_message_callback_set(mosq, &MosquittoBus::handle_message);
+  // El manejador de publicacion avisa de que el broker confirmo el envio (QoS 1) o de
+  // que el mensaje salio hacia el sistema operativo (QoS 0). Es lo que permite esperar
+  // a que la cola de salida se vacie (flush).
+  mosquitto_publish_callback_set(mosq, &MosquittoBus::handle_publish);
   // Reconexion automatica: la sesion es limpia, asi que hay que volver a suscribirse.
   mosquitto_reconnect_delay_set(mosq, 1, 30, true);
 
@@ -400,14 +430,29 @@ void MosquittoBus::publish(std::string_view topic, const Payload& payload) {
 
   const std::string topic_name(topic);
   int mid = 0;
+  // La publicacion se anota ANTES de salir: el manejador de publicacion (en el hilo de
+  // red) puede ejecutarse antes de que esta llamada vuelva.
+  impl_->anotar_publicacion();
   const int rc = mosquitto_publish(impl_->mosq, &mid, topic_name.c_str(),
                                    static_cast<int>(document->size()), document->data(), qos,
                                    retain);
   if (rc != MOSQ_ERR_SUCCESS) {
+    impl_->confirmar_publicacion();  // esta publicacion nunca va a salir
     std::cerr << "[vision] no se pudo publicar en " << topic << ": " << mosquitto_strerror(rc)
               << '\n';
     throw std::runtime_error("no se pudo publicar en el broker");
   }
+}
+
+bool MosquittoBus::flush(std::chrono::milliseconds timeout) {
+  if (!impl_) return true;
+  std::unique_lock lock(impl_->out_mutex);
+  const bool vaciada = impl_->out_cv.wait_for(lock, timeout,
+                                              [this] { return impl_->en_vuelo == 0; });
+  if (!vaciada) {
+    std::cerr << "[vision] la cola de salida no se vacio en " << timeout.count() << " ms\n";
+  }
+  return vaciada;
 }
 
 Subscription MosquittoBus::subscribe(std::string_view topic, MessageHandler handler) {
@@ -416,6 +461,14 @@ Subscription MosquittoBus::subscribe(std::string_view topic, MessageHandler hand
   const std::string topic_name(topic);
   const int qos = qos_for_topic(topic);
   std::weak_ptr<Impl> weak_impl = impl_;
+  if (impl_->started) {
+    // Suscribir despues de start() es el patron peligroso: la suscripcion en el broker
+    // no se puede pedir desde este hilo (ABBA de libmosquitto). Queda registrada y se
+    // activa en la siguiente reconexion.
+    std::cerr << "[vision] la suscripcion a " << topic_name
+              << " se registro despues de start(): se activara en la proxima "
+                 "reconexion\n";
+  }
   impl_->add_subscriber(topic_name, qos, state);
   return Subscription([weak_impl, state, topic_name]() {
     const std::shared_ptr<Impl> impl = weak_impl.lock();
@@ -438,15 +491,17 @@ void MosquittoBus::handle_connect(struct mosquitto*, void* obj, int rc) {
     return;
   }
   impl->connect_failed.store(false);
-  impl->connected.store(true);
   ++impl->connections;
   if (impl->connections == 1) {
     std::cerr << "[vision] conectado al broker\n";
   } else {
     std::cerr << "[vision] reconectado al broker\n";
   }
-  // La sesion es limpia: hay que volver a suscribirse.
+  // La sesion es limpia: hay que volver a suscribirse. Se hace ANTES de anunciarse
+  // como conectado, para que cuando start() vuelve las suscripciones ya estan activas
+  // en el broker.
   impl->resubscribe_all();
+  impl->connected.store(true);
 
   // El aviso de conexion (la recarga de la galeria) va despues de resuscribir: el
   // manejador ve el bus ya en su estado final.
@@ -476,10 +531,27 @@ void MosquittoBus::handle_disconnect(struct mosquitto*, void* obj, int rc) {
   }
 }
 
+void MosquittoBus::handle_publish(struct mosquitto*, void* obj, int) {
+  Impl* impl = static_cast<Impl*>(obj);
+  impl->confirmar_publicacion();
+}
+
 void MosquittoBus::handle_message(struct mosquitto*, void* obj,
                                   const struct mosquitto_message* message) {
   Impl* impl = static_cast<Impl*>(obj);
   if (message == nullptr || message->topic == nullptr) return;
+  // Tope del mensaje entrante: segunda barrera, independiente de la del broker (que
+  // permite 256 KiB por paquete) y de la de la capa JSON.
+  //
+  // libmosquitto 2.0 no tiene MOSQ_OPT_MAX_INCOMING_PACKET_SIZE (esa opcion no existe
+  // en su API), asi que el tope se comprueba aqui, en el unico punto por donde entra
+  // un mensaje.
+  if (message->payloadlen > kMaxIncomingPacketBytes) {
+    std::cerr << "[vision] mensaje descartado en " << message->topic << ": "
+              << message->payloadlen << " bytes (maximo " << kMaxIncomingPacketBytes
+              << ")\n";
+    return;
+  }
   const char* data = static_cast<const char*>(message->payload);
   const std::string_view document =
       (data == nullptr || message->payloadlen <= 0)

@@ -83,6 +83,22 @@ int remaining_ms(const SteadyClock::time_point& deadline) {
   return static_cast<int>(std::max<long long>(left.count(), 0));
 }
 
+// El cliente HTTP se construye en el llamador y se comparte con el hilo de la
+// peticion. Al vencer el plazo, el llamador llama a stop(): cpp-httplib cierra el
+// socket y el hilo termina solo (se espera con join). Antes el hilo se desacoplaba
+// (detach) y se quedaba colgado para siempre con un servidor que gotea bytes, porque
+// los plazos de cpp-httplib son por operacion: con rafaga 4 quedaban cuatro hilos
+// colgados por intento, sin cota.
+struct ClienteCompartido {
+  std::shared_ptr<httplib::Client> http;
+  std::shared_ptr<httplib::SSLClient> https;
+
+  void stop() {
+    if (http) http->stop();
+    if (https) https->stop();
+  }
+};
+
 // Peticion en un cliente concreto (http o https). Devuelve la respuesta; status 0
 // significa que no hubo respuesta valida.
 template <typename Client>
@@ -157,7 +173,16 @@ HttpResponse run_request(Client& client, const ParsedUrl& url,
 
 }  // namespace
 
-HttplibClient::HttplibClient(HttpClientOptions options) : options_(options) {}
+HttplibClient::HttplibClient(HttpClientOptions options) : options_(options) {
+  if (options_.allow_invalid_certificates) {
+    // Que su activacion sea visible: no es el estado normal.
+    std::cerr << "[vision] ATENCION: se aceptan certificados invalidos"
+              << (options_.ca_file.empty()
+                      ? ""
+                      : " (el CA configurado no se usa: la validacion esta desactivada)")
+              << '\n';
+  }
+}
 
 HttpResponse HttplibClient::get(const std::string& url, Millis timeout,
                                  std::size_t max_body_bytes) {
@@ -197,27 +222,46 @@ HttpResponse HttplibClient::get_impl(const std::string& url, Millis timeout,
   const HttpClientOptions options = options_;
 
   // La peticion corre en un hilo aparte: el plazo total es del llamador, no de cada
-  // lectura del socket. Si se pasa el plazo, el llamador vuelve con status 0 y el
-  // hilo abandona la transferencia (el socket se cierra al expirar su plazo).
+  // lectura del socket. El cliente lo construye el llamador y lo comparte con el
+  // hilo, para poder cerrar el socket (stop) cuando se pasa el plazo.
+  auto compartido = std::make_shared<ClienteCompartido>();
+  try {
+    if (parsed.https) {
+      compartido->https = std::make_shared<httplib::SSLClient>(parsed.host, parsed.port);
+      httplib::SSLClient& client = *compartido->https;
+      client.enable_server_certificate_verification(!options.allow_invalid_certificates);
+      if (!options.ca_file.empty()) {
+        // Se confía en el CA (o en el certificado autofirmado) concreto, no en
+        // cualquier certificado.
+        client.set_ca_cert_path(options.ca_file);
+      }
+      client.set_follow_location(false);
+      apply_timeouts(client, options, remaining_ms(deadline));
+    } else {
+      compartido->http = std::make_shared<httplib::Client>(parsed.host, parsed.port);
+      httplib::Client& client = *compartido->http;
+      client.set_follow_location(false);
+      apply_timeouts(client, options, remaining_ms(deadline));
+    }
+  } catch (const std::exception& error) {
+    std::cerr << "[vision] no se pudo preparar la peticion HTTP: " << error.what() << '\n';
+    return response;
+  } catch (...) {
+    std::cerr << "[vision] no se pudo preparar la peticion HTTP\n";
+    return response;
+  }
+
   auto promise = std::make_shared<std::promise<HttpResponse>>();
   std::future<HttpResponse> future = promise->get_future();
   std::thread worker;
   try {
-    worker = std::thread([promise, parsed, options, max_body_bytes, headers, deadline]() {
+    worker = std::thread([promise, compartido, parsed, max_body_bytes, headers, deadline]() {
     HttpResponse result;
     try {
-      const int left = remaining_ms(deadline);
-      if (parsed.https) {
-        httplib::SSLClient client(parsed.host, parsed.port);
-        client.enable_server_certificate_verification(!options.allow_invalid_certificates);
-        client.set_follow_location(false);
-        apply_timeouts(client, options, left);
-        result = run_request(client, parsed, headers, max_body_bytes, deadline);
+      if (compartido->https) {
+        result = run_request(*compartido->https, parsed, headers, max_body_bytes, deadline);
       } else {
-        httplib::Client client(parsed.host, parsed.port);
-        client.set_follow_location(false);
-        apply_timeouts(client, options, left);
-        result = run_request(client, parsed, headers, max_body_bytes, deadline);
+        result = run_request(*compartido->http, parsed, headers, max_body_bytes, deadline);
       }
     } catch (const std::exception& error) {
       std::cerr << "[vision] excepcion en la peticion HTTP: " << error.what() << '\n';
@@ -243,7 +287,10 @@ HttpResponse HttplibClient::get_impl(const std::string& url, Millis timeout,
                        std::future_status::ready) {
     std::cerr << "[vision] la peticion HTTP supero el plazo total (" << timeout.count()
               << " ms)\n";
-    worker.detach();
+    // Se cierra el socket: el hilo termina solo y se espera a que lo haga. No queda
+    // ningun hilo colgado.
+    compartido->stop();
+    worker.join();
     return response;  // status 0 y cuerpo vacio
   }
   worker.join();

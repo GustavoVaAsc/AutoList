@@ -138,6 +138,28 @@ bool exigir(const bool condicion, const char* seccion, const char* clave, const 
   return false;
 }
 
+// La URL de la galeria, partida en esquema y host.
+struct UrlPartes {
+  std::string esquema;
+  std::string host;
+};
+
+bool partir_url(const std::string& url, UrlPartes& out) {
+  const std::size_t fin_esquema = url.find("://");
+  if (fin_esquema == std::string::npos) return false;
+  out.esquema = url.substr(0, fin_esquema);
+  const std::size_t inicio_host = fin_esquema + 3;
+  std::size_t fin_host = url.find('/', inicio_host);
+  if (fin_host == std::string::npos) fin_host = url.size();
+  std::string host = url.substr(inicio_host, fin_host - inicio_host);
+  const std::size_t dos_puntos = host.rfind(':');
+  if (dos_puntos != std::string::npos && host.find(']') == std::string::npos) {
+    host.erase(dos_puntos);  // el puerto no forma parte del host
+  }
+  out.host = host;
+  return true;
+}
+
 }  // namespace
 
 ServiceConfig ProcessConfig::to_service_config() const {
@@ -246,6 +268,14 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   if (!exigir(config.gallery.timeout_ms > 0, "galeria", "timeout_ms", "debe ser > 0", error)) {
     return false;
   }
+  // Con token configurado, la galeria tiene que ir por https (o por http contra el
+  // propio localhost): el token no puede viajar en claro.
+  if (!config.gallery.token_env.empty() && !url_admite_token(config.gallery.url)) {
+    error = ruta("galeria", "url") +
+            ": con token la galeria necesita https (o http contra 127.0.0.1/localhost): "
+            "el token no puede viajar en claro";
+    return false;
+  }
 
   if (!seccion(parsed, "umbrales", bloque, error)) return false;
   if (!solo_claves(bloque, {"min_sharpness", "min_recognized_score", "min_dudoso_score"},
@@ -299,14 +329,25 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   }
 
   if (!seccion(parsed, "http", bloque, error)) return false;
-  if (!solo_claves(bloque, {"allow_invalid_certificates"}, "http", error)) return false;
+  if (!solo_claves(bloque, {"allow_invalid_certificates", "ca_file"}, "http", error)) {
+    return false;
+  }
   if (!leer_logico(bloque, "http", "allow_invalid_certificates",
                    config.http.allow_invalid_certificates, error)) {
     return false;
   }
+  if (!leer_string(bloque, "http", "ca_file", config.http.ca_file, error)) return false;
 
   out = std::move(config);
   return true;
+}
+
+bool url_admite_token(const std::string& url) {
+  UrlPartes partes;
+  if (!partir_url(url, partes)) return false;
+  if (partes.esquema == "https") return true;
+  if (partes.esquema != "http") return false;
+  return partes.host == "127.0.0.1" || partes.host == "localhost" || partes.host == "::1";
 }
 
 bool load_process_config(const std::string& path, ProcessConfig& out, bool& found,
