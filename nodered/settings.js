@@ -6,12 +6,28 @@
 const fs = require("fs");
 const { execFileSync } = require("child_process");
 const bcrypt = require("bcryptjs");
+const { crearMiddlewareApi, validarSecretosApi } = require("./autenticacion-api");
 
 const usuario = process.env.NODERED_ADMIN_USER;
 const clave = process.env.NODERED_ADMIN_PASSWORD;
 if (!usuario || !clave) {
     throw new Error("Faltan NODERED_ADMIN_USER o NODERED_ADMIN_PASSWORD: sin ellas el editor quedaría abierto (nodo exec = ejecución remota de código)");
 }
+
+// Autenticación de la API (/api/...): el profesor entra con HTTP Basic y el
+// servicio de visión descarga la galería con X-Galeria-Token (ver
+// autenticacion-api.js). Falla cerrado: si falta cualquiera de las tres, Node-RED
+// no arranca, en lugar de servir la API (alumnos y embeddings) sin autenticar.
+// Tampoco arranca con secretos de ejemplo, repetidos o cortos (validarSecretosApi).
+const usuarioProfesor = process.env.NODERED_PROFESOR_USER;
+const claveProfesor = process.env.NODERED_PROFESOR_PASSWORD;
+const tokenGaleria = process.env.GALERIA_TOKEN;
+if (!usuarioProfesor || !claveProfesor || !tokenGaleria) {
+    throw new Error("Faltan NODERED_PROFESOR_USER, NODERED_PROFESOR_PASSWORD o GALERIA_TOKEN: sin ellas la API (alumnos y embeddings) quedaría abierta");
+}
+// Rechaza (sin mostrar valores) los secretos de ejemplo, repetidos o cortos.
+validarSecretosApi({ claveAdmin: clave, claveProfesor: claveProfesor, tokenGaleria: tokenGaleria });
+const autenticarApi = crearMiddlewareApi({ usuario: usuarioProfesor, clave: claveProfesor, tokenGaleria: tokenGaleria });
 
 // HTTPS con certificado autofirmado, para el editor, la API y los archivos
 // estáticos. Se genera en el primer arranque, y de nuevo si cambia
@@ -125,8 +141,8 @@ module.exports = {
     // Frontend compilado (web/), copiado a la imagen por nodered/Dockerfile en un
     // directorio de root. Se sirve en /app/ para no tapar el editor, que sigue en
     // /; Vite compila con base '/app/' (web/vite.config.ts). httpStatic no pasa por
-    // httpNodeAuth (existe httpStaticAuth, aparte): el frontend no lleva secretos y
-    // sus datos salen de /api/..., que sí tendrá httpNodeAuth.
+    // httpNodeMiddleware (existe httpStaticAuth, aparte): el frontend no lleva
+    // secretos y sus datos salen de /api/..., que sí exige autenticación.
     // "middleware" (propio de cada entrada de httpStatic; no existe un
     // httpStaticMiddleware global) fija las cabeceras de seguridad solo de /app/.
     // La CSP no permite nada de otros orígenes; el CSS y el JS del build son
@@ -145,15 +161,15 @@ module.exports = {
         }
     }],
 
-    // Editor y API: solo nosniff y no poder incrustarse en marcos. Sin CSP, que
-    // rompería el editor. Node-RED monta el editor en / antes que lo demás, así que
-    // httpAdminMiddleware alcanza todas las rutas; httpNodeMiddleware lo repite
-    // para las rutas http in (la API) por si el editor se mueve de raíz. Sin HSTS.
+    // Editor: solo nosniff y no poder incrustarse en marcos. Sin CSP, que rompería
+    // el editor. Node-RED monta el editor en / antes que lo demás, así que
+    // httpAdminMiddleware alcanza también las demás rutas. Sin HSTS.
     httpAdminMiddleware: cabecerasBasicas,
-    httpNodeMiddleware: cabecerasBasicas,
 
-    // La API HTTP (/api/...) queda abierta por ahora. httpNodeAuth entra el
-    // 11 nov (plan, sección 12): se añade aquí con { user, pass: <hash bcrypt> }.
+    // API (las rutas http in de flows.json): las mismas cabeceras, sin caché, más
+    // la autenticación de autenticacion-api.js. No se usa httpNodeAuth porque es
+    // global y bloquearía al servicio de visión en GET /api/galeria.
+    httpNodeMiddleware: autenticarApi,
 
     // flows.json legible en los diffs de git.
     flowFilePretty: true,

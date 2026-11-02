@@ -127,11 +127,14 @@ services:
       context: ../nodered
       additional_contexts:
         web: ../web
-    image: pase-lista/nodered:5.0.9-11
+    image: pase-lista/nodered:5.0.9-12
     restart: unless-stopped
     logging: *logging
     # Solo recibe lo que usa: la contraseña de su usuario MQTT (nodered), el rol
-    # de Node-RED en Postgres (no el superusuario) y las credenciales del editor.
+    # de Node-RED en Postgres (no el superusuario), las credenciales del editor y
+    # las de la API: el usuario del profesor (HTTP Basic) y el token de
+    # GET /api/galeria, que usa el servicio de visión (nodered/autenticacion-api.js).
+    # Sin ellas Node-RED no arranca: la API no se sirve sin autenticar.
     environment:
       MQTT_NODERED_PASSWORD: ${MQTT_NODERED_PASSWORD:?falta MQTT_NODERED_PASSWORD en orangepi/.env}
       POSTGRES_DB: ${POSTGRES_DB:?falta POSTGRES_DB en orangepi/.env}
@@ -139,6 +142,9 @@ services:
       NODERED_DB_PASSWORD: ${NODERED_DB_PASSWORD:?falta NODERED_DB_PASSWORD en orangepi/.env}
       NODERED_ADMIN_USER: ${NODERED_ADMIN_USER:?falta NODERED_ADMIN_USER en orangepi/.env}
       NODERED_ADMIN_PASSWORD: ${NODERED_ADMIN_PASSWORD:?falta NODERED_ADMIN_PASSWORD en orangepi/.env}
+      NODERED_PROFESOR_USER: ${NODERED_PROFESOR_USER:?falta NODERED_PROFESOR_USER en orangepi/.env}
+      NODERED_PROFESOR_PASSWORD: ${NODERED_PROFESOR_PASSWORD:?falta NODERED_PROFESOR_PASSWORD en orangepi/.env}
+      GALERIA_TOKEN: ${GALERIA_TOKEN:?falta GALERIA_TOKEN en orangepi/.env}
       # Nombres y direcciones del certificado HTTPS (subjectAltName). Si cambia,
       # settings.js regenera el certificado al reiniciar.
       NODERED_TLS_SAN: ${NODERED_TLS_SAN:-DNS:localhost,IP:127.0.0.1}
