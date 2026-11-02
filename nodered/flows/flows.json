@@ -95,7 +95,7 @@
         "type": "function",
         "z": "a1f0c0de00000001",
         "name": "Validar v, i, p",
-        "func": "// Valida el payload de aula/camara/energia: {\"v\":12.1,\"i\":0.85,\"p\":10.3}\n// Salida 1: lectura válida (msg.params para el INSERT). Salida 2: descartada.\nconst MAX_CARACTERES = 1024;\nconst RANGOS = { v: [0, 30], i: [0, 10], p: [0, 300] }; // V, A, W\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nconst resumen = msg.payload.slice(0, 200);\n\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON: \" + resumen);\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON: \" + resumen);\n}\nfor (const campo of Object.keys(RANGOS)) {\n    const x = datos[campo];\n    if (typeof x !== \"number\" || !Number.isFinite(x)) {\n        return descartar(\"falta \" + campo + \" numérico: \" + resumen);\n    }\n    if (x < RANGOS[campo][0] || x > RANGOS[campo][1]) {\n        return descartar(campo + \" fuera de rango [\" + RANGOS[campo] + \"]: \" + resumen);\n    }\n}\nmsg.params = [datos.v, datos.i, datos.p];\nreturn [msg, null];",
+        "func": "// Valida el payload de aula/camara/energia: {\"v\":12.1,\"i\":0.85,\"p\":10.3}\n// Salida 1: lectura válida (msg.params para el INSERT). Salida 2: descartada.\nconst MAX_CARACTERES = 1024;\nconst RANGOS = { v: [0, 30], i: [0, 10], p: [0, 300] }; // V, A, W\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\n// Una lectura nunca se retiene (contrato MQTT, sección 1): un retenido sería una\n// lectura falsa que se repetiría en cada conexión. Se descarta y se avisa.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": las lecturas no se retienen\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (las lecturas no se retienen)\");\n}\n// Payload vacío: no es una lectura. Es el mensaje en vivo que provoca la limpieza de\n// retenidos en cada conexión al broker; se ignora en silencio.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nconst resumen = msg.payload.slice(0, 200);\n\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON: \" + resumen);\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON: \" + resumen);\n}\nfor (const campo of Object.keys(RANGOS)) {\n    const x = datos[campo];\n    if (typeof x !== \"number\" || !Number.isFinite(x)) {\n        return descartar(\"falta \" + campo + \" numérico: \" + resumen);\n    }\n    if (x < RANGOS[campo][0] || x > RANGOS[campo][1]) {\n        return descartar(campo + \" fuera de rango [\" + RANGOS[campo] + \"]: \" + resumen);\n    }\n}\nmsg.params = [datos.v, datos.i, datos.p];\nreturn [msg, null];",
         "outputs": 2,
         "timeout": 0,
         "noerr": 0,
@@ -297,6 +297,77 @@
         "wires": [
             [
                 "a1f0c0de00000025"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000030",
+        "type": "tab",
+        "label": "Limpieza de retenidos",
+        "disabled": false,
+        "info": "En cada conexión de Node-RED al broker (también tras reiniciar Mosquitto), pide borrar los mensajes retenidos que hayan quedado en los tópicos de órdenes (*/cmd) y en los de eventos que nunca se retienen (aula/camara/pir y aula/camara/energia). Esos tópicos no se retienen (docs/contrato-mqtt.md, sección 1), pero la ACL de Mosquitto no puede impedir el retain por tópico: un cliente con credenciales podría dejar una orden o una lectura retenida que se repetiría en cada reconexión de su consumidor."
+    },
+    {
+        "id": "a1f0c0de00000031",
+        "type": "comment",
+        "z": "a1f0c0de00000030",
+        "name": "Limpia retenidos de */cmd, aula/camara/pir y aula/camara/energia en cada conexión al broker",
+        "info": "Cada vez que el nodo \"Borrar retenido\" informa que está conectado al broker (al arrancar Node-RED y tras cada reconexión, por ejemplo al reiniciar Mosquitto), se publica un mensaje retenido de payload vacío en cada tópico de la lista, que es la forma de borrar un retenido en MQTT. Se usa el estado del nodo y no un inject temporizado porque mqtt out no publica nada si aún no hay conexión, y un inject no corre cuando solo se reinicia el broker. Esto provoca, en cada conexión, un mensaje vacío en vivo (sin bandera retain) en cada tópico de la lista: no es una orden ni una lectura válida y los consumidores lo ignoran (contrato, sección 1; el flujo de ingesta lo descarta en silencio). El broker y sus credenciales son los del nodo \"Mosquitto\": aquí no hay ninguna.",
+        "x": 330,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000033",
+        "type": "function",
+        "z": "a1f0c0de00000030",
+        "name": "Al conectar: un borrado por tópico",
+        "func": "// Llega el estado del nodo \"Borrar retenido\". Solo interesa \"conectado\" (verde, punto):\n// es el estado que mqtt out emite cuando ya puede publicar, al conectar y al reconectar.\nconst s = msg.status || {};\nif (s.fill !== \"green\" || s.shape !== \"dot\") {\n    return null;\n}\n// Un mensaje por tópico, con payload vacío y retain: borra el retenido.\nconst topicos = [\"aula/actuador/cmd\", \"aula/sesion/cmd\", \"aula/vision/cmd\", \"aula/camara/pir\", \"aula/camara/energia\"];\nnode.log(\"Conectado al broker: se piden borrar los retenidos de \" + topicos.join(\", \"));\nreturn [topicos.map((topic) => ({ topic: topic, payload: \"\", qos: 1, retain: true }))];",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000034"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000034",
+        "type": "mqtt out",
+        "z": "a1f0c0de00000030",
+        "name": "Borrar retenido",
+        "topic": "",
+        "qos": "1",
+        "retain": "true",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 700,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000035",
+        "type": "status",
+        "z": "a1f0c0de00000030",
+        "name": "Conexión de Borrar retenido",
+        "scope": [
+            "a1f0c0de00000034"
+        ],
+        "x": 170,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000033"
             ]
         ]
     }

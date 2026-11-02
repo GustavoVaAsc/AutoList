@@ -1,0 +1,52 @@
+# ACL de Mosquitto: sección 6 de docs/contrato-mqtt.md (v0.5). No lleva secretos.
+# Sintaxis (Mosquitto 2): "user <nombre>" abre el bloque de un usuario y las líneas
+# "topic read|write|readwrite <tópico>" que le siguen le dan permiso. Sin líneas
+# "topic" antes del primer "user" no hay reglas para clientes sin usuario (de todos
+# modos, allow_anonymous es false). Lo que no se permite aquí, se deniega.
+# Mosquitto descarta en silencio las publicaciones denegadas: el cliente no recibe
+# error. Esta ACL no puede impedir el retain por tópico: la regla de no retener
+# órdenes ni eventos la cumplen los consumidores (contrato, sección 1).
+# Los usuarios existen en el passwd que genera entrypoint.sh; si añades uno aquí,
+# añade también su contraseña allí y en orangepi/.env.example.
+# No hay usuario "frontend": el navegador no habla MQTT; todo pasa por la API de
+# Node-RED, que publica en aula/actuador/cmd y aula/sesion/cmd con el usuario nodered.
+
+# Nodo de campo (XIAO ESP32S3). Su LWT va en aula/camara/estado. Escribe los tres
+# tópicos de cámara uno por uno, no aula/camara/#: así una clave filtrada de xiao
+# no sirve para publicar en tópicos nuevos que se creen bajo aula/camara/.
+user xiao
+topic read aula/actuador/cmd
+topic read aula/sesion/estado
+topic write aula/camara/pir
+topic write aula/camara/energia
+topic write aula/camara/estado
+topic write aula/actuador/estado
+
+# Servicio de visión. Escribe sus tópicos uno por uno: aula/vision/galeria/# y
+# aula/vision/cmd solo los publica nodered.
+user vision
+topic read aula/camara/pir
+topic read aula/vision/cmd
+topic read aula/vision/galeria/#
+topic write aula/vision/resultado
+topic write aula/vision/enrolamiento
+topic write aula/vision/embedding
+topic write aula/vision/estado
+topic write aula/actuador/cmd
+
+# Node-RED: orquestador y única puerta de la API HTTP (y del frontend) al bus.
+user nodered
+topic readwrite aula/#
+
+# Programa de la pantalla ILI9341.
+user pantalla
+topic read aula/sesion/estado
+topic read aula/vision/enrolamiento
+topic read aula/actuador/estado
+topic read aula/pantalla/reinicio
+topic write aula/sesion/cmd
+topic write aula/actuador/cmd
+
+# Herramienta herramientas/simular_energia.sh: solo publica lecturas falsas.
+user simulador
+topic write aula/camara/energia

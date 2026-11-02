@@ -1,0 +1,934 @@
+/* AutoList: tokens y estilos.
+
+   Base: lenguaje de diseño de Vercel, solo tokens y reglas (neutros, espaciado
+   de 4 px, anillo más sombra apilada). Encima, una capa de identidad propia:
+   el "verde asistencia" (--acento), único color de marca fuera de los neutros,
+   y IBM Plex. Todo el color, el espaciado y la tipografía salen de variables
+   en :root. Claro es el modo principal (aula iluminada, proyector); el oscuro
+   sigue prefers-color-scheme o la elección del selector de tema
+   (data-theme en <html>, que fija public/tema.js antes de pintar).
+
+   Tipografía: IBM Plex Sans (400, 500 y 600) e IBM Plex Mono (400), solo los
+   subconjuntos latin y latin-ext (se importan en main.tsx). Razón: es una
+   superfamilia pensada para entornos de ingeniería, que encaja con un
+   proyecto de sistemas embebidos; trae cifras tabulares y los acentos
+   completos del español; es OFL; y se aleja del Inter que traen por defecto
+   casi todos los paneles. Plex Mono solo en etiquetas técnicas (unidades,
+   marcas de tiempo, encabezados de tabla), nunca en títulos ni párrafos.
+
+   Dónde va el acento (solo en momentos clave): el wordmark, el indicador de
+   la pestaña activa, la línea y el relleno de la gráfica, la cifra de
+   potencia, el punto "en vivo" y el anillo de foco. */
+
+:root {
+  /* Superficies */
+  --lienzo: #ffffff;          /* tarjetas */
+  --fondo: #fafafa;           /* fondo de página */
+  --fondo-2: #f5f5f5;         /* hover de controles */
+
+  /* Texto */
+  --tinta: #171717;
+  --cuerpo: #4d4d4d;
+  --tenue: #888888;           /* solo elementos no textuales: 3.5:1 sobre blanco */
+
+  /* Líneas */
+  --linea: #ebebeb;
+  --linea-fuerte: #a1a1a1;     /* hairlines decorativas y ejes de la gráfica */
+  --borde-control: #8a8a8a;    /* contorno de controles (WCAG 1.4.11): 3.45:1 sobre blanco, 3.31:1 sobre --fondo, 3.17:1 en hover */
+
+  /* Acento: verde asistencia. 5.0:1 sobre --lienzo y 4.8:1 sobre --fondo. No va
+     como texto sobre --acento-suave (4.4:1): ahí el texto es --tinta. */
+  --acento: #1a7f4b;
+  --acento-suave: #e7f4ed;    /* fondos y rellenos tenues */
+
+  /* Estados. Para texto se usan las variantes -hondo; el color base, solo en no textuales. */
+  --error: #ee0000;
+  --error-hondo: #c50000;
+  --error-suave: #f7d4d6;
+  --advertencia: #f5a623;
+  --advertencia-hondo: #ab570a;
+  --advertencia-suave: #ffefcf;
+
+  /* Elevación: anillo de 1px más sombra apilada suave */
+  --elevacion: 0 0 0 1px #00000014, 0px 2px 2px #0000000a, 0px 8px 8px -8px #0000000a;
+
+  /* Espaciado, base de 4px */
+  --e-1: 4px;
+  --e-2: 8px;
+  --e-3: 12px;
+  --e-4: 16px;
+  --e-6: 24px;
+  --e-8: 32px;
+  --e-12: 48px;
+  --e-16: 64px;
+
+  /* Radios */
+  --radio-control: 6px;
+  --radio-tarjeta: 8px;
+
+  /* Tipografía */
+  --fuente: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --fuente-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Movimiento (dial 2: transiciones con propósito, sin animación al hacer scroll).
+     Curva de entrada fuerte; las salidas (hover que se quita, botón que se suelta)
+     son más rápidas que las entradas. */
+  --ease-entrada: cubic-bezier(0.23, 1, 0.32, 1);
+  --d-pulsar: 100ms;          /* botón presionado */
+  --d-salida: 150ms;          /* quitar hover o foco */
+  --d-vista: 180ms;           /* cambio de vista */
+  --d-indicador: 200ms;       /* pestaña activa */
+
+  --contenedor: 1200px;
+  --margen: var(--e-6);
+
+  color-scheme: light dark;
+}
+
+/* Tema oscuro. Va dos veces porque CSS no deja unir una media query con un
+   atributo: una para "Sistema" (preferencia del sistema, salvo que se haya
+   elegido Claro) y otra para la elección explícita. Mantenerlas iguales. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --lienzo: #111111;
+    --fondo: #0a0a0a;
+    --fondo-2: #1a1a1a;
+
+    --tinta: #ededed;
+    --cuerpo: #a1a1a1;
+    --tenue: #8f8f8f;
+
+    --linea: #1f1f1f;
+    --linea-fuerte: #2e2e2e;
+    --borde-control: #6b6b6b;  /* 3.54:1 sobre --lienzo, 3.72:1 sobre --fondo, 3.27:1 en hover */
+
+    --acento: #4cc38a;
+    --acento-suave: #10261b;
+
+    --error: #ff6166;
+    --error-hondo: #ff6166;
+    --error-suave: #3a1315;
+    --advertencia: #f7b955;
+    --advertencia-hondo: #f7b955;
+    --advertencia-suave: #2d1d05;
+
+    --elevacion: 0 0 0 1px var(--linea), 0px 2px 2px #00000040, 0px 8px 8px -8px #00000040;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --lienzo: #111111;
+  --fondo: #0a0a0a;
+  --fondo-2: #1a1a1a;
+
+  --tinta: #ededed;
+  --cuerpo: #a1a1a1;
+  --tenue: #8f8f8f;
+
+  --linea: #1f1f1f;
+  --linea-fuerte: #2e2e2e;
+  --borde-control: #6b6b6b;
+
+  --acento: #4cc38a;
+  --acento-suave: #10261b;
+
+  --error: #ff6166;
+  --error-hondo: #ff6166;
+  --error-suave: #3a1315;
+  --advertencia: #f7b955;
+  --advertencia-hondo: #f7b955;
+  --advertencia-suave: #2d1d05;
+
+  --elevacion: 0 0 0 1px var(--linea), 0px 2px 2px #00000040, 0px 8px 8px -8px #00000040;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --margen: var(--e-4);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--fondo);
+  color: var(--cuerpo);
+  font-family: var(--fuente);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p,
+dl,
+dd,
+ul {
+  margin: 0;
+  padding: 0;
+}
+
+ul {
+  list-style: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}
+
+/* Destino de foco programático al navegar: no es un control. */
+h1[tabindex='-1']:focus {
+  outline: none;
+}
+
+/* Etiquetas técnicas: unidades, marcas de tiempo, cabeceras pequeñas */
+.etiqueta-tecnica {
+  font-family: var(--fuente-mono);
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--cuerpo);
+}
+
+/* Texto solo para lectores de pantalla */
+.solo-lectores {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Estructura */
+.contenedor {
+  width: 100%;
+  max-width: var(--contenedor);
+  margin: 0 auto;
+  padding-left: var(--margen);
+  padding-right: var(--margen);
+}
+
+.principal {
+  padding-top: var(--e-8);
+  padding-bottom: var(--e-16);
+}
+
+/* Cambio de vista. Propósito: señalar que el contenido cambió sin un salto
+   brusco; opacidad y 4 px de desplazamiento, una sola vez, sin cascada. */
+.vista {
+  animation: entrada-vista var(--d-vista) var(--ease-entrada) both;
+}
+
+@keyframes entrada-vista {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Cabecera */
+.encabezado {
+  background: var(--lienzo);
+  box-shadow: 0 1px 0 var(--linea);
+}
+
+.encabezado__interior {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: 'marca nav estado tema';
+  align-items: center;
+  column-gap: var(--e-6);
+  min-height: 56px;
+}
+
+@media (max-width: 640px) {
+  .encabezado__interior {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'marca tema'
+      'nav nav'
+      'estado estado';
+    column-gap: var(--e-4);
+    padding-top: var(--e-2);
+    padding-bottom: var(--e-2);
+  }
+}
+
+/* Wordmark: tipográfico, sin símbolo. "List" lleva el verde de identidad. */
+.marca {
+  grid-area: marca;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: -0.6px;
+  color: var(--tinta);
+}
+
+.marca__acento {
+  color: var(--acento);
+}
+
+.navegacion-contenedor {
+  grid-area: nav;
+  position: relative; /* referencia del indicador de la pestaña activa */
+}
+
+.navegacion {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--e-2);
+}
+
+.navegacion__enlace {
+  display: flex;
+  align-items: center;
+  gap: var(--e-1);
+  min-height: 44px;
+  padding: 0 var(--e-2);
+  border-radius: var(--radio-control);
+  color: var(--cuerpo);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color var(--d-salida) var(--ease-entrada), background-color var(--d-salida) var(--ease-entrada);
+}
+
+.navegacion__enlace:hover {
+  color: var(--tinta);
+  background: var(--fondo-2);
+}
+
+.navegacion__enlace:active {
+  background: var(--linea);
+}
+
+.navegacion__enlace[aria-current='page'] {
+  color: var(--tinta);
+}
+
+/* "Pronto": la vista aún no funciona. Texto pequeño y sobrio, sin cápsula. */
+.navegacion__pronto {
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--cuerpo);
+}
+
+@media (max-width: 640px) {
+  .navegacion {
+    column-gap: var(--e-1);
+  }
+
+  .navegacion__enlace {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 0;
+  }
+}
+
+/* Indicador de la pestaña activa: se desliza entre pestañas (continuidad
+   espacial). La primera posición no se anima. */
+.navegacion__indicador {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 2px;
+  background: var(--acento);
+  pointer-events: none;
+}
+
+.navegacion__indicador--animado {
+  transition: transform var(--d-indicador) var(--ease-entrada), width var(--d-indicador) var(--ease-entrada);
+}
+
+/* Estado de la placa */
+.estado-vivo {
+  grid-area: estado;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  justify-self: end;
+}
+
+@media (max-width: 640px) {
+  .estado-vivo {
+    justify-self: start;
+  }
+}
+
+.estado-vivo__texto {
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: var(--cuerpo);
+  white-space: nowrap;
+}
+
+.punto {
+  position: relative;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.punto--vivo {
+  background: var(--acento);
+}
+
+.punto--conectando,
+.punto--obsoleto {
+  background: var(--tenue);
+}
+
+.punto--sin-conexion {
+  background: var(--error);
+}
+
+/* Pulso único al llegar una lectura nueva: un anillo que se abre y se
+   desvanece una sola vez, nunca en bucle. */
+.punto--pulso::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--acento);
+  animation: pulso 600ms var(--ease-entrada) 1 both;
+}
+
+@keyframes pulso {
+  from {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.8);
+  }
+}
+
+/* Selector de tema */
+.selector-tema {
+  grid-area: tema;
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+}
+
+/* Etiqueta visible del selector: todo campo de formulario lleva su etiqueta. */
+.selector-tema__etiqueta {
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: var(--cuerpo);
+}
+
+.selector {
+  min-height: 36px;
+  padding: 0 var(--e-2);
+  border: 1px solid var(--borde-control);
+  border-radius: var(--radio-control);
+  background: var(--lienzo);
+  color: var(--tinta);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--d-salida) var(--ease-entrada), border-color var(--d-salida) var(--ease-entrada);
+}
+
+.selector:hover {
+  background: var(--fondo-2);
+  border-color: var(--cuerpo);
+}
+
+.selector:active {
+  background: var(--linea);
+}
+
+.selector:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@media (max-width: 640px) {
+  .selector {
+    min-height: 44px;
+  }
+}
+
+.salto {
+  position: absolute;
+  left: var(--e-2);
+  top: -64px;
+  z-index: 10;
+  padding: var(--e-3) var(--e-4);
+  border-radius: var(--radio-control);
+  background: var(--lienzo);
+  color: var(--tinta);
+  box-shadow: var(--elevacion);
+}
+
+.salto:focus {
+  top: var(--e-2);
+}
+
+/* Títulos de vista */
+.titulo-vista {
+  font-size: 32px;
+  line-height: 40px;
+  letter-spacing: -1.28px;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.subtitulo-vista {
+  margin-top: var(--e-2);
+  margin-bottom: var(--e-8);
+  max-width: 68ch;
+}
+
+.subtitulo {
+  font-size: 20px;
+  line-height: 28px;
+  letter-spacing: -0.6px;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+/* minmax(0, 1fr): sin esto la columna crece hasta el ancho mínimo de su
+   contenido (la gráfica) y desborda a 360 px. */
+.seccion {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--e-4);
+}
+
+.seccion__encabezado {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  column-gap: var(--e-4);
+  row-gap: var(--e-1);
+}
+
+/* Tarjetas */
+.tarjeta {
+  background: var(--lienzo);
+  border-radius: var(--radio-tarjeta);
+  box-shadow: var(--elevacion);
+  padding: var(--e-6);
+}
+
+@media (max-width: 640px) {
+  .tarjeta {
+    padding: var(--e-4);
+  }
+}
+
+.bloque__titulo {
+  margin-bottom: var(--e-4);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+/* Cifras actuales: la potencia es el foco (es la que se grafica); voltaje y
+   corriente quedan secundarios y compactos. */
+.cifras {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: var(--e-4);
+}
+
+/* La tarjeta de potencia en escritorio: la cifra a la izquierda y, a la
+   derecha, el panel con los datos de la ventana (mínima, máxima y número de
+   lecturas, de la serie real). Así la mitad derecha lleva información en lugar
+   de quedar vacía. */
+.cifra--destacada {
+  grid-row: 1 / span 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 18rem);
+  grid-template-rows: auto auto;
+  align-content: center;
+  align-items: center;
+  column-gap: var(--e-8);
+  padding: var(--e-8);
+}
+
+.cifra--destacada .cifra__etiqueta {
+  grid-column: 1;
+  align-self: end;
+}
+
+.cifra--destacada .cifra__valor {
+  grid-column: 1;
+  align-self: start;
+}
+
+.cifra--destacada .cifra__nota {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+@media (max-width: 640px) {
+  .cifras {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cifra--destacada {
+    grid-row: auto;
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    padding: var(--e-4);
+  }
+
+  .cifra--destacada .cifra__nota {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: var(--e-4);
+  }
+}
+
+.cifra__etiqueta {
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  font-weight: 500;
+}
+
+.cifra__valor {
+  display: flex;
+  align-items: baseline;
+  gap: var(--e-2);
+  margin-top: var(--e-1);
+}
+
+.cifra__numero {
+  font-size: 28px;
+  line-height: 32px;
+  letter-spacing: -0.84px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--tinta);
+}
+
+/* Unidad: Plex Mono en color secundario, alineada por la línea base y a una
+   escala proporcional a su cifra (64 px la cifra, 24 px la unidad; 28 y 16). */
+.cifra__unidad {
+  font-family: var(--fuente-mono);
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--cuerpo);
+}
+
+.cifra--destacada .cifra__unidad {
+  font-size: 24px;
+}
+
+.cifra--destacada .cifra__numero {
+  font-size: 64px;
+  line-height: 64px;
+  letter-spacing: -2.56px;
+  color: var(--acento);
+}
+
+.cifra__nota {
+  margin: 0;
+}
+
+/* Panel de la ventana: el único relleno tenue de la tarjeta (--acento-suave);
+   el texto va en tinta, que sobre ese fondo da más de 13:1 en ambos temas. */
+.ventana {
+  padding: var(--e-4);
+  border-radius: var(--radio-control);
+  background: var(--acento-suave);
+  color: var(--tinta);
+}
+
+.ventana .etiqueta-tecnica {
+  color: var(--cuerpo);
+}
+
+.ventana__lista {
+  margin-top: var(--e-2);
+  display: grid;
+  gap: var(--e-2);
+}
+
+.ventana__lista > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--e-4);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+}
+
+.ventana__lista dt {
+  color: var(--cuerpo);
+}
+
+.ventana__lista dd {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--tinta);
+}
+
+@media (max-width: 640px) {
+  .ventana__lista {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--e-2);
+  }
+
+  .ventana__lista > div {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+  }
+}
+
+.cifras__hora {
+  margin-top: calc(-1 * var(--e-2));
+}
+
+/* Estados */
+.estado__titulo {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.estado__texto {
+  max-width: 68ch;
+}
+
+.estado__titulo + .estado__texto {
+  margin-top: var(--e-1);
+}
+
+.aviso {
+  padding: var(--e-3) var(--e-4);
+  border-radius: var(--radio-control);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+}
+
+.aviso__titulo {
+  font-weight: 600;
+}
+
+.aviso--error {
+  background: var(--error-suave);
+  color: var(--error-hondo);
+  box-shadow: inset 0 0 0 1px var(--error);
+}
+
+.aviso--advertencia {
+  background: var(--advertencia-suave);
+  color: var(--advertencia-hondo);
+  box-shadow: inset 0 0 0 1px var(--advertencia);
+}
+
+/* Gráfica */
+.grafica {
+  width: 100%;
+  min-width: 0;
+  height: 280px;
+  overflow: hidden; /* la gráfica nunca debe ensanchar la tarjeta */
+  /* Se dibuja una sola vez, de izquierda a derecha, al montar: da una lectura
+     del tiempo y confirma que la serie es nueva. El contenedor no se remonta
+     en cada sondeo, así que no se repite. */
+  animation: revelar-grafica 400ms var(--ease-entrada) both;
+}
+
+@keyframes revelar-grafica {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .grafica {
+    height: 220px;
+  }
+}
+
+.grafica__resumen {
+  margin-top: var(--e-3);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+}
+
+/* Tooltip de la gráfica: mismo anillo y sombra que las tarjetas */
+.tooltip {
+  padding: var(--e-2) var(--e-3);
+  border-radius: var(--radio-tarjeta);
+  background: var(--lienzo);
+  box-shadow: var(--elevacion);
+}
+
+.tooltip__valor {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--tinta);
+}
+
+/* Tabla */
+.tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabla th,
+.tabla td {
+  padding: var(--e-2) var(--e-2);
+  border-bottom: 1px solid var(--linea);
+  text-align: left;
+  vertical-align: baseline;
+  font-weight: 400;
+}
+
+.tabla thead th {
+  font-family: var(--fuente-mono);
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0;
+  color: var(--cuerpo);
+}
+
+.tabla tbody th {
+  white-space: nowrap;
+}
+
+.tabla__dia {
+  margin-right: var(--e-2);
+}
+
+@media (max-width: 640px) {
+  .tabla__dia {
+    display: block;
+    margin-right: 0;
+  }
+}
+
+.tabla .numerico {
+  text-align: right;
+}
+
+.tabla td {
+  color: var(--tinta);
+}
+
+.tabla + .boton {
+  margin-top: var(--e-4);
+}
+
+/* Botones: hover, active y disabled distintos. Al presionar se encogen un 3 %
+   en 100 ms (respuesta táctil); al soltar vuelven más despacio. */
+.boton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 var(--e-4);
+  border: 1px solid var(--borde-control);
+  border-radius: var(--radio-control);
+  background: var(--lienzo);
+  color: var(--tinta);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--d-salida) var(--ease-entrada),
+    border-color var(--d-salida) var(--ease-entrada),
+    transform var(--d-salida) var(--ease-entrada);
+}
+
+.boton:hover {
+  background: var(--fondo-2);
+  border-color: var(--cuerpo);
+}
+
+.boton:active {
+  transform: scale(0.97);
+  transition-duration: var(--d-pulsar);
+}
+
+.boton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  background: var(--fondo-2);
+  transform: none;
+}
+
+@media (max-width: 640px) {
+  .boton {
+    min-height: 44px;
+  }
+}
+
+/* Movimiento reducido: sin transiciones, sin animaciones y sin pulso. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
