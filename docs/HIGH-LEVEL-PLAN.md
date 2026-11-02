@@ -289,10 +289,11 @@ aula/camara/energia      XIAO → edge             {"v":12.1,"i":0.85,"p":10.3}
 aula/camara/estado       XIAO → edge             {"rssi":-58,"heap":120000,"temp":48}
 aula/actuador/cmd        edge → XIAO             {"servo":"abrir","led":"verde","buzzer":1,"luz":0}   (Node-RED o pantalla)
 aula/actuador/estado     XIAO → edge             {"servo":"cerrado","led":"azul","luz":0}
-aula/vision/resultado    visión → Node-RED       {"cuenta":"320068234","conf":0.78,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
+aula/vision/resultado    visión → Node-RED       {"ts":"...","modo":"pase","decision":"reconocido","cuenta":"320068234","conf":0.78,"margen":0.21,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
 aula/vision/cmd          Node-RED → visión       {"accion":"enrolar","cuenta":"320068234"}   (enrolar, cancelar, probar)
-aula/vision/enrolamiento visión → frontend, LCD  {"cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
-aula/vision/embedding    visión → Node-RED       {"cuenta":"320068234","embedding":[...]}   (QoS 1, retain=false; solo lo consume Node-RED, que acepta únicamente la cuenta con inscripción pendiente)
+aula/vision/enrolamiento visión → frontend, LCD  {"ts":"...","cuenta":"320068234","paso":3,"total":5,"pose":"izquierda","estado":"rechazada","motivo":"borrosa","miniatura":"<base64>"}
+aula/vision/embedding    visión → Node-RED       {"ts":"...","cuenta":"320068234","dim":512,"modelo":"w600k_mbf-uint8-v1","embedding":[...]}   (QoS 1, retain=false; solo lo consume Node-RED, que acepta únicamente la cuenta con inscripción pendiente)
+aula/vision/estado       visión (+ LWT) → Node-RED, frontend  {"ts":"...","en_linea":true,"modo":"inactivo","galeria":38,"modelo":"w600k_mbf-uint8-v1"}   (retenido; el LWT del broker lleva la forma mínima {"en_linea":false})
 aula/vision/galeria/alta Node-RED → visión       {"cuenta":"320068234"}   (QoS 1, nunca retenido; tras guardar el embedding: el servicio recarga la galería con GET /api/galeria)
 aula/vision/galeria/baja Node-RED → visión       {"cuenta":"320068234"}   (QoS 1, nunca retenido; retira a una persona de la galería en RAM)
 aula/sesion/cmd          pantalla → Node-RED     {"accion":"iniciar","materia":"FSE","grupo":"1","tol_min":10}
@@ -302,6 +303,12 @@ aula/sistema/metricas    Orange Pi → Node-RED    {"temp":52.1,"cpu":34,"ram":6
 ```
 
 > Los valores de ejemplo son ilustrativos, no mediciones.
+
+> **Payloads de la visión (contrato MQTT v0.3; la forma del estado, v0.4).** El detalle completo está en [`docs/contrato-mqtt.md`](contrato-mqtt.md), que manda sobre este resumen.
+> - `aula/vision/resultado`: lleva `ts`, `modo` (`pase` o `prueba`), `decision` (`reconocido`, `dudoso`, `desconocido`, `sin_rostro`, `imagen_insuficiente`, `error`), `cuenta`, `conf`, `margen` y `lat_ms`, con las etapas que no corrieron en `null`. `decision` es el campo que dice qué pasó; `motivo` (opcional) da el detalle fino, porque el esquema SQL `intentos.motivo` lo necesita.
+> - `aula/vision/enrolamiento`: el vocabulario de `estado` es `esperando_pose`, `capturando`, `aceptada`, `rechazada`, `advertencia`, `completado`, `cancelado` y `error`; las cinco poses son `frente`, `izquierda`, `derecha`, `arriba` y `frente_2` (la quinta es otra toma de frente, no una repetición de la primera).
+> - `aula/vision/embedding`: `dim` y `modelo` son obligatorios.
+> - `aula/vision/estado` (retenido): lo publica la visión en cada cambio de modo y en la salida ordenada del servicio. El Will del broker lleva la forma mínima `{"en_linea": false}`; el estado final de la salida ordenada lleva el esquema completo.
 
 > Con las ACL (4 nov), solo el usuario de Node-RED puede publicar en `aula/vision/galeria/#`.
 
@@ -461,7 +468,7 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 /orangepi
   /vision                servicio C++, scripts de conversión (.nb fuera de git)
   /pantalla              programa Python de la ILI9341
-  /systemd               unidad systemd de la pantalla (orangepi-pantalla.service)
+  /systemd               unidad systemd del servicio de visión (orangepi-vision.service)
   /sql/schema.sql        esquema de Postgres (alumnos, sesiones, asistencias, metricas_energia)
   /sql/roles.sh         rol de Node-RED en Postgres (privilegios mínimos)
   docker-compose.yml     Mosquitto, Node-RED, Postgres y Portainer
@@ -498,6 +505,8 @@ El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardwar
 
 La fila del 25 de noviembre es de integración: el comprimido de código lo aporta todo el equipo.
 
+**Lo que se adelantó al hito del 11 de noviembre.** Los adaptadores reales de MQTT y HTTP, el proceso de producción (configuración, señales y salida ordenada) y la unidad systemd del servicio de visión se adelantaron, porque dependían del toolchain de modelos, que todavía no está: sin los `.nb` no hay detector ni embedder, pero el cableado entre broker, cámara, galería y servicio sí se puede dejar cerrado y probado (con `tools/humo.sh`). Lo que sigue atado al toolchain es la detección y el embedding en la NPU, y con ellos el primer pase de lista real.
+
 ### 12.2 Reparto
 
 | Persona | Rol | Módulos |
@@ -511,6 +520,8 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 | Tarea | Persona | Depende de | Bloquea a |
 |---|---|---|---|
 | Verificación de la NPU en la imagen oficial (hecho) | Gustavo | — | El ejemplo de detección en la NPU |
+| Adaptadores reales de MQTT y HTTP (adelantado) | Gustavo | El contrato MQTT v0.3 | El proceso de producción del servicio de visión (adelantado) |
+| Proceso de producción y unidad systemd (adelantado) | Gustavo | Los adaptadores reales de MQTT y HTTP | El primer pase de lista real, que sigue atado al toolchain de modelos |
 | Toolchain Pegasus en la PC | Gustavo | — | La conversión del modelo a `.nb` |
 | Modelo convertido a `.nb` | Gustavo | El toolchain Pegasus | La detección y el embedding en la NPU |
 | Captura, PIR e INA219 por MQTT en la XIAO (11 nov) | Gustavo | La compra del INA219 y el PIR (la XIAO y su cámara ya están) | La ingesta de energía real a Postgres |

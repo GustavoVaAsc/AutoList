@@ -1,6 +1,6 @@
 # Contrato MQTT
 
-> **Borrador v0.2.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
+> **Borrador v0.4.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
 
 ## 1. Convenciones generales
 
@@ -8,7 +8,7 @@
 - **Formato:** JSON en UTF-8, un objeto por mensaje. Nombres de campo en español, `snake_case`, sin acentos.
 - **Campos desconocidos se ignoran.** Un consumidor no debe fallar si llega un campo que no conoce; así se pueden agregar campos sin romper a nadie. Quitar o renombrar un campo sí es un cambio incompatible y se anota en la sección 7.
 - **Números de cuenta** siempre como *string* de 9 dígitos (`"320068234"`), nunca como número: un cero a la izquierda se perdería.
-- **Tiempo:** `ts` en ISO 8601 con zona (`"2026-11-04T09:12:33.120-06:00"`) en los mensajes que publica la Orange Pi (visión, Node-RED, pantalla), que tiene RTC. La XIAO no manda `ts`: Node-RED sella la hora al recibir. **[propuesta]**
+- **Tiempo:** `ts` en ISO 8601 con zona (`"2026-11-04T09:12:33.120-06:00"`) en los mensajes que publica la Orange Pi (visión, Node-RED, pantalla), que tiene RTC. La XIAO no manda `ts`: Node-RED sella la hora al recibir. El servicio de visión estampa `ts` en los cuatro mensajes que publica (`resultado`, `enrolamiento`, `embedding` y `estado`); Node-RED y la pantalla todavía no lo hacen.
 - **Unidades** en el nombre o en la tabla: `lat_ms` en milisegundos, `v` en volts, `i` en amperes, `p` en watts, `temp` en °C.
 - **Tamaño en la XIAO:** PubSubClient trae un búfer de 256 bytes por defecto. Todo lo que la XIAO publica o recibe debe caber ahí, o el firmware debe llamar a `setBufferSize()`. Ningún mensaje hacia la XIAO lleva miniaturas ni embeddings.
 - **Retained:** solo para estados (lo último que se sabe de algo). Nunca para eventos ni órdenes: un `cmd` retenido se volvería a ejecutar al reconectar.
@@ -26,7 +26,7 @@
 | `aula/vision/cmd` | Node-RED | visión | 1 | no |
 | `aula/vision/enrolamiento` | visión | frontend, pantalla | 0 | no |
 | `aula/vision/embedding` | visión | Node-RED | 1 | no |
-| `aula/vision/estado` **[propuesta]** | visión (+ LWT) | Node-RED, frontend | 1 | sí |
+| `aula/vision/estado` | visión (+ LWT) | Node-RED, frontend | 1 | sí |
 | `aula/vision/galeria/alta` | Node-RED | visión | 1 | no |
 | `aula/vision/galeria/baja` | Node-RED | visión | 1 | no |
 | `aula/sesion/cmd` | pantalla, frontend | Node-RED | 1 | no |
@@ -116,15 +116,16 @@ Un mensaje por intento de reconocimiento, sea del pase de lista o de una prueba 
 
 | Campo | Tipo | Obligatorio | Notas |
 |---|---|---|---|
-| `ts` | string | sí | |
-| `modo` | string | sí | **[propuesta]** `pase` o `prueba`. Node-RED **solo registra asistencia con `pase`**; con `prueba` solo reenvía al frontend. Sin este campo, la prueba inmediata del registro marcaría asistencia. |
-| `decision` | string | sí | **[propuesta]** `reconocido`, `dudoso` (zona gris → LED ámbar), `desconocido`, `sin_rostro`, `imagen_insuficiente` |
-| `cuenta` | string \| null | sí | Mejor candidato. `null` si `decision` es `sin_rostro` o `imagen_insuficiente`. Con `desconocido` se manda el mejor candidato para auditoría (tabla `intentos`). |
-| `conf` | float \| null | sí | Similitud coseno del mejor candidato, 0 a 1 |
-| `margen` | float \| null | no | **[propuesta]** Diferencia con el segundo candidato. Un margen chico indica que se puede confundir con otra persona |
+| `ts` | string | sí | ISO 8601 con zona. |
+| `modo` | string | sí | `pase` o `prueba`. Node-RED **solo registra asistencia con `pase`**; con `prueba` solo reenvía al frontend. Sin este campo, la prueba inmediata del registro marcaría asistencia. |
+| `decision` | string | sí | `reconocido`, `dudoso` (zona gris → LED ámbar), `desconocido`, `sin_rostro`, `imagen_insuficiente`, `error` (fallo interno del servicio; extensión de este documento) |
+| `cuenta` | string \| null | sí | Mejor candidato. `null` si `decision` es `sin_rostro`, `imagen_insuficiente` o `error`, y si la galería está vacía. Con `desconocido` y con `dudoso` se manda el mejor candidato para auditoría (tabla `intentos`). |
+| `conf` | float \| null | sí | Similitud coseno del mejor candidato, 0 a 1. `null` si no hubo candidato. |
+| `margen` | float \| null | no | Diferencia con el segundo candidato. `null` (o ausente) si la galería tiene menos de dos alumnos: no hay con quién comparar. Un margen chico indica que se puede confundir con otra persona. |
 | `lat_ms` | object | sí | `cap`, `det`, `emb`, `total`, en ms. Etapas que no corrieron van en `null` |
+| `motivo` | string | no | Detalle fino de la `decision`; extensión de este documento (el esquema SQL `intentos.motivo` lo necesita y el frontend lo muestra). `captura_fallida`, `imagen_insuficiente`, `sin_rostro`, `desconocido`, `galeria_vacia`, `error_interno`, `ocupado`, `cuenta_invalida`. Con `decision: "reconocido"` o `"dudoso"` no se manda. |
 
-**[decidir] ¿Quién aplica el umbral?** Propuesta: el servicio de visión, porque es el dueño del modelo y del umbral calibrado con LFW (los umbrales `reconocido` y `dudoso` viven en su configuración). Node-RED decide sobre `decision` y no compara números. Lo que Node-RED sí decide son las reglas de sesión: lista del grupo, duplicado y retardo.
+**El umbral lo aplica el servicio de visión**, porque es el dueño del modelo y del umbral calibrado con LFW (los umbrales `reconocido` y `dudoso` viven en su configuración; Node-RED decide sobre `decision` y no compara números). Lo que Node-RED sí decide son las reglas de sesión: lista del grupo, duplicado y retardo. Los umbrales actuales son provisionales: la calibración con LFW es el hito del 18 de noviembre.
 
 ### `aula/vision/cmd`
 Órdenes de Node-RED al servicio de visión.
@@ -138,13 +139,14 @@ Un mensaje por intento de reconocimiento, sea del pase de lista o de una prueba 
 | `enrolar` | `cuenta`, `nombre` | Inicia el registro de 5 poses. Mientras dura, se ignora el PIR. Si ya hay un registro en curso, se rechaza con `estado: "error"` y `motivo: "ocupado"` en `aula/vision/enrolamiento`. |
 | `cancelar` | `cuenta` | Aborta el registro en curso y descarta lo capturado. |
 | `probar` | `cuenta` (opcional) | Una captura y reconocimiento; publica `aula/vision/resultado` con `modo: "prueba"`. |
-`nombre` va en `enrolar` para que la pantalla lo muestre en la guía de registro sin consultar la base. **[propuesta]**
+`nombre` va en `enrolar` para que la pantalla lo muestre en la guía de registro sin consultar la base. El servicio de visión lo copia al progreso del registro.
 
 ### `aula/vision/enrolamiento`
 Progreso del registro, un mensaje por cambio de estado. QoS 0: si se pierde uno, el siguiente lo corrige.
 
 ```json
 {
+  "ts": "2026-11-04T09:12:33.120-06:00",
   "cuenta": "320068234",
   "nombre": "Ana López",
   "paso": 3,
@@ -158,37 +160,51 @@ Progreso del registro, un mensaje por cambio de estado. QoS 0: si se pierde uno,
 
 | Campo | Tipo | Obligatorio | Notas |
 |---|---|---|---|
-| `cuenta` | string | sí | |
+| `ts` | string | sí | ISO 8601 con zona. |
+| `cuenta` | string | sí | Vacía si la cuenta del comando no era un `no_cuenta` válido: no se repite un dato inválido. |
 | `nombre` | string | no | Para la ILI9341 |
-| `paso`, `total` | int | sí | `paso` va de 1 a 5 |
-| `pose` | string | sí | `frente`, `izquierda`, `derecha`, `arriba`, `frente_2` |
+| `paso`, `total` | int | sí | `paso` va de 1 a 5. En un rechazo de una orden (`estado: "error"`) el `paso` va en 0. |
+| `pose` | string | sí | `frente`, `izquierda`, `derecha`, `arriba`, `frente_2`. La quinta pose es `frente_2`: otra toma de frente, no una repetición de la primera. Vacía en un rechazo de una orden. |
 | `estado` | string | sí | `esperando_pose`, `capturando`, `aceptada`, `rechazada`, `advertencia`, `completado`, `cancelado`, `error` |
-| `motivo` | string | no | Con `rechazada`: `sin_rostro`, `varios_rostros`, `rostro_chico`, `borrosa`, `giro_excesivo`, `fallo_captura`. Con `error`: `ocupado`, `inconsistente` (las fotos no se parecen entre sí), `npu`. |
-| `parecido_a` | string | no | **[propuesta]** Con `advertencia`: cuenta del alumno al que se parece. Nunca incluye embeddings. La advertencia es informativa (plan, sección 5.4, paso 6): la visión no espera confirmación y sigue con `completado` y la publicación del embedding. Si el profesor no está de acuerdo, aplica la baja del rostro. |
-| `miniatura` | string | no | JPEG en base64, como máximo 160×120 y unos 8 KB. Solo con `aceptada` o `rechazada`. La pantalla la ignora. |
+| `motivo` | string | no | Con `rechazada`: `sin_rostro`, `varios_rostros`, `rostro_chico`, `borrosa`, `giro_excesivo`, `fallo_captura`. Con `error`: `ocupado`, `inconsistente` (las fotos no se parecen entre sí), `npu`, `cuenta_invalida` (la cuenta del comando no es válida; extensión de este documento). Un registro que se agota (demasiadas poses rechazadas) se cierra con `estado: "error"` y `motivo: "npu"`. |
+| `parecido_a` | string | no | **[propuesta]** Con `advertencia`: cuenta del alumno al que se parece. Nunca incluye embeddings. La advertencia es informativa (plan, sección 5.4, paso 6): la visión no espera confirmación y sigue con `completado` y la publicación del embedding. Si el profesor no está de acuerdo, aplica la baja del rostro. El servicio de visión todavía no emite `advertencia`. |
+| `miniatura` | string | no | JPEG en base64, como máximo 160×120 y unos 8 KB. Solo con `aceptada` o `rechazada`. La pantalla la ignora. El servicio de visión todavía no emite miniaturas. |
 
 ### `aula/vision/embedding`
 Embedding final de un registro. **El usuario MQTT del frontend no puede leer este tópico (ACL).**
 
 ```json
-{"cuenta": "320068234", "dim": 512, "modelo": "w600k_mbf-uint8-v1", "embedding": [0.0123, -0.0456, "…"]}
+{"ts": "2026-11-04T09:12:33.120-06:00", "cuenta": "320068234", "dim": 512, "modelo": "w600k_mbf-uint8-v1", "embedding": [0.0123, -0.0456, "…"]}
 ```
 
 | Campo | Tipo | Obligatorio | Notas |
 |---|---|---|---|
+| `ts` | string | sí | ISO 8601 con zona. |
 | `cuenta` | string | sí | |
-| `dim` | int | sí | **[propuesta]** Node-RED rechaza el mensaje si no coincide con la columna `vector(N)` |
-| `modelo` | string | sí | **[propuesta]** Nombre y versión del `.nb`. Si se cambia de modelo, los embeddings viejos dejan de ser comparables y hay que volver a registrar a todos. |
+| `dim` | int | sí | Node-RED rechaza el mensaje si no coincide con la columna `vector(N)`. Es el tamaño del arreglo `embedding`. |
+| `modelo` | string | sí | Nombre y versión del `.nb`. Si se cambia de modelo, los embeddings viejos dejan de ser comparables y hay que volver a registrar a todos. El nombre viene de la configuración del servicio de visión. |
 | `embedding` | float[] | sí | Normalizado L2, 4 decimales (unos 4 KB en JSON con 512 floats) |
 
-### `aula/vision/estado` (retenido) **[propuesta]**
+### `aula/vision/estado` (retenido)
 Salud del servicio de visión, con LWT `{"en_linea": false}`. Le dice a Node-RED y al frontend si se puede registrar o pasar lista.
 
 ```json
-{"ts": "…", "en_linea": true, "modo": "inactivo", "galeria": 38, "modelo": "w600k_mbf-uint8-v1"}
+{"ts": "2026-11-04T09:12:33.120-06:00", "en_linea": true, "modo": "inactivo", "galeria": 38, "modelo": "w600k_mbf-uint8-v1"}
 ```
 
-`modo`: `inactivo`, `pase`, `enrolando`. `galeria`: número de embeddings cargados.
+| Campo | Tipo | Obligatorio | Notas |
+|---|---|---|---|
+| `ts` | string | no | ISO 8601 con zona. Lo lleva el estado que publica el servicio; el Will del broker no lo lleva (ver abajo). |
+| `en_linea` | bool | sí | `false` lo publica el LWT del broker y el estado final de la salida ordenada. |
+| `modo` | string | no | `inactivo`, `pase`, `enrolando` |
+| `galeria` | int | no | Número de embeddings en RAM |
+| `modelo` | string | no | Nombre y versión del `.nb` |
+
+**Las dos formas del estado.** El Will que registra el broker lleva la forma **mínima**, `{"en_linea": false}`: no puede llevar `ts` ni el resto, porque el Will se registra al conectar, antes de que el servicio exista. El estado que publica el servicio, y el estado final de la salida ordenada, llevan el **esquema completo** (`ts`, `en_linea`, `modo`, `galeria` y `modelo`).
+
+La forma mínima es válida para los consumidores: `en_linea` es el único campo obligatorio del estado y el resto es opcional cuando `en_linea` es `false`. Un consumidor que use la capa JSON del contrato (`orangepi/vision/include/vision/json_payload.hpp`) acepta las dos formas y no descarta el Will por faltar campos.
+
+**Cuándo se publica.** El servicio publica `aula/vision/estado` en cada cambio de modo (`inactivo`, `pase`, `enrolando`), con el número de embeddings en RAM y el nombre del modelo. En la salida ordenada publica el estado final con `en_linea: false` **antes** de cerrar la conexión: la publicación es asíncrona y, como la desconexión es limpia, el Will no salta. Si el estado final no llegara al broker, el valor retenido se quedaría en `en_linea: true` para siempre (un "en línea" fantasma). Para eso el proceso vacía la cola de salida del bus antes de pararlo.
 
 ### `aula/vision/galeria/alta` y `aula/vision/galeria/baja`
 La galería en RAM solo cambia por orden de Node-RED, que publica estos tópicos **después** de escribir en Postgres (plan, sección 5.4). La visión nunca agrega una entrada por su cuenta, ni siquiera tras publicar `aula/vision/embedding`. Así la base es la única fuente de verdad. Los dos van con QoS 1 y sin retención.
@@ -249,3 +265,5 @@ El `frontend` nunca lee `aula/vision/embedding` ni `aula/vision/galeria/#`. Solo
 |---|---|
 | v0.1 | Borrador inicial a partir de la sección 7.1 del plan, con las propuestas marcadas |
 | v0.2 | `aula/galeria/cambio` se reemplaza por `aula/vision/galeria/alta` y `aula/vision/galeria/baja` (solo `cuenta`; la visión recarga con `GET /api/galeria`), acordado entre Gustavo y Yordi. En la ACL, `vision` escribe sus tópicos uno por uno y lee `aula/vision/galeria/#`; solo `nodered` publica en la galería. Se retira la acción `confirmar` de `aula/vision/cmd`: la advertencia de parecido es informativa |
+| v0.3 | El servicio de visión implementa el contrato: `decision` sustituye a `motivo` en `aula/vision/resultado` (el servicio es quien aplica los dos umbrales, `reconocido` y `dudoso`) y se añade `motivo` como detalle fino de la `decision`; `decision: "error"` con `motivo: "error_interno"` para el fallo interno; `ts` en los cuatro mensajes que publica el servicio (`resultado`, `enrolamiento`, `embedding` y `estado`); `aula/vision/estado` con `en_linea`, `modo`, `galeria` y `modelo`; `dim` y `modelo` en `aula/vision/embedding`; el nombre del comando `enrolar` se copia al progreso del registro; la quinta pose es `frente_2`; `cuenta_invalida` como motivo de `error` (extensión). El vocabulario de `motivo` del enrolamiento es el de este documento: una captura fallida es `fallo_captura` y un fallo interno del pipeline es `error` con `npu` |
+| v0.4 | Se fija la forma del estado de `aula/vision/estado`: el Will del broker lleva la forma **mínima** `{"en_linea": false}` (no puede llevar `ts` ni el resto, porque el Will se registra al conectar), mientras que el estado que publica el servicio y el estado final de la salida ordenada llevan el **esquema completo** (`ts`, `en_linea`, `modo`, `galeria`, `modelo`). `en_linea` es el único campo obligatorio del estado: el resto es opcional cuando `en_linea` es `false`, así que la forma mínima es válida para los consumidores. Se documenta que el servicio publica el estado en cada cambio de modo y que, en la salida ordenada, publica el estado final con `en_linea: false` **antes** de cerrar la conexión (la publicación es asíncrona y la desconexión es limpia, así que el Will no salta: sin eso quedaría retenido un "en línea" fantasma) |

@@ -22,6 +22,11 @@ if(OPENCV_VERSION VERSION_GREATER_EQUAL 4.7)
   message(FATAL_ERROR "Se requiere OpenCV 4.6.x (la de Debian); pkg-config encontro ${OPENCV_VERSION}")
 endif()
 find_package(Threads REQUIRED)
+# nlohmann/json: la capa JSON del contrato MQTT (include/vision/json_payload.hpp).
+find_package(nlohmann_json 3.11 REQUIRED)
+# libmosquitto: el bus MQTT (broker del borde). cpp-httplib: el cliente HTTP (Node-RED).
+pkg_check_modules(MOSQUITTO REQUIRED IMPORTED_TARGET libmosquitto)
+pkg_check_modules(CPPHTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
 
 # Runtime VIPLite del fabricante. libNBGlinker exporta vip_*; depende de libVIPhal.
 # VIPLITE_ROOT (-DVIPLITE_ROOT=... o variable de entorno) apunta a otra instalacion.
@@ -38,11 +43,14 @@ add_library(vision_core STATIC
   src/alignment.cpp
   src/gallery.cpp
   src/image_header.cpp
+  src/json_payload.cpp
+  src/process_config.cpp
   src/sharpness.cpp
   src/tensor.cpp
-  src/vision_service.cpp)
+  src/vision_service.cpp
+  src/wall_clock.cpp)
 target_include_directories(vision_core PUBLIC include)
-target_link_libraries(vision_core PUBLIC PkgConfig::OPENCV)
+target_link_libraries(vision_core PUBLIC PkgConfig::OPENCV nlohmann_json::nlohmann_json)
 target_link_options(vision_core PUBLIC -Wl,--as-needed)
 
 # --- Wrapper de la NPU ------------------------------------------------------
@@ -50,9 +58,39 @@ add_library(vision_npu STATIC src/npu.cpp)
 target_include_directories(vision_npu SYSTEM PRIVATE ${VIPLITE_INCLUDE_DIR})
 target_link_libraries(vision_npu PUBLIC vision_core ${VIPLITE_LIBRARY} ${VIPHAL_LIBRARY})
 
+# --- Adaptadores reales (MQTT y HTTP) ---------------------------------------
+# Biblioteca aparte: vision_core se queda sin dependencias de red, para que las
+# pruebas del nucleo sigan siendo rapidas y no dependan del broker.
+add_library(vision_transport STATIC
+  src/gallery_store.cpp
+  src/httplib_client.cpp
+  src/mqtt_bus.cpp)
+target_include_directories(vision_transport PUBLIC include)
+target_link_libraries(vision_transport PUBLIC
+  vision_core
+  PkgConfig::MOSQUITTO
+  PkgConfig::CPPHTTPLIB
+  nlohmann_json::nlohmann_json
+  Threads::Threads)
+
 # --- Ejecutables ------------------------------------------------------------
+# El proceso de produccion: bus MQTT real, cliente HTTP real y galeria real. Solo
+# vision_transport (los adaptadores reales); el recorrido en seco se queda en
+# vision_core (los dobles en memoria no necesitan red).
 add_executable(vision_service src/main.cpp)
-target_link_libraries(vision_service PRIVATE vision_core)
+target_link_libraries(vision_service PRIVATE vision_transport)
+
+# Recorrido en seco: la maquina de estados real con los dobles en memoria.
+add_executable(vision_dry_run src/dry_run.cpp)
+target_link_libraries(vision_dry_run PRIVATE vision_core)
+
+# Herramientas de prueba en la placa.
+add_executable(camara_falsa apps/camara_falsa.cpp)
+target_link_libraries(camara_falsa PRIVATE PkgConfig::OPENCV PkgConfig::CPPHTTPLIB
+                      Threads::Threads)
+
+add_executable(mqtt_probe apps/mqtt_probe.cpp)
+target_link_libraries(mqtt_probe PRIVATE PkgConfig::MOSQUITTO Threads::Threads)
 
 add_executable(npu_smoke apps/npu_smoke.cpp)
 target_link_libraries(npu_smoke PRIVATE vision_npu)
@@ -65,6 +103,8 @@ add_executable(test_core
   tests/test_alignment.cpp
   tests/test_gallery.cpp
   tests/test_image_header.cpp
+  tests/test_json_payload.cpp
+  tests/test_process_config.cpp
   tests/test_sharpness.cpp
   tests/test_tensor.cpp)
 target_link_libraries(test_core PRIVATE vision_core minitest_main)
@@ -73,6 +113,27 @@ add_test(NAME core COMMAND test_core)
 add_executable(test_service tests/test_service.cpp)
 target_link_libraries(test_service PRIVATE vision_core minitest_main Threads::Threads)
 add_test(NAME service COMMAND test_service)
+
+# Adaptadores reales: cliente HTTP (servidor httplib en el propio proceso) y galeria.
+add_executable(test_httplib_client tests/test_httplib_client.cpp)
+target_link_libraries(test_httplib_client PRIVATE vision_transport minitest_main Threads::Threads)
+add_test(NAME httplib_client COMMAND test_httplib_client)
+
+add_executable(test_gallery_store tests/test_gallery_store.cpp)
+target_link_libraries(test_gallery_store PRIVATE vision_transport minitest_main Threads::Threads)
+add_test(NAME gallery_store COMMAND test_gallery_store)
+
+# Bus MQTT: prueba de integracion contra un broker real. Sin broker (variable de
+# entorno VISION_BROKER o -DVISION_BROKER=host:puerto) la prueba se omite con un
+# mensaje claro y no falla. Se puede excluir con ctest -LE integration.
+add_executable(test_mqtt_bus tests/test_mqtt_bus.cpp)
+target_link_libraries(test_mqtt_bus PRIVATE vision_transport minitest_main Threads::Threads)
+add_test(NAME mqtt_bus COMMAND test_mqtt_bus)
+set_tests_properties(mqtt_bus PROPERTIES LABELS integration)
+set(VISION_BROKER "" CACHE STRING "Broker MQTT de pruebas (host:puerto); vacio = integracion omitida")
+if(VISION_BROKER)
+  set_tests_properties(mqtt_bus PROPERTIES ENVIRONMENT "VISION_BROKER=${VISION_BROKER}")
+endif()
 
 # Las pruebas de la NPU requieren /dev/vipcore: solo existen en la placa y llevan la
 # etiqueta `board` (ctest -L board / ctest -LE board).

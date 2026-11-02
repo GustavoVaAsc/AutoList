@@ -1,0 +1,35 @@
+{
+  "mqtt": {
+    "host": "127.0.0.1",
+    "port": 1883,
+    "usuario": "vision",
+    "clave_env": "MQTT_PASSWORD",
+    "client_id": "vision"
+  },
+  "captura": {
+    "url": "http://192.168.1.50/capture",
+    "rafaga": 4,
+    "espera_luz_ms": 300,
+    "http_timeout_ms": 2000,
+    "max_body_bytes": 2097152
+  },
+  "galeria": {
+    "url": "https://127.0.0.1:1880/api/galeria",
+    "token_env": "GALERIA_TOKEN",
+    "timeout_ms": 5000
+  },
+  "umbrales": {
+    "min_sharpness": 0.0,
+    "min_recognized_score": 0.6,
+    "min_dudoso_score": 0.45
+  },
+  "servicio": {
+    "poll_ms": 20,
+    "max_inbox_events": 16,
+    "modelo": "w600k_mbf-uint8-v1",
+    "acepta_png": false
+  },
+  "http": {
+    "allow_invalid_certificates": false
+  }
+}

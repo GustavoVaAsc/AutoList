@@ -52,6 +52,10 @@ void log_unknown_error(const char* context) {
   std::cerr << "[vision] " << context << ": excepcion desconocida\n";
 }
 
+// Hora de reserva cuando el reloj de pared falla: el mensaje sale con una hora que no
+// es la real, pero el servicio no deja de responder.
+constexpr std::string_view kFallbackTimestamp = "1970-01-01T00:00:00.000+00:00";
+
 }  // namespace
 
 VisionService::VisionService(ServiceDeps deps, ServiceConfig config)
@@ -70,6 +74,11 @@ VisionService::VisionService(ServiceDeps deps, ServiceConfig config)
   if (config_.max_inbox_events < 4) {
     throw std::invalid_argument(
         "ServiceConfig: max_inbox_events debe ser >= 4 (un PIR, un probar y un enrolar caben siempre)");
+  }
+  if (config_.min_dudoso_score < 0.0f || config_.min_recognized_score > 1.0f ||
+      config_.min_dudoso_score > config_.min_recognized_score) {
+    throw std::invalid_argument(
+        "ServiceConfig: los umbrales de decision no son validos (0 <= dudoso <= reconocido <= 1)");
   }
   // Si la segunda suscripcion lanza, la primera (ya miembro) se da de baja al deshacerse
   // el constructor. Todo lo que usan los handlers esta construido antes de este punto.
@@ -203,7 +212,7 @@ void VisionService::handle(const PirEvent&, TimePoint received) {
 void VisionService::handle(const VisionCommand& command, TimePoint received) {
   switch (command.action) {
     case VisionAction::Enroll: {
-      start_enrollment(command.account);
+      start_enrollment(command.account, command.name);
       break;
     }
     case VisionAction::Cancel:
@@ -228,18 +237,22 @@ void VisionService::handle(const VisionCommand& command, TimePoint received) {
 // poder evaluar); el resultado y el apagado se intentan por separado.
 void VisionService::run_attendance(TimePoint received, AttendanceMode mode) {
   state_ = ServiceState::AttendanceInProgress;
+  publish_status();
   const ScopeExit finish([this]() noexcept {
     state_ = ServiceState::Idle;
     publish_light(false);
+    publish_status();
   });
 
   const auto internal_error = [&] {
     AttendanceResult failed(mode);
+    failed.timestamp = stamp_now();
+    failed.decision = Decision::Error;
     failed.reason = std::string(reasons::kInternalError);
     try {
       failed.lat_ms.total = elapsed_ms(received);
-    } catch (...) {  // si lo que fallo es el reloj, igual se responde (con total 0)
-      failed.lat_ms.total = 0;
+    } catch (...) {  // si lo que fallo es el reloj, igual se responde (sin total)
+      failed.lat_ms.total = std::nullopt;
     }
     return failed;
   };
@@ -261,8 +274,14 @@ void VisionService::run_attendance(TimePoint received, AttendanceMode mode) {
 // Latencias: cap = rafaga + eleccion de la mas nitida; det = detector; emb = alineacion
 // + embedder; total = desde que el PIR (o el comando) llego al servicio hasta tener el
 // resultado, o sea con la espera en cola y la de la luz incluidas.
+//
+// Decision (contrato v0.3): el servicio es el dueno del modelo y de los umbrales, asi
+// que es quien decide. "reconocido" por encima de min_recognized_score, "dudoso" (zona
+// gris) entre los dos umbrales y "desconocido" por debajo. Con "dudoso" y "desconocido"
+// se manda el mejor candidato, para que Node-RED pueda auditarlo.
 AttendanceResult VisionService::evaluate_attendance(TimePoint start, AttendanceMode mode) {
   AttendanceResult result(mode);
+  result.timestamp = stamp_now();
   try {
     const TimePoint cap_start = deps_.clock.now();
     const std::vector<cv::Mat> frames = capture_burst();
@@ -270,31 +289,44 @@ AttendanceResult VisionService::evaluate_attendance(TimePoint start, AttendanceM
     result.lat_ms.cap = elapsed_ms(cap_start);
 
     if (!sharpest) {
+      // No se pudo capturar: la imagen no sirve para decidir nada.
+      result.decision = Decision::InsufficientImage;
       result.reason = std::string(reasons::kCaptureFailed);
     } else if (sharpest->score < config_.min_sharpness) {
+      result.decision = Decision::InsufficientImage;
       result.reason = std::string(reasons::kInsufficientImage);
     } else {
       FaceOutcome face = analyze(frames[sharpest->index]);
       result.lat_ms.det = face.det_ms;
       result.lat_ms.emb = face.emb_ms;
       if (!face.reason.empty()) {
+        // No hay rostro: no hay a quien comparar.
+        result.decision = Decision::NoFace;
         result.reason = std::string(face.reason);
       } else if (const auto match = deps_.gallery.match(face.embedding)) {
         result.confidence = match->score;
-        if (match->score >= config_.min_match_score) {
-          result.account = match->account;
+        result.account = match->account;
+        result.margin = match->margin;  // nullopt si la galeria tiene menos de dos
+        if (match->score >= config_.min_recognized_score) {
+          result.decision = Decision::Recognized;
+        } else if (match->score >= config_.min_dudoso_score) {
+          result.decision = Decision::Doubtful;
         } else {
+          result.decision = Decision::Unknown;
           result.reason = std::string(reasons::kUnknown);
         }
       } else {
+        result.decision = Decision::Unknown;
         result.reason = std::string(reasons::kEmptyGallery);
       }
     }
   } catch (const std::exception& error) {
     log_error("fallo el pipeline de asistencia", error);
+    result.decision = Decision::Error;
     result.reason = std::string(reasons::kInternalError);
   } catch (...) {
     log_unknown_error("fallo el pipeline de asistencia");
+    result.decision = Decision::Error;
     result.reason = std::string(reasons::kInternalError);
   }
   result.lat_ms.total = elapsed_ms(start);
@@ -394,6 +426,42 @@ void VisionService::publish_light(bool on) {
   try_publish(topics::kActuatorCmd, command, on ? "el encendido de la luz" : "el apagado de la luz");
 }
 
+// El estado del servicio (contrato v0.3): lo que esta haciendo y cuantos embeddings
+// tiene en RAM. Lo publica el servicio en cada cambio de modo; el LWT {"en_linea":false}
+// lo pone el adaptador MQTT, no el servicio.
+void VisionService::publish_status() {
+  VisionStatus status;
+  status.timestamp = stamp_now();
+  status.online = true;
+  switch (state_) {
+    case ServiceState::AttendanceInProgress:
+      status.mode = VisionMode::Attendance;
+      break;
+    case ServiceState::Enrolling:
+      status.mode = VisionMode::Enrolling;
+      break;
+    case ServiceState::Idle:
+      status.mode = VisionMode::Idle;
+      break;
+  }
+  status.gallery_size = deps_.gallery.size();
+  status.model = config_.model_name;
+  try_publish(topics::kVisionStatus, status, "el estado del servicio");
+}
+
+// La hora del contrato: ISO 8601 con zona. Si el reloj falla, se responde con la hora
+// de reserva en vez de perder el mensaje.
+std::string VisionService::stamp_now() const {
+  try {
+    return deps_.wall_clock.now_iso8601();
+  } catch (const std::exception& error) {
+    log_error("no se pudo obtener la hora", error);
+  } catch (...) {
+    log_unknown_error("no se pudo obtener la hora");
+  }
+  return std::string(kFallbackTimestamp);
+}
+
 int VisionService::elapsed_ms(TimePoint since) const {
   return static_cast<int>(
       std::chrono::duration_cast<Millis>(deps_.clock.now() - since).count());
@@ -401,7 +469,8 @@ int VisionService::elapsed_ms(TimePoint since) const {
 
 // --- Registro (plan 5.4) ----------------------------------------------------------
 
-void VisionService::start_enrollment(const std::string& account) {
+void VisionService::start_enrollment(const std::string& account,
+                                     const std::optional<std::string>& name) {
   if (!is_valid_account(account)) {
     publish_refusal(account, reasons::kInvalidAccount);
     return;
@@ -415,22 +484,27 @@ void VisionService::start_enrollment(const std::string& account) {
   // lanza, no queda un registro a medias ni un estado sin registro.
   Enrollment fresh;
   fresh.account = account;
+  fresh.name = name;
   fresh.due = deps_.clock.now() + config_.pose_delay;
   enrollment_ = std::move(fresh);
   state_ = ServiceState::Enrolling;
   publish_light(true);
-  publish_progress(*enrollment_, EnrollmentStatus::Pending);
+  publish_status();
+  publish_progress(*enrollment_, EnrollmentStatus::WaitingPose);
 }
 
 // Captura la pose en curso. Si se rechaza, la repite hasta max_attempts_per_pose.
 void VisionService::advance_enrollment() {
   Enrollment& e = *enrollment_;
+  // Se avisa de que empieza la captura de la pose en curso.
+  publish_progress(e, EnrollmentStatus::Capturing);
   std::string_view reason;
   std::vector<float> embedding;
+  bool internal_failure = false;
   try {
     const cv::Mat frame = capture_frame();
     if (frame.empty()) {
-      reason = reasons::kCaptureFailed;
+      reason = enrollment_reasons::kCaptureFailure;
     } else {
       const FaceOutcome face = analyze(frame);
       reason = face.reason;
@@ -438,16 +512,23 @@ void VisionService::advance_enrollment() {
     }
   } catch (const std::exception& error) {
     log_error("fallo la captura de la pose", error);
-    reason = reasons::kInternalError;
+    internal_failure = true;
   } catch (...) {
     log_unknown_error("fallo la captura de la pose");
-    reason = reasons::kInternalError;
+    internal_failure = true;
+  }
+
+  if (internal_failure) {
+    // Fallo interno del pipeline (NPU o embedder): reintentar la pose no tiene sentido.
+    publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kNpu);
+    finish_enrollment();
+    return;
   }
 
   if (!reason.empty()) {
     publish_progress(e, EnrollmentStatus::Rejected, reason);
     if (++e.attempts >= config_.max_attempts_per_pose) {
-      publish_progress(e, EnrollmentStatus::Failed, reason);
+      publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kNpu);
       finish_enrollment();
     } else {
       e.due = deps_.clock.now() + config_.pose_delay;
@@ -459,7 +540,7 @@ void VisionService::advance_enrollment() {
   if (!e.embeddings.empty() && embedding.size() != e.embeddings.front().size()) {
     std::cerr << "[vision] la pose " << e.step + 1 << " dio un embedding de dimension "
               << embedding.size() << " y las anteriores de " << e.embeddings.front().size() << '\n';
-    publish_progress(e, EnrollmentStatus::Failed, reasons::kInternalError);
+    publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kInconsistent);
     finish_enrollment();
     return;
   }
@@ -469,27 +550,36 @@ void VisionService::advance_enrollment() {
   e.attempts = 0;
   if (e.step + 1 < kEnrollmentPoses.size()) {
     ++e.step;
-    publish_progress(e, EnrollmentStatus::Pending);
+    publish_progress(e, EnrollmentStatus::WaitingPose);
     e.due = deps_.clock.now() + config_.pose_delay;
     return;
   }
 
-  // Las 5 poses aceptadas: promedio de embeddings normalizados, normalizado de nuevo
-  // (el descarte de outliers queda pendiente).
+  // Las 5 poses aceptadas: se avisa con "completado" y despues se publica el embedding.
+  publish_progress(e, EnrollmentStatus::Completed);
+  // Promedio de embeddings normalizados, normalizado de nuevo (el descarte de outliers
+  // queda pendiente).
   std::optional<EmbeddingMessage> message;
   try {
-    message = EmbeddingMessage{e.account, l2_normalized(mean_embedding(e.embeddings))};
+    EmbeddingMessage embedding_message;
+    embedding_message.timestamp = stamp_now();
+    embedding_message.account = e.account;
+    embedding_message.model = config_.model_name;
+    embedding_message.embedding = l2_normalized(mean_embedding(e.embeddings));
+    message = std::move(embedding_message);
   } catch (const std::exception& error) {
     log_error("no se pudo promediar el embedding", error);
   }
   if (!message || !try_publish(topics::kVisionEmbedding, *message, "el embedding del registro")) {
-    publish_progress(e, EnrollmentStatus::Failed, reasons::kInternalError);
+    publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kNpu);
   }
   finish_enrollment();
 }
 
 // Sin cuenta, o con la del registro en curso, cancela; con cualquier otra (distinta o que ni
-// siquiera es un no_cuenta valido) no hace nada.
+// siquiera es un no_cuenta valido) no hace nada. La capa JSON admite las dos formas:
+// {"accion":"cancelar"} (cuenta vacia = el registro en curso) y
+// {"accion":"cancelar","cuenta":"320068234"}.
 void VisionService::cancel_enrollment(const std::string& account) {
   if (state_ != ServiceState::Enrolling) return;
   if (!account.empty() && account != enrollment_->account) return;
@@ -503,13 +593,34 @@ void VisionService::finish_enrollment() {
   enrollment_.reset();
   state_ = ServiceState::Idle;
   publish_light(false);
+  publish_status();
+}
+
+// Salida ordenada (la llama el proceso al recibir SIGTERM o SIGINT).
+//
+// Sin esto, un SIGTERM en mitad de un registro dejaba la luz encendida y el registro
+// a medias: el actuador queda con luz 1 y Node-RED y la pantalla esperando un registro
+// que nunca termino. Aqui se cancela el enrolamiento en curso (publicando "cancelado"),
+// se apaga la luz y el estado queda en inactivo.
+//
+// No se publica el estado: el proceso publica despues el estado final con el esquema
+// completo (en_linea false), que es el que queda retenido.
+void VisionService::shutdown() {
+  if (state_ == ServiceState::Enrolling && enrollment_.has_value()) {
+    publish_progress(*enrollment_, EnrollmentStatus::Cancelled);
+  }
+  enrollment_.reset();
+  state_ = ServiceState::Idle;
+  publish_light(false);
 }
 
 // `paso` es 1-based.
 void VisionService::publish_progress(const Enrollment& e, EnrollmentStatus status,
                                      std::optional<std::string_view> reason) {
   EnrollmentProgress progress;
+  progress.timestamp = stamp_now();
   progress.account = e.account;
+  progress.name = e.name;
   progress.step = static_cast<int>(e.step) + 1;
   progress.pose = std::string(kEnrollmentPoses[e.step]);
   progress.status = status;
@@ -522,7 +633,10 @@ void VisionService::publish_progress(const Enrollment& e, EnrollmentStatus statu
 // solo se repite si es un no_cuenta valido.
 void VisionService::publish_refusal(const std::string& account, std::string_view reason) {
   EnrollmentProgress refusal;
+  refusal.timestamp = stamp_now();
   refusal.account = is_valid_account(account) ? account : std::string();
+  refusal.step = 0;
+  refusal.pose = std::string();
   refusal.status = EnrollmentStatus::Error;
   refusal.reason = std::string(reason);
   try_publish(topics::kVisionEnrollment, refusal, "el rechazo de una orden");
