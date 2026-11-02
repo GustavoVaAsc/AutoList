@@ -145,6 +145,15 @@ Para ejecutar una sola consulta, añadir `-c` con la sentencia entre comillas do
 docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM metricas_energia"'
 ```
 
+Zona horaria. La base del proyecto tiene `timezone = America/Mexico_City` (`sql/schema.sql`), así que `::date`, `date_trunc('day', ...)` y `CURRENT_DATE` calculan el día de CDMX. Los `timestamptz` se guardan en UTC igual que antes, y `log_timezone` sigue en `Etc/UTC`: los logs de Postgres y Mosquitto no cambian. Regla para las consultas de reporte que agrupen o comparen por día: escribir la zona explícita, aunque la base ya la tenga, para que el resultado no dependa de la configuración de la sesión:
+
+```sql
+SELECT (hora AT TIME ZONE 'America/Mexico_City')::date AS dia, count(*)
+FROM asistencias GROUP BY dia;
+```
+
+Un volumen creado antes de este ajuste necesita un paso manual: ver [Volúmenes existentes](#volúmenes-existentes).
+
 ## Usuarios MQTT y ACL
 
 Mosquitto tiene cinco usuarios, con nombre fijo (el de `docs/contrato-mqtt.md`, sección 6) y contraseña propia en `orangepi/.env`. La ACL (`mosquitto/acl`, sin secretos) limita lo que cada uno lee y escribe. Lo que no está permitido se deniega.
@@ -366,6 +375,28 @@ docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -
 ```
 
 La alternativa es `docker compose down -v`, que borra todos los datos.
+
+Zona horaria de la base. `sql/schema.sql` fija `timezone = America/Mexico_City` en la base del proyecto (`ALTER DATABASE ... SET`), pero un volumen creado antes de ese cambio sigue en `Etc/UTC`. Para aplicarlo sin borrar datos, con el stack levantado (es un ajuste de configuración, no una tabla nueva; se puede repetir):
+
+```bash
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
+DO $$
+BEGIN
+  EXECUTE format('ALTER DATABASE %I SET timezone = %L',
+                 current_database(), 'America/Mexico_City');
+END
+$$;
+SQL
+docker compose restart nodered
+```
+
+Postgres no se reinicia: el ajuste vale para las conexiones nuevas. Node-RED sí se reinicia, porque su pool de conexiones conserva la zona anterior hasta que reconecta. No se toca Mosquitto. Para comprobarlo (`log_timezone` sigue en `Etc/UTC` a propósito, para que los logs no cambien):
+
+```bash
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -c "SHOW timezone" -c "SHOW log_timezone"'
+```
+
+Debe imprimir `America/Mexico_City` y `Etc/UTC`. La zona está en la base y no en el rol de Node-RED: así la heredan todos los roles (incluido el superusuario, con el que se hacen las consultas a mano) y hay un solo lugar que cambiar. Un `ALTER ROLE ... SET timezone` pisaría el de la base y quedaría duplicado.
 
 Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` también vienen de `schema.sql`, así que un volumen creado antes de agregarlas no las tiene. En ese caso `02-roles.sh` falla a mitad: el rol y su contraseña ya se aplicaron, pero los permisos sobre las tablas que no existen no. Recrear el volumen con `down -v` (si solo hay datos de prueba) o consultar al equipo antes de crear las tablas a mano.
 
