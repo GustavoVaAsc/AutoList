@@ -41,7 +41,7 @@ Alcance completo (incluye, opcional y fuera de alcance): [plan, sección 2](docs
 
 ![Arquitectura de AutoList](docs/diagramas/arquitectura.png)
 
-La fuente editable del diagrama es [`docs/diagramas/arquitectura.svg`](docs/diagramas/arquitectura.svg). Detalle de capas y protocolos: [sección 4](docs/HIGH-LEVEL-PLAN.md#4-arquitectura).
+La fuente editable del diagrama es [`docs/diagramas/arquitectura.excalidraw`](docs/diagramas/arquitectura.excalidraw), que se abre en [excalidraw.com](https://excalidraw.com). Detalle de capas y protocolos: [sección 4](docs/HIGH-LEVEL-PLAN.md#4-arquitectura).
 
 ## Cómo funciona
 
@@ -73,11 +73,11 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 
 | Fecha | Hito | Estado |
 |---|---|---|
-| 28 oct | Proyecto y planeación | Hecho; la lista de compras pasó al 4 nov |
-| 4 nov | Primer avance | Parcial: 7 de 11 entregables listos y 1 a medias |
-| 11 nov | Segundo avance | Parcial: la alineación y la galería del servicio de visión, y el armazón del frontend, ya están adelantados |
-| 18 nov | Tercer avance | Parcial: el filtro de nitidez y la parte de energía de la pestaña de Métricas ya están adelantados |
-| 25 nov | Entrega final | Pendiente |
+| 28 oct | Proyecto y planeación | Hecho |
+| 4 nov | Primer avance | Parcial: 6 de 8 entregables hechos, 1 parcial y 1 pendiente |
+| 11 nov | Segundo avance | Con avance: alineación, galería, esqueleto del frontend, flujo y vista de energía, autenticación de la API y API de alumnos (estas dos, en el repo) |
+| 18 nov | Tercer avance | Con avance: filtro de nitidez y parte de energía de la pestaña de Métricas |
+| 25 nov | Entrega final | Por presentar |
 
 ### 28 oct: Proyecto y planeación
 
@@ -86,75 +86,71 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Especificación del proyecto | Hecho | [`docs/HIGH-LEVEL-PLAN.md`](docs/HIGH-LEVEL-PLAN.md) |
 | Exposición | Hecho | |
 | Repositorio y estructura | Hecho | `orangepi/`, `nodered/`, `herramientas/` y guías para agentes (`AGENTS.md`) |
-| Lista de compras | Reprogramada | Pasó al 4 nov (ver la nota) |
-
-> Nota sobre la lista de compras: la aplazamos del 28 oct al 4 nov. Al reordenar el plan por dependencias, adelantamos al primer avance dos tareas que estaban en entregas posteriores (las que dicen "adelantado" en la tabla del 4 nov). Por eso el ajuste de una semana no recorre el resto del calendario.
 
 ### 4 nov: Primer avance
 
 | Entregable | Estado | Evidencia |
 |---|---|---|
-| Lista de compras (reprogramada desde el 28 oct) | Pendiente | |
+| Lista de compras | Pendiente | |
 | NPU verificada en la imagen oficial de Orange Pi | Hecho | `vipcore` 1.13.0, `vpm_run` a 2.76 ms; prueba `orangepi/vision/apps/npu_smoke.cpp` |
-| Toolchain Pegasus en la PC | Pendiente | Versión decidida: Acuity v2.0.10.2 |
-| Modelo de la NPU convertido a `.nb` | Pendiente | |
 | Overlays de SPI (`/dev/spidev*`) y unidad systemd de la pantalla | Parcial | La placa expone `/dev/spidev3.0` y `/dev/spidev3.1`; falta `orangepi/systemd/orangepi-pantalla.service` |
 | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer) | Hecho | [`orangepi/docker-compose.yml`](orangepi/docker-compose.yml) |
 | Esquema de Postgres | Hecho | [`orangepi/sql/schema.sql`](orangepi/sql/schema.sql) y rol de Node-RED con privilegios mínimos |
-| Ingesta a `metricas_energia` | Hecho | Flujo de energía en Node-RED; la probamos con `herramientas/simular_energia.sh` hasta tener el INA219 |
-| Primer gráfico de energía | Hecho | Vista de energía en `https://<ip>:1880/app/`: gráfica de potencia de los últimos 30 min y tabla de lecturas sobre `GET /api/metricas/energia` |
-| Arranque del esqueleto del frontend (adelantado del 11 nov) | Hecho | [`web/`](web/README.md), compilado dentro de la imagen de Node-RED |
-| ACL de Mosquitto y usuarios por rol (adelantado del 25 nov) | Hecho | [`orangepi/mosquitto/acl`](orangepi/mosquitto/acl) y [contrato MQTT v0.5](docs/contrato-mqtt.md), sección 6; verificada en la placa con permitidos y denegados por usuario |
+| ACL de Mosquitto y usuarios por rol | Hecho | [`orangepi/mosquitto/acl`](orangepi/mosquitto/acl) y [contrato MQTT v0.5](docs/contrato-mqtt.md), sección 6; verificada en la placa con permitidos y denegados por usuario |
+| Arranque del esqueleto del frontend | Hecho | [`web/`](web/README.md), compilado dentro de la imagen de Node-RED |
+| Adaptadores reales de MQTT y HTTP, proceso de producción y unidad systemd del servicio de visión | Hecho | Adaptadores reales de MQTT y HTTP; proceso de producción con configuración y señales; unidad `orangepi/systemd/orangepi-vision.service`; prueba de humo `orangepi/vision/tools/humo.sh` |
 
 ### 11 nov: Segundo avance
 
-| Entregable | Estado | Evidencia |
-|---|---|---|
-| Detección, alineación y embedding en la NPU | Parcial | Alineación a 112×112 implementada y probada; faltan el detector y el embedder sobre la NPU |
-| Galería y publicación del resultado | Parcial | Galería en RAM con similitud coseno, contrato MQTT v0.3, adaptadores reales de MQTT y HTTP y proceso de producción con configuración y señales |
-| Orden de enrolar con captura de 5 poses | Parcial | Máquina de estados del registro probada con dobles en memoria |
-| MOSFET y tira LED de 12 V; orquestación de luz y captura | Pendiente | |
-| XIAO: `/capture`, PIR e INA219 por MQTT; servo y LEDs por MQTT | Pendiente | La placa y su cámara ya están; el PIR, el INA219 y el servo dependen de las compras |
-| Pruebas unitarias de la XIAO (cámara, INA219, servo) | Pendiente | |
-| Prueba temprana: servo moviéndose mientras la cámara captura | Pendiente | |
-| RTC DS3231 e integración del hardware de la pantalla | Pendiente | |
-| Flujos de pase de lista y de sesiones en Node-RED | Pendiente | |
-| Reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV | Pendiente | |
-| API de alumnos e importación de CSV | Pendiente | |
-| Esqueleto del frontend | Parcial | Adelantado al 4 nov: navegación, selector de tema y vista de energía; Alumnos y Registro solo tienen su estado vacío |
-| Menú base de la pantalla (sesión, lista y guía de registro) | Pendiente | |
-| `httpNodeAuth` en Node-RED y `GALERIA_TOKEN` | Pendiente | La variable ya está en `orangepi/.env.example` |
+| Entregable | Avance |
+|---|---|
+| Toolchain Pegasus en la PC | Versión decidida: Acuity v2.0.10.2 |
+| Modelo de la NPU convertido a `.nb` | |
+| Detección, alineación y embedding en la NPU | Alineación a 112×112 implementada y probada; faltan el detector y el embedder sobre la NPU |
+| Galería y publicación del resultado | Galería en RAM con similitud coseno y contrato MQTT v0.3 |
+| Orden de enrolar con captura de 5 poses | Máquina de estados del registro probada con dobles en memoria |
+| MOSFET y tira LED de 12 V; orquestación de luz y captura | |
+| XIAO: `/capture`, PIR e INA219 por MQTT; servo y LEDs por MQTT | La placa y su cámara ya están; el PIR, el INA219 y el servo dependen de las compras |
+| Pruebas unitarias de la XIAO (cámara, INA219, servo) | |
+| Prueba temprana: servo moviéndose mientras la cámara captura | |
+| RTC DS3231 e integración del hardware de la pantalla | |
+| Flujos de pase de lista y de sesiones en Node-RED | |
+| Reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV | |
+| API de alumnos e importación de CSV | Implementada en el repo; falta desplegar y verificar en la placa. `GET /api/alumnos`, `POST /api/alumnos/importar` (CSV, con 400 y 409 antes de escribir) y `GET /api/galeria` en `nodered/flows/flows.json`; formato en el [plan, sección 6.7](docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript) |
+| Esqueleto del frontend | Navegación, selector de tema y vista de energía; Alumnos y Registro con su estado vacío |
+| Menú base de la pantalla (sesión, lista y guía de registro) | |
+| Autenticación de la API en Node-RED (`httpNodeMiddleware`) y `GALERIA_TOKEN` | Implementada en el repo; falta desplegar y verificar en la placa. Basic del profesor en `/api/*` y solo `X-Galeria-Token` en `/api/galeria` (`nodered/autenticacion-api.js`); variables nuevas en `orangepi/.env.example` |
+| Ingesta a `metricas_energia` y primer gráfico de energía con lecturas reales del INA219 | El flujo de ingesta y la vista de energía ya están (gráfica de potencia de los últimos 30 min y tabla de lecturas sobre `GET /api/metricas/energia` en `https://<ip>:1880/app/`); falta el medidor (INA219) para probarlos. No usamos datos simulados como evidencia |
 
 ### 18 nov: Tercer avance
 
-| Entregable | Estado | Evidencia |
-|---|---|---|
-| Filtro de calidad y mejora de imagen | Parcial | Filtro de nitidez (varianza del Laplaciano) implementado y probado; falta la mejora de imagen (CLAHE y gamma) |
-| Validaciones y chequeo antifraude del registro | Pendiente | |
-| Experimentos E1 a E5 ([sección 9](docs/HIGH-LEVEL-PLAN.md#9-experimentos)) | Pendiente | |
-| Umbral de similitud calibrado con LFW | Pendiente | |
-| Frontend de registro completo, con la pestaña de Métricas y Asistencia | Parcial | La pestaña de Métricas ya muestra la energía; faltan asistencia, latencia y confianza, y las vistas de Alumnos y Registro |
-| Pantalla completa con sus 3 vistas y los botones de control | Pendiente | |
+| Entregable | Avance |
+|---|---|
+| Filtro de calidad y mejora de imagen | Filtro de nitidez (varianza del Laplaciano) implementado y probado; falta la mejora de imagen (CLAHE y gamma) |
+| Validaciones y chequeo antifraude del registro | |
+| Experimentos E1 a E5 ([sección 9](docs/HIGH-LEVEL-PLAN.md#9-experimentos)) | |
+| Umbral de similitud calibrado con LFW | |
+| Frontend de registro completo, con la pestaña de Métricas y Asistencia | La pestaña de Métricas ya muestra la energía; faltan asistencia, latencia y confianza, y las vistas de Alumnos y Registro |
+| Pantalla completa con sus 3 vistas y los botones de control | |
 
 ### 25 nov: Entrega final
 
-| Entregable | Estado |
-|---|---|
-| Integración del sistema completo | Pendiente |
-| Video | Pendiente |
-| Reporte de costo y consumo ([sección 10](docs/HIGH-LEVEL-PLAN.md#10-análisis-de-costo-y-consumo-para-el-reporte)) | Pendiente |
-| Comprimido de código | Pendiente |
-| Pulido del frontend y de la pantalla | Pendiente |
-| Experimento E6 (comparación con el proyecto previo) | Pendiente |
+| Entregable |
+|---|
+| Integración del sistema completo |
+| Video |
+| Reporte de costo y consumo ([sección 10](docs/HIGH-LEVEL-PLAN.md#10-análisis-de-costo-y-consumo-para-el-reporte)) |
+| Comprimido de código |
+| Pulido del frontend y de la pantalla |
+| Experimento E6 (comparación con el proyecto previo) |
 
 ## Próximos pasos
 
 Para el 4 nov falta esto del primer avance:
 - Hacer las compras. Ya tenemos la Orange Pi, la pantalla y la XIAO con su cámara; faltan el servo, el INA219, el PIR, el MOSFET y la tira LED de 12 V, sin los cuales no avanzan los sensores y actuadores de la XIAO ni la etapa de potencia.
-- Instalar el toolchain Pegasus (Acuity v2.0.10.2) y convertir RetinaFace y `w600k_mbf` a `.nb`.
 - Crear la unidad systemd de la pantalla (los overlays de SPI ya exponen `/dev/spidev3.0` y `/dev/spidev3.1`).
 
-Después, en orden de dependencia, siguen los modelos `.nb`, el detector y el embedder en la NPU, el primer pase de lista real, los flujos de pase de lista y de registro, y el frontend de registro. Los adaptadores reales de MQTT y HTTP en la visión y el proceso de producción (configuración, señales y unidad systemd) se adelantaron, porque dependían del toolchain de modelos, que todavía no está: sin los `.nb` no hay detector ni embedder, pero el cableado entre broker, cámara, galería y servicio sí se puede dejar cerrado y probado. La captura de fotos de la XIAO (`/capture`) puede empezar ya; sus sensores y actuadores esperan las compras. Dependencias completas: [sección 12.3](docs/HIGH-LEVEL-PLAN.md#123-dependencias-entre-tareas).
+Después, en orden de dependencia, siguen el toolchain Pegasus y los modelos `.nb`, el detector y el embedder en la NPU, el primer pase de lista real, los flujos de pase de lista y de registro, y el frontend de registro. La captura de fotos de la XIAO (`/capture`) puede empezar ya; sus sensores y actuadores esperan las compras. Dependencias completas: [sección 12.3](docs/HIGH-LEVEL-PLAN.md#123-dependencias-entre-tareas).
 
 ## Riesgos abiertos
 
@@ -162,12 +158,12 @@ Resumen de la [sección 13](docs/HIGH-LEVEL-PLAN.md#13-riesgos) y de los pendien
 
 | Riesgo | Impacto | Mitigación |
 |---|---|---|
-| Compras sin hacer (servo, INA219, PIR, MOSFET y tira LED) | Los sensores, los actuadores y la etapa de potencia se acumulan en el hito del 11 nov | Comprar en la semana del 4 nov; mientras tanto, avanzar la captura de la XIAO y probar la ingesta con el simulador |
+| Compras sin hacer (servo, INA219, PIR, MOSFET y tira LED) | Los sensores, los actuadores y la etapa de potencia se acumulan en el hito del 11 nov | Comprar en la semana del 4 nov; mientras tanto, avanzar la captura de la XIAO. La prueba de la ingesta y del gráfico de energía espera al INA219: no usamos datos simulados como evidencia |
 | Compatibilidad del `.nb` con el driver de la NPU | Un `.nb` incompatible o una actualización del kernel rompen la inferencia | Acuity v2.0.10.2 para `vipcore` 1.13.0; no actualizar el kernel sin volver a verificar la NPU |
 | Precisión del modelo cuantizado | Más falsos positivos o rechazos | Pasar a cuantización int16 o mixta, o a `w600k_r50` (mismo embedding de 512) |
 | Conflictos de hardware en la XIAO: timers LEDC, I²C compartido con la cámara y GPIO3 de strapping | El servo, el INA219 o la consola USB pueden fallar | Las verificaciones que describe el plan, en cuanto se conecten los componentes |
 | La cámara no se autentica | Alguien en la LAN podría inyectar o leer fotos | Decisión pendiente del equipo: HMAC, punto de acceso dedicado o TLS ([`orangepi/vision/README.md`](orangepi/vision/README.md#limitaciones-conocidas)) |
-| La API HTTP aún sin autenticación | Cualquier equipo de la red llega a la API de Node-RED | MQTT ya tiene ACL con usuarios por rol (contrato v0.5); `httpNodeAuth` y `GALERIA_TOKEN` el 11 nov; mientras tanto no registramos a ninguna persona real |
+| La API HTTP de la placa desplegada aún sin autenticación | Cualquier equipo de la red llega a la API de Node-RED desplegada | MQTT ya tiene ACL con usuarios por rol (contrato v0.5); la autenticación de la API (Basic del profesor y `GALERIA_TOKEN`) está en el repo y falta desplegarla y verificarla; mientras tanto no registramos a ninguna persona real |
 | MQTT (1883) sin TLS | La contraseña de la XIAO viaja en claro por la LAN; con una clave filtrada se expulsa al cliente legítimo y se inyectan lecturas | Los consumidores descartan mensajes retenidos y vacíos; quedan pendientes limitar el 1883 a la IP de la XIAO en el firewall del host y decidir TLS ([`orangepi/README.md`](orangepi/README.md#seguridad-y-riesgos-aceptados)) |
 | Todo el stack en 4 GB de RAM | Visión, Docker y pantalla compiten por memoria | Vigilar la RAM con las métricas del SoC |
 
@@ -181,7 +177,7 @@ Resumen de la [sección 13](docs/HIGH-LEVEL-PLAN.md#13-riesgos) y de los pendien
 | [`orangepi/vision/README.md`](orangepi/vision/README.md) | Servicio de visión: estructura, compilación, pruebas y lo que falta |
 | [`web/README.md`](web/README.md) | Frontend web: desarrollo desde la laptop, despliegue y decisiones de diseño |
 | [`AGENTS.md`](AGENTS.md) | Reglas del repo: carriles, ramas, commits y seguridad de datos |
-| [`docs/diagramas/arquitectura.svg`](docs/diagramas/arquitectura.svg) | Fuente editable del diagrama de arquitectura |
+| [`docs/diagramas/`](docs/diagramas/) | Diagramas (arquitectura, pase de lista, registro del rostro, modelo de datos, y tópicos MQTT con su ACL), cada uno con su fuente `.excalidraw` y su exportación `.svg` y `.png` |
 
 ## Instalación y ejecución
 

@@ -12,6 +12,7 @@ Todos los comandos de esta guía se ejecutan desde `orangepi/`, salvo que se ind
 - [Acceso](#acceso)
 - [Usuarios MQTT y ACL](#usuarios-mqtt-y-acl)
 - [Energía](#energía)
+- [API de alumnos y galería](#api-de-alumnos-y-galería)
 - [Operación](#operación)
 - [Seguridad y riesgos aceptados](#seguridad-y-riesgos-aceptados)
 
@@ -22,7 +23,7 @@ El archivo `docker-compose.yml` define cuatro servicios. Node-RED se conecta a M
 | Servicio | Puerto | Protocolo | Quién puede conectarse | Autenticación |
 |---|---|---|---|---|
 | Mosquitto | 1883 | MQTT | Cualquier equipo que llegue a la placa | Usuario y contraseña por rol (`MQTT_<USUARIO>_PASSWORD`) y ACL. Ver [Usuarios MQTT y ACL](#usuarios-mqtt-y-acl) |
-| Node-RED | 1880 | HTTPS, certificado autofirmado | Cualquier equipo que llegue a la placa | Editor (`/`): `adminAuth`. API `/api/...` y frontend (`/app/`): sin autenticación hoy |
+| Node-RED | 1880 | HTTPS, certificado autofirmado | Cualquier equipo que llegue a la placa | Editor (`/`): `adminAuth`. API `/api/...`: HTTP Basic del profesor (`NODERED_PROFESOR_USER`), salvo `GET /api/galeria`, que solo acepta `X-Galeria-Token`. Frontend (`/app/`): público, sin secretos. Ver [API de alumnos y galería](#api-de-alumnos-y-galería) |
 | Postgres | 5432 | SQL | Solo la placa (`127.0.0.1`) | `POSTGRES_USER` es superusuario; Node-RED usa `NODERED_DB_USER` |
 | Portainer CE | 9443 | HTTPS, certificado autofirmado | Solo la placa; desde otro equipo, por túnel SSH | Contraseña de administrador (`PORTAINER_ADMIN_PASSWORD`) |
 
@@ -52,7 +53,7 @@ chmod 600 .env
 
 `orangepi/.env` contiene las credenciales reales y git lo ignora. Compose lo lee solo porque está junto a `docker-compose.yml`. Nunca lo subas al repositorio.
 
-Generar cada contraseña con `openssl rand -hex 16`. Las cinco de MQTT se generan con el comando de [Generar las contraseñas MQTT](#generar-las-contraseñas-mqtt), que no las imprime. El comando imprime 32 caracteres hexadecimales. La plantilla pide usar solo letras y números, y Portainer exige al menos 12 caracteres.
+Generar cada contraseña (y `GALERIA_TOKEN`) con `openssl rand -hex 16`, que da 32 caracteres hexadecimales. Node-RED **no arranca** si `NODERED_PROFESOR_PASSWORD`, `GALERIA_TOKEN` o `NODERED_ADMIN_PASSWORD` contienen `cambiar_esta_clave` (cualquier valor que lo incluya, como `cambiar_esta_clave_larga`, el placeholder de Portainer), si dos de esos tres valores son iguales, si `GALERIA_TOKEN` tiene menos de 32 caracteres o `NODERED_PROFESOR_PASSWORD` menos de 16, o si cualquiera de estos dos tiene menos de 8 caracteres distintos (`"p"` repetido 16 veces no pasa). `openssl rand -hex 16` cumple todo. `NODERED_ADMIN_PASSWORD` solo está sujeta a lo del placeholder y a no repetirse: no tiene mínimos de longitud ni de variedad. El mensaje de error nombra la variable, nunca su valor. Las cinco de MQTT se generan con el comando de [Generar las contraseñas MQTT](#generar-las-contraseñas-mqtt), que no las imprime. El comando imprime 32 caracteres hexadecimales. La plantilla pide usar solo letras y números, y Portainer exige al menos 12 caracteres.
 
 Después, sustituir cada valor `cambiar_esta_clave` en `.env`:
 
@@ -62,11 +63,14 @@ Después, sustituir cada valor `cambiar_esta_clave` en `.env`:
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Superusuario y base de datos de Postgres. Node-RED no usa el superusuario. | Solo al crear el volumen `pgdata` |
 | `NODERED_DB_USER`, `NODERED_DB_PASSWORD` | Rol de Node-RED en Postgres, con permisos mínimos (`sql/roles.sh`) | Al crear `pgdata`. Node-RED lee su copia en cada arranque, así que debe coincidir con la contraseña real del rol. |
 | `NODERED_ADMIN_USER`, `NODERED_ADMIN_PASSWORD` | Login del editor de Node-RED | En cada arranque de Node-RED |
+| `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` | Único usuario de la API (HTTP Basic): es el que el navegador pide al abrir `/app/`. El usuario no puede llevar `:`. Sin ellas, Node-RED no arranca. | En cada arranque de Node-RED |
 | `NODERED_TLS_SAN` | Nombres e IP del certificado HTTPS. Opcional; por omisión `DNS:localhost,IP:127.0.0.1`. | En cada arranque de Node-RED. Si cambia, el certificado se regenera. |
 | `PORTAINER_ADMIN_PASSWORD` | Contraseña inicial del administrador de Portainer | Solo al crear `portainer_data` |
-| `GALERIA_TOKEN` | Token de `GET /api/galeria`. Se usará desde el 11 nov; ningún contenedor lo recibe todavía. | Aún no se aplica |
+| `GALERIA_TOKEN` | Token de `GET /api/galeria` (encabezado `X-Galeria-Token`), lo único que acepta esa ruta. Node-RED lo recibe por el compose; el servicio de visión lo lee de su propio `/etc/pase-lista/vision.env`, y los dos valores deben coincidir. Sin él, Node-RED no arranca. | En cada arranque de Node-RED |
 
 Si Compose no encuentra una de las variables obligatorias, falla con un mensaje que indica cuál falta.
+
+> **Antes de ejecutar cualquier comando `docker compose` con este compose (incluidos `ps`, `logs` y `config -q`), añadir a `orangepi/.env` `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` y `GALERIA_TOKEN`** (esta última ya estaba en `.env.example`, pero ningún servicio la recibía). Compose las exige con `:?` y se niega a procesar el proyecto si falta alguna; el stack ya levantado sigue corriendo mientras tanto.
 
 ### NODERED_TLS_SAN
 
@@ -98,7 +102,7 @@ Las variables de Postgres y de Portainer no se releen al arrancar. Para cambiarl
 
 | Qué cambiar | Procedimiento |
 |---|---|
-| `MQTT_*_PASSWORD`, `NODERED_ADMIN_*`, `NODERED_TLS_SAN` | Editar `.env` y ejecutar `docker compose up -d`. Compose recrea los contenedores con los valores nuevos. |
+| `MQTT_*_PASSWORD`, `NODERED_ADMIN_*`, `NODERED_PROFESOR_*`, `GALERIA_TOKEN`, `NODERED_TLS_SAN` | Editar `.env` y ejecutar `docker compose up -d`. Compose recrea los contenedores con los valores nuevos. Al cambiar `GALERIA_TOKEN`, cambiarlo también en `/etc/pase-lista/vision.env` y reiniciar el servicio de visión. |
 | `NODERED_DB_PASSWORD` | Editar `.env`, ejecutar `docker compose up -d` y luego `docker compose exec postgres sh /docker-entrypoint-initdb.d/02-roles.sh`. El script es repetible: crea el rol si falta y actualiza su contraseña. |
 | `POSTGRES_PASSWORD` | Abrir psql con `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`, ejecutar `\password` (pide la clave nueva sin mostrarla) y después igualar `.env`. |
 | `PORTAINER_ADMIN_PASSWORD` | Cambiar la contraseña desde Portainer. La variable de `.env` ya no tiene efecto. |
@@ -119,7 +123,7 @@ docker compose cp nodered:/data/certs/nodered.crt ~/nodered.crt
 
 Después, copiar `nodered.crt` a tu equipo (por ejemplo con `scp`) e instalarlo como certificado de confianza. El certificado no incluye la IP si no está en `NODERED_TLS_SAN`, y el navegador lo rechaza en ese caso.
 
-Iniciar sesión con `NODERED_ADMIN_USER` y `NODERED_ADMIN_PASSWORD`.
+Iniciar sesión con `NODERED_ADMIN_USER` y `NODERED_ADMIN_PASSWORD`. Para `/api/...` (y, por tanto, para los datos del frontend en `/app/`) el navegador pide, con su diálogo nativo, `NODERED_PROFESOR_USER` y `NODERED_PROFESOR_PASSWORD`: son otras credenciales, que no abren el editor.
 
 ### Portainer
 
@@ -278,7 +282,7 @@ publicado: {"v":11.94,"i":0.713,"p":8.51}
 
 ### API de lectura
 
-`GET /api/metricas/energia` devuelve las lecturas `ina219` de la más nueva a la más vieja (`nodered/flows/flows.json`, flujo `Energía`). Acepta estos parámetros:
+`GET /api/metricas/energia` (con HTTP Basic del profesor, ver [API de alumnos y galería](#api-de-alumnos-y-galería); los `curl` de abajo llevan `-u profesor` y piden la contraseña) devuelve las lecturas `ina219` de la más nueva a la más vieja (`nodered/flows/flows.json`, flujo `Energía`). Acepta estos parámetros:
 
 | Parámetro | Por omisión | Reglas | Si no se cumplen |
 |---|---|---|---|
@@ -290,7 +294,7 @@ En la URL, un `+` del desfase horario se lee como espacio. Usar `Z` o codificarl
 Cada elemento de la respuesta tiene los campos `hora`, `v`, `i` y `p`. El formato de `hora` lo serializa el driver de Postgres, y el flujo no lo fija.
 
 ```bash
-curl -k "https://<ip>:1880/api/metricas/energia?limite=5&desde=2026-11-04T10:00:00Z"
+curl -k -u profesor "https://<ip>:1880/api/metricas/energia?limite=5&desde=2026-11-04T10:00:00Z"
 ```
 
 La respuesta correcta es un arreglo JSON (valores ilustrativos):
@@ -301,9 +305,96 @@ La respuesta correcta es un arreglo JSON (valores ilustrativos):
 ]
 ```
 
-Un error de validación responde 400 con `{"error": "..."}`. Un error de la base de datos responde 500 con `{"error": "No se pudo consultar la base de datos"}`.
+Sin credenciales o con credenciales erróneas responde 401. Un error de validación responde 400 con `{"error": "..."}`. Un error de la base de datos responde 500 con `{"error": "No se pudo consultar la base de datos"}`.
 
 `-k` acepta el certificado autofirmado sin verificarlo. Con el certificado instalado, se puede quitar.
+
+## API de alumnos y galería
+
+Los tres endpoints están en el flujo `Alumnos` de `nodered/flows/flows.json`. El formato de cada uno está en el [plan, sección 6.7](../docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript); aquí, cómo operarlos y probarlos.
+
+### Autenticación
+
+`nodered/settings.js` instala un `httpNodeMiddleware` propio (`nodered/autenticacion-api.js`), no `httpNodeAuth`: `httpNodeAuth` es global y bloquearía al servicio de visión.
+
+| Ruta | Qué exige | Si falta o falla |
+|---|---|---|
+| `/api/*` (todo menos `GET /api/galeria`) | HTTP Basic con `NODERED_PROFESOR_USER` y `NODERED_PROFESOR_PASSWORD` | 401 con `WWW-Authenticate: Basic` (el navegador abre su diálogo) |
+| `GET /api/galeria` | Solo el encabezado `X-Galeria-Token` igual a `GALERIA_TOKEN`. Las credenciales del profesor **no** bastan | 401 con `WWW-Authenticate: X-Galeria-Token` (no abre el diálogo) |
+| `/app/` (estáticos) | Nada: no llevan secretos | |
+| Editor (`/`) | `adminAuth` (`NODERED_ADMIN_USER`) | |
+
+Las comparaciones son en tiempo constante.
+
+**Contra CSRF** (el navegador reenvía el Basic guardado aunque la petición la dispare otro sitio), en cualquier método que no sea `GET` ni `HEAD`, ya autenticado, el middleware responde **403** si llega `Sec-Fetch-Site` y no es `same-origin`, si llega `Origin` y no es `https://` + `Host`, o si falta la cabecera propia **`X-Pase-Lista: 1`**. Un sitio ajeno no puede añadir esa cabecera sin un preflight CORS, que esta API no concede. Por eso **todo `POST`, `PUT`, `PATCH` o `DELETE` debe mandar `X-Pase-Lista: 1`**, también los futuros: el frontend actual solo hace `GET` y no la necesita todavía, pero cada `fetch` que cambie datos debe incluirla. La visión solo hace `GET`. Esto descansa en una regla: **ningún `http in` con método `GET` o `HEAD` cambia datos ni publica en MQTT**, porque esos métodos no exigen `X-Pase-Lista`. `nodered/pruebas/get-solo-lectura.test.js` la comprueba sobre `flows.json` (también para los flujos futuros): desde cada `http in` GET sigue los cables y falla si llega a un nodo `postgresql` con `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` o `ALTER`, o sin consulta fija, o a un `mqtt out`. Además, la importación del CSV exige `Content-Type: text/csv` (otro tipo, 415).
+
+Todas las peticiones de la API pasan por un tope de cuerpo de 256 KiB: 413 si `Content-Length` lo supera y 411 si la petición no trae `Content-Length` (por ejemplo, `Transfer-Encoding: chunked`). Las respuestas llevan `Cache-Control: no-store`.
+
+**Falla cerrado.** Si falta `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` o `GALERIA_TOKEN` (o el usuario lleva `:`), o si los secretos son de ejemplo, repetidos o cortos (ver [Crear el archivo de credenciales](#crear-el-archivo-de-credenciales)), `settings.js` lanza una excepción y Node-RED no arranca: el contenedor se reinicia en bucle y `docker compose logs --tail=50 nodered` muestra "Faltan NODERED_PROFESOR_USER, ..." o "autenticacion-api: ... tiene el valor de ejemplo". No hay modo de servir la API sin autenticar. Compose tampoco procesa el proyecto si falta alguna de las tres en `.env`: añadirlas antes de usarlo.
+
+### Probar con curl
+
+Desde la placa, con `-k` por el certificado autofirmado. `-u profesor` pide la contraseña sin dejarla en el historial ni en la línea de comandos. Para el token, `-H @-` lo lee de la entrada estándar:
+
+```bash
+read -rs GALERIA_TOKEN   # pegar el token y Enter (no se muestra)
+
+# Sin credenciales: 401
+curl -sk -o /dev/null -w '%{http_code}\n' https://127.0.0.1:1880/api/alumnos
+# Con las del profesor: 200 y un arreglo
+curl -sk -u profesor https://127.0.0.1:1880/api/alumnos
+curl -sk -u profesor "https://127.0.0.1:1880/api/alumnos?grupo=3CM1"
+
+# Galería: sin token 401; con las credenciales del profesor, también 401
+curl -sk -o /dev/null -w '%{http_code}\n' https://127.0.0.1:1880/api/galeria
+curl -sk -o /dev/null -w '%{http_code}\n' -u profesor https://127.0.0.1:1880/api/galeria
+# Con el token: 200 y {"embeddings":[...]}; no imprimir la salida, son embeddings
+printf 'X-Galeria-Token: %s\n' "$GALERIA_TOKEN" | curl -sk -o /dev/null -w '%{http_code}\n' -H @- https://127.0.0.1:1880/api/galeria
+# El token no sirve en las demás rutas: 401
+printf 'X-Galeria-Token: %s\n' "$GALERIA_TOKEN" | curl -sk -o /dev/null -w '%{http_code}\n' -H @- https://127.0.0.1:1880/api/alumnos
+```
+
+### GET /api/alumnos
+
+`GET /api/alumnos?grupo=` devuelve `[{"cuenta","nombre","grupo","rostro"}]`, con `rostro` igual a `pendiente` o `registrado`, ordenado por grupo y nombre. `grupo` es opcional: de 1 a 40 caracteres, sin caracteres de control; si no, 400 con `{"error": "..."}`. Nunca devuelve embeddings.
+
+### GET /api/galeria
+
+Solo para el servicio de visión. Devuelve `{"embeddings":[{"cuenta":"320068234","embedding":[...512 números...]}]}` con los alumnos que tienen consentimiento y embedding, o `{"embeddings":[]}`. Es el formato que lee `orangepi/vision/src/gallery_store.cpp`. Sus nodos no registran el mensaje ni el payload ni cuentas: ante un fallo de la base solo el código SQLSTATE.
+
+### POST /api/alumnos/importar
+
+Importa la lista maestra de un grupo. El cuerpo es el archivo CSV **crudo**, con `Content-Type: text/csv; charset=utf-8` (no multipart; otro tipo, 415) y la cabecera `X-Pase-Lista: 1` (sin ella, 403, ver [Autenticación](#autenticación)). Desde el navegador: `fetch('/api/alumnos/importar', {method: 'POST', headers: {'Content-Type': 'text/csv; charset=utf-8', 'X-Pase-Lista': '1'}, body: archivo})`, con el `File` de un `<input type="file" accept=".csv">`.
+
+```
+no_cuenta,nombre,grupo
+320068234,"Pérez López, Ana",3CM1
+320068235,Luis Ñandú,3CM1
+```
+
+Encabezado obligatorio (`no_cuenta,nombre,grupo`, separado por comas). Excel en español exporta con punto y coma y se rechaza: guardar como **CSV UTF-8 (delimitado por comas)**. Se aceptan BOM de UTF-8, saltos `\n` o `\r\n`, campos entre comillas (`""` es una comilla) y acentos. Máximo 500 filas y 256 KiB. Cuenta de 9 dígitos, nombre de hasta 120 caracteres y grupo de hasta 40, ninguno vacío y sin caracteres de control ni invisibles (ancho cero, marca de orden de bytes dentro del texto); una cuenta repetida dentro del archivo es un error.
+
+Se valida el archivo completo antes de escribir. Respuestas:
+
+| Código | Cuándo | Cuerpo |
+|---|---|---|
+| 200 | Importado | `{"insertadas","actualizadas","omitidas","total"}` |
+| 400 | Alguna fila inválida, encabezado, UTF-8 o `existentes` inválidos | `{"error", "total_errores", "filas": [{"fila": 3, "error": "..."}]}` (hasta 100 filas; `fila` es la línea del archivo, con el encabezado en la 1). No se importó nada |
+| 409 | Alguna cuenta ya existe y no se indicó `existentes` | `{"escrito": false, "error", "existentes": [{"cuenta", "actual": {"nombre","grupo"}, "csv": {"nombre","grupo"}, "cambia", "tiene_rostro"}], "opciones": ["actualizar","omitir"]}`. **No se importó nada** |
+| 409 | Carrera: sin `existentes`, otra importación insertó una cuenta del archivo entre la comprobación y la escritura | `{"escrito": true, "error", "insertadas", "actualizadas", "omitidas", "total"}`, sin `existentes`. **Las filas nuevas ya se escribieron**; reenviar con `?existentes=` es seguro |
+| 403 | Falta `X-Pase-Lista: 1` o la petición viene de otro origen | `{"error": ...}` |
+| 413 | El cuerpo pesa más de 256 KiB | `{"error": ...}` |
+| 415 | El `Content-Type` no es `text/csv` | `{"error": ...}` |
+
+El profesor decide qué hacer con las existentes y reenvía el mismo archivo con `?existentes=actualizar` (cambia solo `nombre` y `grupo` de las existentes e inserta las nuevas) o `?existentes=omitir` (inserta solo las nuevas). Cualquier otro valor, 400. Nunca se toca `embedding`, `consentimiento` ni `consentimiento_fecha`, y nunca se borra a nadie. La escritura es una sola sentencia SQL, es decir, una sola transacción: o entra todo o nada. El `INSERT` usa `ON CONFLICT (no_cuenta) DO NOTHING`; el único caso en que no es atómico del todo es una carrera con otra importación simultánea de la misma cuenta, entre la comprobación de existentes y la escritura: entonces la cuenta ajena cuenta como omitida y, si no se indicó `existentes`, la respuesta es 409 con `escrito: true` y los conteos (las filas nuevas ya quedaron escritas; reenviar con `?existentes=` es seguro). El otro 409, el de las existentes, trae `escrito: false`. Con una sola cuenta de profesor es un riesgo aceptado.
+
+```bash
+curl -sk -u profesor -H 'X-Pase-Lista: 1' -H 'Content-Type: text/csv; charset=utf-8' --data-binary @lista.csv https://127.0.0.1:1880/api/alumnos/importar
+curl -sk -u profesor -H 'X-Pase-Lista: 1' -H 'Content-Type: text/csv; charset=utf-8' --data-binary @lista.csv "https://127.0.0.1:1880/api/alumnos/importar?existentes=omitir"
+# Sin X-Pase-Lista: 403. Con otro tipo (por ejemplo text/plain): 415.
+```
+
+`--data-binary` envía el archivo tal cual (`-d` le quitaría los saltos de línea). Para probar con datos de verdad hay que usar un grupo de prueba: la importación inserta filas reales en `alumnos` y no hay endpoint para borrarlas (el rol de Node-RED no tiene DELETE).
 
 ## Operación
 
@@ -324,7 +415,7 @@ Los nombres de servicio son `mosquitto`, `postgres`, `nodered` y `portainer`.
 
 Usar `--build` después de cambiar `nodered/settings.js`, `nodered/Dockerfile`, `nodered/package.json`, `nodered/package-lock.json` o cualquier archivo de `web/`. Estos archivos se copian a la imagen (los de `web/` se compilan en ella), así que sin reconstruirla el cambio no tiene efecto.
 
-La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-11`). Al reconstruir por un cambio, subir el sufijo (`-12`, `-13`...), como indica el comentario del archivo.
+La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-12`). Al reconstruir por un cambio, subir el sufijo (`-13`, `-14`...), como indica el comentario del archivo.
 
 Para aplicar solo un cambio de Node-RED o del frontend, sin tocar los demás servicios, desde `orangepi/`:
 
@@ -406,7 +497,10 @@ Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` también vienen de 
 
 | Riesgo | Detalle |
 |---|---|
-| La API no tiene autenticación | `/api/metricas/energia` responde a cualquiera que llegue a la placa. Solo sirve lecturas de energía. |
+| Autenticación de la API sin desplegar | La API con HTTP Basic y `GALERIA_TOKEN` está en el repo, pero la placa sigue con la imagen anterior hasta desplegarla (`5.0.9-12`): mientras tanto `/api/metricas/energia` responde a cualquiera que llegue a la placa. |
+| Sin límite de intentos ni registro de los 401 | La API no limita los intentos de contraseña ni deja registro de las peticiones rechazadas (401 o 403). Con una sola cuenta de profesor, la defensa es una contraseña larga (mínimo 16 caracteres, forzado al arrancar; `openssl rand -hex 16`). Pendiente (no es de esta ronda): limitar intentos y registrar los 401 sin escribir credenciales. |
+| Certificado autofirmado: riesgo de MITM | HTTP Basic y `X-Galeria-Token` viajan por HTTPS con certificado autofirmado: protegen contra quien solo escucha, pero quien se interponga y presente otro certificado se llevaría la contraseña si el usuario acepta el aviso del navegador. Recomendación: instalar `nodered.crt` como certificado de confianza en la laptop del profesor (ver [Node-RED](#node-red)) y no aceptar avisos de certificado; el servicio de visión debe validarlo con `http.ca_file`. |
+| Inyección de fórmulas en el reporte CSV | La lista maestra se importa tal cual: un nombre que empiece con `=`, `+`, `-` o `@` queda guardado así. El peligro aparece al abrir en Excel un CSV exportado. **Requisito del reporte CSV (trabajo futuro, flujo con nodo `exec`):** neutralizar esos prefijos al exportar (por ejemplo, anteponer `'`). No se implementa en la importación. |
 | MQTT sin TLS | El listener 1883 va en texto plano: usuario y contraseña viajan sin cifrar. |
 | Una contraseña MQTT filtrada | La de `xiao` es la más expuesta: viaja en claro por la LAN. Con la contraseña de un rol, alguien conectado a la LAN puede conectarse con ese usuario y, por `use_username_as_clientid`, expulsar al cliente legítimo; al caer su conexión se dispara su Will (por ejemplo `{"en_linea": false}` en `aula/camara/estado`, retenido), y el atacante puede dejar retenido un estado falso en los tópicos que ese rol puede escribir. La ACL limita qué tópicos toca cada rol, pero no evita esto. Mitigaciones pendientes: restringir el puerto 1883 a la IP de la XIAO (y a la placa) en la cadena `DOCKER-USER` del host (cambio del host: lo coordina Yordi con el equipo, y aún no se hizo); descartar en Node-RED los estados vencidos por `ts` (flujos del 11 nov, Yordi); TLS en MQTT (sin decidir, ver Pendiente). |
 | Mensajes retenidos falsos | La ACL de Mosquitto 2 (`acl_file`) no puede impedir el retain por tópico. La defensa es que los consumidores de todo tópico con Retain = no ignoren lo retenido y lo vacío, en cualquier tópico (contrato MQTT, sección 1: la XIAO, el servicio de visión, incluidos `aula/camara/pir` y `aula/vision/cmd`, y Node-RED). Node-RED borra los retenidos de `*/cmd`, `aula/camara/pir` y `aula/camara/energia` en cada conexión al broker (flujo "Limpieza de retenidos"), lo que provoca un mensaje vacío en vivo en cada uno de esos tópicos, y su ingesta descarta `aula/camara/energia` con retain (con aviso) y vacío (en silencio). Para los demás tópicos con Retain = no (`aula/vision/resultado`, `aula/vision/embedding`, `aula/vision/enrolamiento`, `aula/vision/galeria/alta`, `aula/vision/galeria/baja`, `aula/pantalla/reinicio` y `aula/sistema/metricas`), los flujos del 11 nov deben descartar retain, o se amplía la lista de la limpieza. Un plugin de autorización de broker que sí lo impidiera queda fuera: es una decisión humana, y no se instala sin ella. |
@@ -415,14 +509,14 @@ Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` también vienen de 
 
 ### Pendiente
 
-No se sirve `/api/galeria` sin `httpNodeAuth` y `GALERIA_TOKEN` (11 nov). No se registra a ninguna persona real sin `httpNodeAuth` y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo). Las ACL de Mosquitto ya están activas (contrato MQTT v0.5); falta `httpNodeAuth`.
+No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: Node-RED no arranca si faltan sus variables. No se registra a ninguna persona real sin esa autenticación verificada en la placa y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo). Las ACL de Mosquitto ya están activas (contrato MQTT v0.5); la autenticación de la API está en el repo y falta desplegarla y verificarla.
 
 #### Para el 11 de noviembre
 
 | Pendiente | Estado en el repo |
 |---|---|
-| `httpNodeAuth` en la API | Pendiente. El comentario de `nodered/settings.js` indica dónde se añade. |
-| `GALERIA_TOKEN` | La variable está en `.env.example` y ningún contenedor la recibe todavía. Desde el 11 nov, `GET /api/galeria` exigirá el encabezado `X-Galeria-Token`; solo Node-RED y el servicio de visión tendrán el token. |
+| Autenticación de la API (`httpNodeMiddleware` de `nodered/settings.js`) | Implementada en el repo. Falta añadir las variables nuevas a `.env`, reconstruir (`5.0.9-12`) y verificar en la placa con los `curl` de [API de alumnos y galería](#api-de-alumnos-y-galería). |
+| `GALERIA_TOKEN` | Node-RED lo recibe por el compose. `GET /api/galeria` solo acepta el encabezado `X-Galeria-Token`; solo Node-RED y el servicio de visión tienen el token. Falta copiarlo a `/etc/pase-lista/vision.env` y verificarlo en la placa. |
 
 #### Sin fecha (sin decidir)
 
@@ -439,7 +533,7 @@ Retirar el consentimiento de un alumno borra su embedding de la base al instante
 1. Detener y quitar el contenedor: `docker compose stop nodered` y luego `docker compose rm -f nodered`.
 2. Borrar el volumen de Node-RED: `docker volume rm pase-lista_nodered_data`. Si se conserva el volumen, borrar al menos `/data/node_modules`, `/data/lib` y `/data/.config*`. Este README no documenta cómo hacerlo; el borrado completo es el paso más seguro.
 3. Restaurar `nodered/flows/flows.json` desde un commit revisado: `git checkout <commit-revisado> -- nodered/flows/flows.json`.
-4. Cambiar `NODERED_ADMIN_PASSWORD` y `NODERED_DB_PASSWORD` en `.env`, con `openssl rand -hex 16`, y las cinco contraseñas MQTT con el comando de [Generar las contraseñas MQTT](#generar-las-contraseñas-mqtt).
+4. Cambiar `NODERED_ADMIN_PASSWORD`, `NODERED_PROFESOR_PASSWORD`, `GALERIA_TOKEN` (y copiarlo a `/etc/pase-lista/vision.env`) y `NODERED_DB_PASSWORD` en `.env`, con `openssl rand -hex 16`, y las cinco contraseñas MQTT con el comando de [Generar las contraseñas MQTT](#generar-las-contraseñas-mqtt).
 5. Ejecutar `docker compose up -d` para recrear los contenedores con los valores nuevos.
 6. Ejecutar `docker compose exec postgres sh /docker-entrypoint-initdb.d/02-roles.sh` para aplicar la contraseña nueva del rol de Node-RED.
 7. Copiar la contraseña nueva a cada cliente MQTT: la XIAO, el servicio de visión y la pantalla (ver [Copiar las contraseñas a los clientes](#copiar-las-contraseñas-a-los-clientes)).

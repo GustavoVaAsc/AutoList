@@ -19,7 +19,7 @@ import { construirSerie, VENTANA_MS } from '../serie'
 const CONSULTA_CADA_S = 5
 
 export function Metricas() {
-  const { lecturas, error, horaServidor } = useEstadoLecturas()
+  const { lecturas, error, horaServidor, sinSesion, reintentar } = useEstadoLecturas()
   const ultima = lecturas && lecturas.length > 0 ? lecturas[lecturas.length - 1]! : null
   const serie = useMemo(() => (lecturas && lecturas.length > 0 ? construirSerie(lecturas) : null), [lecturas])
   const minutosVentana = VENTANA_MS / 60_000
@@ -46,8 +46,13 @@ export function Metricas() {
               <p>
                 {error}{' '}
                 {horaServidor !== null ? `Se muestran los datos de las ${formatearHora(horaServidor)}. ` : ''}
-                La vista lo vuelve a intentar cada {CONSULTA_CADA_S} s.
+                {sinSesion ? 'La vista no insistirá sola.' : `La vista lo vuelve a intentar cada ${CONSULTA_CADA_S} s.`}
               </p>
+              {sinSesion && (
+                <button type="button" className="boton" onClick={reintentar}>
+                  Reintentar
+                </button>
+              )}
             </div>
           )}
 

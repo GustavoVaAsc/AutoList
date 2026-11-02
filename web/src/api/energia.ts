@@ -17,8 +17,23 @@ export interface Lectura {
 /** Fallo al consultar la API; `mensaje` va en español y se muestra tal cual. */
 export class ErrorApi extends Error {}
 
+/**
+ * La API respondió 401: la persona canceló el diálogo de usuario y contraseña del
+ * navegador o las credenciales no valen. Reintentar solo vuelve a abrir el diálogo,
+ * así que el sondeo se detiene hasta que la persona lo pida (useLecturas).
+ */
+export class ErrorSinSesion extends ErrorApi {}
+
 const RUTA = '/api/metricas/energia'
 const TIEMPO_MAXIMO_MS = 8000
+/**
+ * Tiempo máximo de la primera consulta de cada montaje (hasta su primera respuesta
+ * correcta). La API pide HTTP Basic: el navegador muestra su diálogo de usuario y
+ * contraseña y la petición espera a que la persona lo complete; con 8 s se
+ * cancelaría antes de que alcance a escribirlas. Después el navegador ya tiene las
+ * credenciales y rige TIEMPO_MAXIMO_MS.
+ */
+export const TIEMPO_INICIAL_MS = 120_000
 
 function esNumero(valor: unknown): valor is number {
   return typeof valor === 'number' && Number.isFinite(valor)
@@ -55,14 +70,18 @@ export interface Consulta {
 
 /**
  * Consulta las últimas `limite` lecturas de energía. Cancela con `senal` y
- * también si la API tarda más de TIEMPO_MAXIMO_MS (en cualquier punto, incluida
+ * también si la API tarda más de `tiempoMaximoMs` (en cualquier punto, incluida
  * la lectura del cuerpo).
  */
-export async function pedirLecturas(limite: number, senal: AbortSignal): Promise<Consulta> {
+export async function pedirLecturas(
+  limite: number,
+  senal: AbortSignal,
+  tiempoMaximoMs: number = TIEMPO_MAXIMO_MS,
+): Promise<Consulta> {
   const controlador = new AbortController()
   const alCancelar = () => controlador.abort()
   senal.addEventListener('abort', alCancelar)
-  const temporizador = setTimeout(() => controlador.abort(), TIEMPO_MAXIMO_MS)
+  const temporizador = setTimeout(() => controlador.abort(), tiempoMaximoMs)
   const tiempoAgotado = () => new ErrorApi('La API tardó demasiado en responder. Revisa la conexión con la placa.')
   try {
     let respuesta: Response
@@ -78,6 +97,9 @@ export async function pedirLecturas(limite: number, senal: AbortSignal): Promise
       throw controlador.signal.aborted
         ? tiempoAgotado()
         : new ErrorApi('No se pudo conectar con la API. Revisa que la placa esté encendida y conectada a la red del aula.')
+    }
+    if (respuesta.status === 401) {
+      throw new ErrorSinSesion('La API pide usuario y contraseña del profesor y no se completó el inicio de sesión.')
     }
     if (!respuesta.ok) {
       throw new ErrorApi(`La API respondió con el error ${respuesta.status}. Espera unos segundos; si sigue igual, avisa al responsable del borde.`)

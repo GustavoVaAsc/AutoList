@@ -23,7 +23,9 @@ Panel del profesor, en Vite + React + TypeScript (plan, sección 6.7). Se compil
 
 El frontend no se conecta a MQTT en esta etapa: no usa `mqtt.js` ni el puerto 9001. Todo sale de la API HTTP de Node-RED.
 
-La API no tiene autenticación hoy. Cuando entre `httpNodeAuth` (11 nov), el navegador pedirá usuario y contraseña al consultar `/api/...`.
+La API exige HTTP Basic (usuario del profesor, `NODERED_PROFESOR_USER`): al abrir `/app/`, el navegador muestra su diálogo de usuario y contraseña en la primera consulta a `/api/...` y reenvía las credenciales por su cuenta, porque el frontend es del mismo origen. No hay pantalla de inicio de sesión propia. `/app/` en sí es público. Si la persona cancela el diálogo (401), la vista de energía detiene el sondeo y muestra "Reintentar", en lugar de reabrir el diálogo cada 5 s.
+
+**Todo `POST`, `PUT`, `PATCH` o `DELETE` que haga el frontend debe mandar la cabecera `X-Pase-Lista: 1`** (el middleware de la API la exige como defensa contra CSRF; sin ella, 403). El frontend actual solo hace `GET`, que no la necesita; la vista Alumnos, al subir el CSV, debe enviar `Content-Type: text/csv; charset=utf-8` y `X-Pase-Lista: 1`.
 
 ## Requisitos
 

@@ -34,9 +34,11 @@ RUN npm ci --omit=dev --ignore-scripts --no-update-notifier --no-fund
 # Los ajustes van en /etc/nodered, un directorio de root (755) con el archivo
 # en 644. En /usr/src/node-red el usuario node-red puede borrar y reemplazar
 # archivos aunque sean de root, porque el directorio es suyo; aquí no. Así el
-# contenedor no puede quitar adminAuth, el HTTPS ni el bloqueo de módulos.
+# contenedor no puede quitar adminAuth, la autenticación de la API
+# (autenticacion-api.js, que settings.js carga desde el mismo directorio), el HTTPS
+# ni el bloqueo de módulos.
 # settings.js encuentra bcryptjs por el NODE_PATH de la imagen base.
-COPY settings.js /etc/nodered/settings.js
+COPY settings.js autenticacion-api.js /etc/nodered/
 
 # El frontend compilado va en /usr/share/nodered-web, también de root y sin
 # escritura para el usuario node-red (mismo criterio que settings.js): si el

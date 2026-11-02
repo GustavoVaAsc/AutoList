@@ -32,7 +32,7 @@ Ejecuta desde `orangepi/`, salvo que se indique otra carpeta. Todos los comandos
 | Log reciente de un servicio | `docker compose logs --tail=50 nodered` | Sin `-f`: el agente no sigue logs en vivo. Servicios: `mosquitto`, `postgres`, `nodered` y `portainer`. |
 | Simular lecturas de energía | `../herramientas/simular_energia.sh 5 1` | N = 5 mensajes, pausa de 1 s. Requiere el stack levantado. Inserta filas reales en `metricas_energia`; para borrarlas, usa la [limpieza acotada](#limpieza-acotada), que requiere confirmación humana. |
 | Consulta de una sentencia | `docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM metricas_energia"'` | Las variables se expanden dentro del contenedor. |
-| API de energía | `curl -k "https://127.0.0.1:1880/api/metricas/energia?limite=5"` | `-k` acepta el certificado autofirmado. |
+| API de energía | `curl -k -u profesor "https://127.0.0.1:1880/api/metricas/energia?limite=5"` | `-k` acepta el certificado autofirmado. `-u profesor` pide la contraseña: lo ejecuta una persona (el agente no tiene terminal interactiva y no lee `.env`). |
 
 Borrar lecturas simuladas o reales no está en esta tabla. Ver [Prohibido sin aprobación humana](#prohibido-sin-aprobación-humana).
 
@@ -53,7 +53,7 @@ Estas acciones requieren que una persona lo apruebe en la conversación. No las 
 
 ## Verificación
 
-Ejecuta esta lista en la placa después de cualquier cambio en el stack. Un paso no cuenta como verificado si no se ejecutó. Los comandos salen de este archivo y de `orangepi/README.md`; los pasos 1 a 10 se ejecutaron en la placa el 2 de noviembre de 2026, tras activar la ACL.
+Ejecuta esta lista en la placa después de cualquier cambio en el stack. Un paso no cuenta como verificado si no se ejecutó. Los comandos salen de este archivo y de `orangepi/README.md`; los pasos 1 a 10 se ejecutaron en la placa el 2 de noviembre de 2026, tras activar la ACL. Los pasos 11 a 14 (autenticación de la API, galería, importación del CSV y frontend) están escritos, pero **no se han ejecutado en la placa**: el código está en el repo y falta desplegarlo (`5.0.9-12`).
 
 Antes de cada uno de los pasos 4, 5 y 6, vuelve a anotar N, el id máximo actual de `metricas_energia`, con este comando. Guarda además el N anotado antes del paso 4 como N₀: es el que usa la limpieza acotada.
 
@@ -69,10 +69,14 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 | 4 | El broker acepta un cliente autenticado | `docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u simulador\n-P %s\n" "$MQTT_SIMULADOR_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -t aula/camara/energia -m "{\"v\":12,\"i\":0.8,\"p\":9.6}"; rm -rf "$d"'` | Sin error. La cuenta de `id > N` es 1. |
 | 5 | El simulador inserta 5 filas | Anota N de nuevo, ejecuta `../herramientas/simular_energia.sh 5 1` y cuenta `id > N` (ver abajo). | Cuenta 5. Cada línea de salida empieza con `publicado:`. |
 | 6 | Los mensajes no válidos se descartan | Anota N de nuevo y ejecuta los dos comandos de abajo. | La cuenta de `id > N` es 0. `docker compose logs --tail=50 nodered` muestra `Descartado, no es JSON` y `Descartado, v fuera de rango`. |
-| 7 | La API respeta `limite` | `curl -k "https://127.0.0.1:1880/api/metricas/energia?limite=3"` y después con `limite=0`. | El primero devuelve un arreglo de 3 elementos. El segundo responde 400 con `{"error": ...}`. |
+| 7 | La API respeta `limite` | `curl -k -u profesor "https://127.0.0.1:1880/api/metricas/energia?limite=3"` y después con `limite=0`. | El primero devuelve un arreglo de 3 elementos. El segundo responde 400 con `{"error": ...}`. |
 | 8 | Postgres y Portainer solo escuchan en loopback | `ss -ltn` | Aparecen `127.0.0.1:5432` y `127.0.0.1:9443`, sin `0.0.0.0` ni `*` para esos dos puertos. Los puertos 1883 y 1880 escuchan en todas las interfaces; eso está aceptado hoy (`orangepi/README.md`, "Riesgos aceptados hoy"). El 9001 ya no existe: no debe aparecer. |
 | 9 | El `.env` no está en git | `git status --short` | No aparece `orangepi/.env`. |
 | 10 | La ACL descarta lo que no está permitido | Los comandos de abajo, con Node-RED detenido. | Imprime `permitido` y, al agotarse el tiempo, `Timed out`; nunca `denegado`. |
+| 11 | La API exige Basic | Los `curl` de [orangepi/README.md](README.md#probar-con-curl) a `/api/alumnos` y `/api/metricas/energia`: sin credenciales, con contraseña errónea y con `-u profesor`. | 401 con `WWW-Authenticate: Basic` en los dos primeros; 200 con un arreglo JSON en el tercero. |
+| 12 | `GET /api/galeria` solo acepta el token | Los `curl` de [orangepi/README.md](README.md#probar-con-curl) a `/api/galeria`: sin nada, con `-u profesor`, con `X-Galeria-Token`, y el token contra `/api/alumnos`. | 401, 401, 200 con `{"embeddings":[...]}` (no imprimir el cuerpo) y 401. El servicio de visión carga la galería con el mismo token. |
+| 13 | La importación del CSV valida y decide | Con un CSV de un grupo de prueba (cuentas `99900xxxx`), los `curl` de [POST /api/alumnos/importar](README.md#post-apialumnosimportar): un archivo con una fila inválida, el válido, el mismo otra vez, y con `?existentes=omitir` y `?existentes=actualizar`. Todos con `-H 'X-Pase-Lista: 1'` y `Content-Type: text/csv`. Además: sin `X-Pase-Lista` debe dar 403 y con `Content-Type: text/plain`, 415. | 400 con la fila; 200 `insertadas` = filas; 409 con las existentes y su rostro; 200 con `omitidas` = filas; 200 con `actualizadas` = filas. Las filas de prueba quedan en `alumnos` (el rol no puede borrarlas): consultar con el superusuario y coordinar su limpieza con una persona. |
+| 14 | El frontend sigue funcionando con la autenticación | Abrir `https://<ip>:1880/app/` en un navegador. | Aparece el diálogo de usuario y contraseña; con las del profesor, la vista de energía carga. Con "Cancelar", aviso del 401 con el botón "Reintentar" y sin que el diálogo reaparezca solo cada 5 s. |
 
 Comandos del paso 6 (un comando por caso):
 
@@ -141,7 +145,7 @@ No rompas estas reglas sin decisión humana.
 - Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` ya están en `sql/schema.sql` (plan, sección 7.2). Los embeddings son `vector(512)`, dimensión confirmada por Gustavo. `intentos` no guarda embeddings: quien no se reconoce no dio consentimiento.
 - `alumnos` tiene los CHECK `embedding IS NULL OR consentimiento` y `consentimiento = (consentimiento_fecha IS NOT NULL)`. Registrar son dos UPDATE: primero el consentimiento y su fecha, con el embedding aún NULL (lo escribe el endpoint HTTP del profesor), y después el embedding con `AND consentimiento AND embedding IS NULL` (lo escribe el manejador de MQTT, que nunca escribe el consentimiento). Retirar el rostro es el inverso (embedding NULL, consentimiento false, fecha NULL). El rol de Node-RED solo puede actualizar `nombre`, `grupo`, `embedding`, `consentimiento` y `consentimiento_fecha`, y no tiene DELETE (`sql/roles.sh`).
 - Corregir una asistencia ya registrada lo hace solo el superusuario: el rol de Node-RED tiene SELECT e INSERT sobre `asistencias`. Borrar la identidad completa de una persona (`nombre`, `no_cuenta`) también es un procedimiento de superusuario, porque `asistencias` referencia la fila.
-- No se sirve `/api/galeria` sin `httpNodeAuth` y `GALERIA_TOKEN` (11 nov). No se registra a ninguna persona real sin `httpNodeAuth` y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo).
+- No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: Node-RED no arranca sin sus variables (`nodered/autenticacion-api.js`). No se registra a ninguna persona real sin esa autenticación verificada en la placa y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo).
 - En `psql`, los embeddings se pasan con `\set` o con `PREPARE`/`EXECUTE`, nunca como literales pegados en la sentencia.
 
 ## Diferido y sin decidir
@@ -152,7 +156,7 @@ No implementes ni quites estos puntos en silencio. Si tu cambio los toca, dilo e
 
 | Punto | Estado actual |
 |---|---|
-| `httpNodeAuth` y `GALERIA_TOKEN` en la API | Pendiente. El comentario sobre `httpNodeAuth` en `nodered/settings.js` indica dónde se añade. `GALERIA_TOKEN` está en `.env.example` pero ningún contenedor lo recibe todavía. Hasta entonces rige la regla de los embeddings reales de [Cambios de esquema](#cambios-de-esquema). |
+| Autenticación de la API (`httpNodeMiddleware`) y `GALERIA_TOKEN` | Implementada en el repo (Basic del profesor en `/api/*`, solo `X-Galeria-Token` en `/api/galeria`); falta desplegarla y verificarla en la placa (pasos 11 a 14 de [Verificación](#verificación)). Hasta verificarla rige la regla de los embeddings reales de [Cambios de esquema](#cambios-de-esquema). **Antes de cualquier comando `docker compose` con este compose, `orangepi/.env` debe tener `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` y `GALERIA_TOKEN`** (`:?` en el compose: sin ellas ni `ps` ni `config -q` funcionan; el stack vivo sigue corriendo). Node-RED tampoco arranca con secretos de ejemplo (`cambiar_esta_clave`), repetidos, o con `GALERIA_TOKEN` < 32 o `NODERED_PROFESOR_PASSWORD` < 16 caracteres (`openssl rand -hex 16` cumple). |
 
 ### Sin decidir: no implementar sin decisión humana
 
