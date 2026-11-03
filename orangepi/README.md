@@ -396,6 +396,35 @@ curl -sk -u profesor -H 'X-Pase-Lista: 1' -H 'Content-Type: text/csv; charset=ut
 
 `--data-binary` envía el archivo tal cual (`-d` le quitaría los saltos de línea). Para probar con datos de verdad hay que usar un grupo de prueba: la importación inserta filas reales en `alumnos` y no hay endpoint para borrarlas (el rol de Node-RED no tiene DELETE).
 
+### Registro del rostro y retiro del consentimiento
+
+Cuatro endpoints del flujo `Registro` de `nodered/flows/flows.json`. El contrato completo (códigos, cuerpos y cómo avanza la inscripción) está en el [plan, sección 6.7](../docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript); aquí, cómo probarlos. Los que cambian datos llevan `X-Pase-Lista: 1` (sin ella, 403, ver [Autenticación](#autenticación)). **Para probar usa solo cuentas de prueba** (las `99900xxxx` de la importación): el registro escribe el consentimiento y, si llega un embedding, el rostro. Sin el servicio de visión corriendo en la placa, un registro queda en `esperando_vision` y se cancela solo a los 5 minutos.
+
+```bash
+# Progreso del registro (solo lectura; sin ningún registro: "abierto": false y "estado": "sin_registro")
+curl -sk -u profesor https://127.0.0.1:1880/api/enrolamiento/estado
+
+# Iniciar: JSON con consentimiento true. 202; 400, 404 (cuenta inexistente), 409 (registro abierto o el alumno ya tiene rostro)
+curl -sk -u profesor -H 'X-Pase-Lista: 1' -H 'Content-Type: application/json' \
+  -d '{"cuenta":"999000001","consentimiento":true}' -w '\n%{http_code}\n' https://127.0.0.1:1880/api/enrolamiento
+# Sin consentimiento true: 400. Con otro Content-Type (text/plain): 415.
+
+# Cancelar: 200 {"cancelado":true,...}; sin registro abierto, 200 {"cancelado":false,...} (idempotente)
+curl -sk -u profesor -H 'X-Pase-Lista: 1' -X POST -w '\n%{http_code}\n' https://127.0.0.1:1880/api/enrolamiento/cancelar
+
+# Retirar el rostro y el consentimiento: 200 {"cuenta","rostro":"pendiente","retirado":true|false}; 400, 404, 409
+curl -sk -u profesor -H 'X-Pase-Lista: 1' -X DELETE -w '\n%{http_code}\n' https://127.0.0.1:1880/api/alumnos/999000001/rostro
+```
+
+Para ver lo que Node-RED publica a la visión sin que ella corra, usa la primera opción de [Depurar el tráfico MQTT](#depurar-el-tráfico-mqtt) (un `mqtt in` en `aula/vision/cmd` y otro en `aula/vision/galeria/#`, cada uno con un debug): al iniciar aparece `{"accion":"enrolar","cuenta","nombre"}`; al cancelar, `{"accion":"cancelar","cuenta"}`; al retirar un rostro, `aula/vision/galeria/baja` con `{"cuenta"}`. La segunda opción detendría Node-RED y con él los flujos que se quieren probar. Ningún nodo de estas rutas registra el payload ni el mensaje de los embeddings: un fallo de la base deja en el log solo el código SQLSTATE.
+
+Riesgos conocidos del registro, aceptados por ahora:
+
+- **MQTT caído al iniciar un registro.** `POST /api/enrolamiento` escribe el consentimiento y abre la inscripción antes de publicar `enrolar`, y responde 202 aunque el broker no esté disponible. La orden no llega, la visión no hace nada y el registro vence a los 5 minutos (`error` con `vencido`, y el consentimiento se revierte). La vista lo muestra como "Esperando al servicio de visión".
+- **La visión se queda en "enrolando" tras un despliegue.** Al arrancar o desplegar Node-RED, la inscripción abierta se borra (vive en memoria) y no se publica `cancelar`: si la visión seguía capturando, queda ocupada hasta que termine o falle por sí sola, y su embedding se rechaza. Node-RED ya no puede destrabarla. Se resuelve reiniciando el servicio de visión (`orangepi-vision`, del host), y eso se coordina con Gustavo. Por eso no se despliega Node-RED con un registro abierto.
+- **Hora de reserva de la visión.** Si su reloj falla, la visión publica `ts` con la hora de reserva (1970) o vacío. El embedding de la cuenta abierta con un `ts` ilegible, vacío o de antes de 2000 cierra el registro como `embedding_invalido` y revierte el consentimiento; los mensajes de progreso con ese `ts` se descartan y el registro vence a los 5 minutos. Un `ts` posterior a la hora actual más 5 minutos se descarta siempre.
+- Un embedding que llega con el registro ya cerrado (cancelación, error o vencimiento con el embedding en vuelo) se retira en cuanto se guarda: el rostro queda sin guardar y la visión recibe `galeria/baja`. Si ese retiro falla (la base caída), la cuenta queda en una lista en memoria y se reintenta cada 15 s hasta que salga; solo entonces se publica la `baja`. Ese reintento se pierde si Node-RED se reinicia, y la limpieza de arranque no toca un rostro con consentimiento: revisar entonces con el superusuario.
+
 ## Operación
 
 ### Comandos
@@ -427,7 +456,7 @@ docker compose up -d --no-deps --build nodered
 
 ### Frontend web
 
-El frontend (`web/`, Vite + React + TypeScript) se compila al construir la imagen de Node-RED y se sirve en `https://<ip>:1880/app/`. El editor sigue en `/`. Los archivos compilados quedan en `/usr/share/nodered-web`, un directorio de root que el contenedor no puede modificar. No habla MQTT: no hay listener WebSocket ni usuario MQTT para el frontend, y todo pasa por la API HTTP de Node-RED. El mecanismo del progreso en vivo del registro se decide el 11 de noviembre (`docs/contrato-mqtt.md`, sección 6). Para desarrollarlo desde una laptop, ver [web/README.md](../web/README.md).
+El frontend (`web/`, Vite + React + TypeScript) se compila al construir la imagen de Node-RED y se sirve en `https://<ip>:1880/app/`. El editor sigue en `/`. Los archivos compilados quedan en `/usr/share/nodered-web`, un directorio de root que el contenedor no puede modificar. No habla MQTT: no hay listener WebSocket ni usuario MQTT para el frontend, y todo pasa por la API HTTP de Node-RED. El progreso en vivo del registro es un sondeo de `GET /api/enrolamiento/estado` (plan, sección 6.7), no MQTT. Para desarrollarlo desde una laptop, ver [web/README.md](../web/README.md).
 
 El contexto de build de Node-RED sigue siendo `nodered/`. `web/` entra como contexto adicional (`additional_contexts` en `docker-compose.yml`), de modo que `orangepi/.env` nunca forma parte del contexto.
 
