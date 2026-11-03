@@ -450,7 +450,7 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 /orangepi
   /vision                servicio C++, scripts de conversión (.nb fuera de git)
   /pantalla              programa Python de la ILI9341
-  /systemd               unidad systemd del servicio de visión (orangepi-vision.service)
+  /systemd               unidades systemd: servicio de visión (orangepi-vision.service) y pantalla (orangepi-pantalla.service)
   /sql/schema.sql        esquema de Postgres (alumnos, sesiones, asistencias, metricas_energia)
   /sql/roles.sh         rol de Node-RED en Postgres (privilegios mínimos)
   /mosquitto             configuración, ACL (`acl`) y entrypoint del broker
@@ -481,8 +481,8 @@ El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardwar
 | Fecha | Hito | Gustavo | Arnau | Yordi |
 |---|---|---|---|---|
 | **28 oct** | Proyecto y planeación | Especificación y exposición | — | Repo y estructura |
-| **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms); adaptadores reales de MQTT y HTTP, proceso de producción y unidad systemd del servicio de visión | Lista de compras; overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; arranque del esqueleto del frontend; ACL de Mosquitto y usuarios por rol |
-| **11 nov** | Segundo avance | Toolchain Pegasus en la PC y modelo de la NPU convertido a `.nb`; detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura; XIAO (la placa y su cámara ya están; los sensores y actuadores dependen de las compras): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | RTC DS3231 e integración del hardware de la pantalla | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro); autenticación de la API en Node-RED (`httpNodeMiddleware`); ingesta a `metricas_energia` y primer gráfico de energía con el INA219 |
+| **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms); adaptadores reales de MQTT y HTTP, proceso de producción y unidad systemd del servicio de visión | Lista de compras; overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla (hecho: `/dev/spidev3.0` y `/dev/spidev3.1`; `orangepi-pantalla.service`) | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; arranque del esqueleto del frontend; ACL de Mosquitto y usuarios por rol |
+| **11 nov** | Segundo avance | Toolchain Pegasus en la PC y modelo de la NPU convertido a `.nb`; detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; MOSFET y tira LED de 12 V; orquestación luz–captura; XIAO (la placa y su cámara ya están; los sensores y actuadores dependen de las compras): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | RTC DS3231 e integración del hardware de la pantalla; prueba de la unidad systemd con la pantalla conectada | Flujos de pase de lista y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; API de alumnos e importación de CSV; esqueleto del frontend; menú base de la pantalla (sesión, lista y guía de registro); autenticación de la API en Node-RED (`httpNodeMiddleware`); ingesta a `metricas_energia` y primer gráfico de energía con el INA219 |
 | **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E5; umbral con LFW | — | Frontend de registro completo, con la pestaña de Métricas y Asistencia; pantalla completa con sus 3 vistas y los botones de control |
 | **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend y de la pantalla; E6 |
 
@@ -510,7 +510,7 @@ El 11 de noviembre queda cargado para Gustavo: el toolchain, la conversión, la 
 | Captura, PIR e INA219 por MQTT en la XIAO (11 nov) | Gustavo | La compra del INA219 y el PIR (la XIAO y su cámara ya están) | La ingesta de energía real a Postgres |
 | Servo y LEDs por MQTT (11 nov) | Gustavo | La compra del servo, los LEDs y el MOSFET | La retroalimentación del pase de lista |
 | Prueba de servo y captura simultáneas (11 nov) | Gustavo | El servo y el firmware de la XIAO | — |
-| Overlays de SPI y unidad systemd | Arnau | — | La pantalla en la Orange Pi |
+| Overlays de SPI y unidad systemd (hecho, 4 nov; prueba con la pantalla conectada, 11 nov) | Arnau | — | La pantalla en la Orange Pi |
 | Detección, alineación y embedding en la NPU | Gustavo | El modelo `.nb` y `/dev/vipcore` | La galería y la publicación del resultado |
 | Galería y publicación del resultado | Gustavo | La detección en la NPU | El pase de lista y las reglas de sesión |
 | Orden de enrolar con captura de 5 poses | Gustavo | La galería y la captura de la XIAO | El registro de alumnos en el frontend |

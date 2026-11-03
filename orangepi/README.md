@@ -209,7 +209,7 @@ Cada cliente guarda su contraseña fuera de git:
 |---|---|
 | Servicio de visión (Gustavo) | La de `vision` se copia también a `MQTT_PASSWORD` en `/etc/pase-lista/vision.env` (`orangepi/vision/vision.env.example`). Su `vision.conf` ya usa `usuario: "vision"` y `client_id: "vision"`. Reiniciar el servicio después. |
 | Firmware de la XIAO (Gustavo) | La de `xiao`, en la configuración del firmware que no se versiona. |
-| Pantalla (`orangepi/pantalla`, aún no existe) | La de `pantalla`, en el archivo de entorno de su unidad systemd. |
+| Pantalla (`orangepi/pantalla`, aún sin MQTT) | La de `pantalla`, en el archivo de entorno de su unidad systemd. |
 
 ### Un usuario, un cliente
 

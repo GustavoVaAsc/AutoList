@@ -62,7 +62,8 @@ orangepi/                 stack de la placa (AGENTS.md propio)
   .env.example            plantilla de credenciales; orangepi/.env no se versiona
   mosquitto/              configuración, ACL (acl) y entrypoint del broker
   vision/                 servicio de visión en C++ (de Gustavo)
-  systemd/                unidad systemd del servicio de visión
+  pantalla/               programa de la pantalla ILI9341 en Python (README propio; .venv ignorado por git)
+  systemd/                unidades systemd: servicio de visión y pantalla
   sql/                    schema.sql y roles.sh (initdb de Postgres)
   README.md               operación del stack
 nodered/                  imagen, ajustes y flujos (AGENTS.md propio)
@@ -71,7 +72,7 @@ web/                      frontend (Vite + React + TypeScript; README propio)
 herramientas/             simular_energia.sh
 ```
 
-Aún no existen en el repo: `firmware/` y `orangepi/pantalla/`.
+Aún no existe en el repo: `firmware/`.
 
 `docs/SPEC.md` y `docs/PODA.md` son notas internas ignoradas por git (`.gitignore`). No los versiones.
 
