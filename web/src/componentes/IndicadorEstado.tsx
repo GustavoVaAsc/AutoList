@@ -1,65 +1,60 @@
-import { useEffect, useRef, useState } from 'react'
-import { useEstadoPlaca, type EstadoPlaca } from '../estadoPlaca'
+import { useEffect, useRef } from 'react'
 import { useEstadoLecturas } from '../lecturasContexto'
+import { MarcaAsistencia, type TipoMarca } from './MarcaAsistencia'
 
-const ETIQUETA: Record<EstadoPlaca, string> = {
+type EstadoApi = 'conectando' | 'conectada' | 'sin-sesion' | 'sin-conexion'
+
+const ETIQUETA: Record<EstadoApi, string> = {
   conectando: 'Conectando con la placa',
-  vivo: 'En vivo',
-  obsoleto: 'Sin lecturas recientes',
+  conectada: 'Placa conectada',
+  'sin-sesion': 'Sin sesión en la API',
   'sin-conexion': 'Sin conexión con la placa',
 }
 
+// La marca dice el estado como en la hoja: palomita (respondió), casilla vacía
+// (todavía no hay respuesta o falta la sesión) y tachita roja (falló).
+const MARCA: Record<EstadoApi, TipoMarca> = {
+  conectando: 'pendiente',
+  conectada: 'presente',
+  'sin-sesion': 'pendiente',
+  'sin-conexion': 'falta',
+}
+
 /**
- * Estado real de la placa, a partir del sondeo: en vivo (última lectura con
- * menos de 60 s según la hora de la placa), sin lecturas recientes o sin
- * conexión. El texto lleva la información; el punto es redundante.
- * Movimiento: un pulso, una sola vez, cuando llega una lectura nueva.
- * Anuncio para lectores de pantalla: solo aquí (región oculta), y solo cuando
- * el estado cambia; el resto de la interfaz no anuncia estados.
+ * Estado de la comunicación con la placa, el mismo en todas las vistas. Sale de
+ * la última consulta de energía (`useLecturas`, que corre en App sea cual sea la
+ * vista), no de las consultas de cada vista: la lista de alumnos tiene su propio
+ * sondeo y no se sube al contexto. "Placa conectada" quiere decir que esa
+ * consulta respondió, o sea que la placa y la API están ahí; no dice nada de si
+ * la XIAO publica (eso es la frescura de la lectura y vive en Métricas, con su
+ * aviso). Antes este indicador decía "Sin lecturas recientes" estando en
+ * cualquier vista, un dato de la XIAO que no tenía que ver con la pantalla.
+ * El texto lleva la información y lo lee el lector de pantalla; la marca es
+ * redundante y no brilla ni pulsa. La región viva, aparte, anuncia solo los
+ * cambios de estado (no el inicial), para no duplicar el texto al cargar.
  */
 export function IndicadorEstado() {
-  const { tipo, edadMs } = useEstadoPlaca()
-  const { lecturas } = useEstadoLecturas()
-  const [pulsos, setPulsos] = useState(0)
-  const [pulsando, setPulsando] = useState(false)
-  const [anuncio, setAnuncio] = useState('')
-
-  // Pulso: depende solo de que llegue una lectura nueva, no del estado.
-  const ultimaHora = lecturas?.[lecturas.length - 1]?.t ?? null
-  const anterior = useRef<number | null>(null)
-  useEffect(() => {
-    if (ultimaHora !== null && anterior.current !== null && ultimaHora !== anterior.current) {
-      setPulsos((n) => n + 1)
-      // Con movimiento reducido no hay animación y `onAnimationEnd` nunca llegaría a limpiar el estado.
-      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPulsando(true)
-    }
-    anterior.current = ultimaHora
-  }, [ultimaHora])
+  const { lecturas, error, sinSesion } = useEstadoLecturas()
+  const tipo: EstadoApi = sinSesion ? 'sin-sesion' : error !== null ? 'sin-conexion' : lecturas === null ? 'conectando' : 'conectada'
 
   // La región live se monta vacía y se llena al cambiar el estado: no anuncia
   // el "Conectando" inicial al cargar la página.
+  const anuncio = useRef<HTMLSpanElement>(null)
   const tipoAnterior = useRef(tipo)
   useEffect(() => {
     if (tipo !== tipoAnterior.current) {
       tipoAnterior.current = tipo
-      setAnuncio(`Estado de la placa: ${ETIQUETA[tipo]}`)
+      if (anuncio.current !== null) {
+        anuncio.current.textContent = `Estado de la placa: ${ETIQUETA[tipo]}`
+      }
     }
   }, [tipo])
 
-  const texto = tipo === 'vivo' && edadMs !== null ? `En vivo · hace ${Math.floor(edadMs / 1000)} s` : ETIQUETA[tipo]
-
   return (
     <div className="estado-vivo">
-      {/* key: cada lectura nueva remonta el punto y la animación corre una vez;
-          al terminar se limpia `pulsando`, así un cambio de estado no la repite. */}
-      <span
-        key={pulsos}
-        className={`punto punto--${tipo}${pulsando ? ' punto--pulso' : ''}`}
-        aria-hidden="true"
-        onAnimationEnd={() => setPulsando(false)}
-      />
-      <span className="estado-vivo__texto" aria-hidden="true">{texto}</span>
-      <span className="solo-lectores" role="status">{anuncio}</span>
+      <MarcaAsistencia tipo={MARCA[tipo]} />
+      <span className="estado-vivo__texto">{ETIQUETA[tipo]}</span>
+      <span className="solo-lectores" role="status" ref={anuncio} />
     </div>
   )
 }

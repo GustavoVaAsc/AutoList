@@ -1,225 +1,204 @@
 /* AutoList: tokens y estilos.
 
-   Lenguaje visual inspirado en la gramática de Apple (secciones a todo el
-   ancho que alternan fondo, tipografía grande con tracking negativo, radios
-   generosos, barra translúcida, elevación por superficie y no por sombra).
-   Se toman la gramática y los tokens, nunca la marca: no hay logo, nombres de
-   productos ni textos que remitan a apple.com. Encima va la identidad propia:
-   un solo acento, el "verde asistencia" (--acento), en el papel que Apple da
-   a su azul. Todo el color, el espaciado y la tipografía salen de variables
-   en :root. Claro es el modo principal (aula iluminada, proyector); el oscuro
-   sigue prefers-color-scheme o la elección del selector de tema
-   (data-theme en <html>, que fija public/tema.js antes de pintar).
+   La dirección visual vive en web/DESIGN.md y manda sobre este archivo: aquí
+   solo se aplica. Es el lenguaje de la lista de asistencia impresa del
+   profesor, que es el objeto que el proyecto reemplaza: papel y tinta, una
+   tinta de acento (la del bolígrafo con que se marca la lista), renglones con su
+   regla donde hay datos y la marca de asistencia como gesto repetido.
 
-   Dónde va el acento: enlaces, control activo (anillo del segmento), anillo de
-   foco, línea de la gráfica, punto "en vivo", "List" del wordmark y el botón
-   primario si llega a existir. Rojo y ámbar solo como estados de error y
-   advertencia. Ningún otro color de marca.
+   Design Read: panel del profesor para pasar lista y administrar su grupo, para
+   un profesor en laptop o en el proyector del aula, en el lenguaje de una lista
+   de asistencia impresa (papel y tinta), ENERGY 2 / RHYTHM 2 / MOTION 2.
 
-   Tipografía: la del sistema en Apple (-apple-system, BlinkMacSystemFont) e
-   Inter empaquetada en todo lo demás (Windows, Android, Linux). Razón: en una
-   Mac sale la fuente nativa, y fuera de ella una sola fuente conocida y
-   predecible, sin caer en Segoe ni Roboto. Por eso no se pone system-ui antes
-   de Inter. Pesos 300, 400 y 600; el 500 no se usa, porque entre 400 y 600 no
-   se distingue lo bastante en pantallas de aula. Las cifras y las horas usan
-   font-variant-numeric: tabular-nums y no una fuente monoespaciada. */
+   Temas. Los colores se escriben una vez con light-dark(): :root declara
+   color-scheme: light dark (la opción "Sistema" del selector sigue al sistema
+   operativo) y data-theme="light" o "dark" lo fija. public/tema.js pone "light"
+   antes de pintar si no hay elección guardada: el tema por defecto es claro (es
+   una lista de papel y en un proyector se lee mejor clara). El oscuro es el
+   mismo papel de noche, completo.
 
-/* Inter variable, solo los subconjuntos latin y latin-ext (los del español).
-   Se declaran aquí y no con el wght.css del paquete, que trae también
-   cirílico, griego y vietnamita: el build empaquetaría esos archivos sin uso.
-   Los rangos son los de esa hoja. font-display: swap muestra texto de
-   inmediato con la fuente de reserva. */
+   Contrastes (verificados con el script de antislop-human, ver DESIGN.md): todo
+   el texto cumple 4.5:1 y los bordes de controles, el foco y las marcas 3:1, en
+   los dos temas. La regla de renglón (--regla) es decorativa: la información no
+   depende de ella. */
+
+/* Fuentes autoalojadas (@fontsource, versión exacta en package.json): la CSP es
+   style-src 'self' y el aula no tiene internet. Solo los subconjuntos latin y
+   latin-ext (los del español y los nombres del CSV), declarados aquí y no con
+   los 400.css del paquete, que traen también cirílico, griego y vietnamita: el
+   build empaquetaría esos archivos sin uso. Razón de cada familia, en DESIGN.md.
+   font-display: swap muestra texto de inmediato con la fuente de reserva. */
 @font-face {
-  font-family: 'Inter Variable';
+  font-family: 'Source Serif 4';
   font-style: normal;
   font-display: swap;
-  font-weight: 100 900;
-  src: url(../node_modules/@fontsource-variable/inter/files/inter-latin-ext-wght-normal.woff2) format('woff2-variations');
+  font-weight: 600;
+  src: url(../node_modules/@fontsource/source-serif-4/files/source-serif-4-latin-ext-600-normal.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../node_modules/@fontsource/source-serif-4/files/source-serif-4-latin-600-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Libre Franklin';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../node_modules/@fontsource/libre-franklin/files/libre-franklin-latin-ext-400-normal.woff2) format('woff2');
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
 @font-face {
-  font-family: 'Inter Variable';
+  font-family: 'Libre Franklin';
   font-style: normal;
   font-display: swap;
-  font-weight: 100 900;
-  src: url(../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2) format('woff2-variations');
+  font-weight: 400;
+  src: url(../node_modules/@fontsource/libre-franklin/files/libre-franklin-latin-400-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Libre Franklin';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../node_modules/@fontsource/libre-franklin/files/libre-franklin-latin-ext-600-normal.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Libre Franklin';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../node_modules/@fontsource/libre-franklin/files/libre-franklin-latin-600-normal.woff2) format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 :root {
-  /* Superficies. El cambio de color entre secciones es el separador: no hay
-     bordes ni sombras entre ellas. Hero en gris perla, gráfica en casi negro y
-     tabla en blanco. */
-  --superficie-hero: #f5f5f7;
-  --superficie-tabla: #ffffff;
-  --tarjeta: #ffffff;
-  --hover: #f5f5f7;           /* hover de botones: un escalón sobre la tarjeta */
+  color-scheme: light dark;
 
-  /* Texto. --cuerpo es más oscuro que el gris habitual (#6e6e73): la barra es
-     translúcida y, sobre la sección oscura, su fondo real baja a #e5e5e7; con
-     #515154 el texto secundario sigue en 6.3:1 incluso entonces. */
-  --tinta: #1d1d1f;
-  --cuerpo: #515154;
+  /* Superficies. --fondo es la mesa; --hoja, el papel de la lista (un blanco
+     cálido, no gris ni puro); --papel2, la banda de la cabecera de tabla y la
+     fila con el puntero. La hoja se separa de la mesa por tono y un borde fino,
+     sin sombra. */
+  --fondo: light-dark(#f1ecdf, #15130f);
+  --hoja: light-dark(#fcf9f1, #1e1b16);
+  --papel2: light-dark(#f2ecdd, #29251d);
 
-  /* Líneas y contornos */
-  --borde-tarjeta: rgba(0, 0, 0, 0.08);   /* borde de 1 px de las tarjetas: separa sin sombra */
-  --linea: rgba(0, 0, 0, 0.08);           /* filas de la tabla */
-  --borde-control: #6e6e73;               /* contorno de controles (WCAG 1.4.11): 4.7:1 sobre perla y 4.0:1 sobre la barra en su peor caso */
+  /* Tinta: texto principal y reglas de encabezado. --suave es el tercer
+     escalón (etiquetas de campo, pies, casilla vacía). */
+  --tinta: light-dark(#1c1a16, #f0e9d8);
+  --cuerpo: light-dark(#3f3b32, #d0c8b5);
+  --suave: light-dark(#625b4c, #a39b87);
 
-  /* Acento: verde asistencia. 5.02:1 sobre blanco y 4.6:1 sobre perla. */
-  --acento: #1a7f4b;
+  /* Líneas. --regla es la regla de renglón (decorativa); --borde-control
+     delimita lo que se opera (3:1 sobre la hoja, la mesa y --papel2). */
+  --regla: light-dark(#c2bba8, #4a443a);
+  --borde-control: light-dark(#857d6a, #8b8472);
 
-  /* Barra superior y control segmentado */
-  --barra: rgba(245, 245, 247, 0.92);     /* perla al 92 %: deja ver el desenfoque sin que lo que pasa debajo reste contraste al texto */
-  --barra-solida: #f5f5f7;                /* con prefers-reduced-transparency */
-  --pista: #e8e8ed;                       /* pista gris del control segmentado */
-  --segmento: #ffffff;                    /* segmento activo, un escalón sobre la pista */
+  /* Pluma: la tinta del bolígrafo con que se marca la lista. Solo en la acción
+     principal (el botón primario), el estado registrado o presente y el foco. */
+  --pluma: light-dark(#1b3c9c, #9fb5ff);
+  --pluma-hover: light-dark(#14307f, #b6c6ff);
+  --pluma-pulsada: light-dark(#0f2566, #c9d5ff);
+  --pluma-suave: light-dark(rgba(27, 60, 156, 0.09), rgba(159, 181, 255, 0.14));
+  --sobre-pluma: light-dark(#fcf9f1, #15130f);
 
-  /* Sección de la gráfica: casi negra en ambos temas, para que la alternancia
-     perla, negro, blanco se lea igual en claro y en oscuro. Sus tokens (--g-*)
-     no cambian con el tema. Contrastes sobre #272729: texto de ejes 5.8:1,
-     eje 4.6:1, cuadrícula 3.2:1, línea 6.7:1. */
-  --superficie-oscura: #272729;
-  --g-fondo: #272729;
-  --g-titulo: #f5f5f7;
-  --g-texto: #a1a1a6;
-  --g-eje: #8e8e93;
-  --g-rejilla: #737378;
-  --g-acento: #4cc38a;        /* variante clara del acento para fondos oscuros */
-  --g-tooltip: #1d1d1f;
-  --g-tooltip-borde: #48484a;
+  /* Error: solo errores y faltas reales, siempre con texto. Las advertencias
+     no tienen color: llevan tinta sobre --papel2 con borde de tinta. */
+  --error: light-dark(#a3241a, #ff9d8f);
+  --error-fondo: light-dark(#fbe9e3, #2e1813);
 
-  /* Estados. Para texto se usan las variantes -hondo; el color base, solo en no textuales. */
-  --error: #ee0000;
-  --error-hondo: #c50000;
-  --error-suave: #f7d4d6;
-  --advertencia: #f5a623;
-  --advertencia-hondo: #ab570a;
-  --advertencia-suave: #ffefcf;
+  /* Elevación: solo en lo que flota (diálogo, toast). */
+  --sombra: light-dark(rgba(28, 26, 22, 0.16), rgba(0, 0, 0, 0.6));
+  --velo: rgba(21, 19, 15, 0.55);
 
-  /* Espaciado, base de 4 px */
+  /* Espaciado, base de 4 px. */
   --e-1: 4px;
   --e-2: 8px;
   --e-3: 12px;
   --e-4: 16px;
+  --e-5: 20px;
   --e-6: 24px;
   --e-8: 32px;
   --e-12: 48px;
   --e-16: 64px;
-  --e-20: 80px;
 
-  /* Radios: 8 px controles compactos, 18 px tarjetas, píldora para acciones y
-     el control segmentado. No hay valores intermedios. */
-  --radio-control: 8px;
-  --radio-tarjeta: 18px;
-  --radio-pildora: 9999px;
+  /* Radios. El papel tiene esquinas casi rectas: hojas, tablas, avisos y marcas
+     de 2 px, botones y campos de 3 px, diálogo de 4 px. Sin píldoras. */
+  --r-papel: 2px;
+  --r-control: 3px;
+  --r-modal: 4px;
 
-  /* Tipografía */
-  --fuente: -apple-system, BlinkMacSystemFont, 'Inter Variable', 'Inter', sans-serif;
+  /* Tipografía. Serif de documento para títulos y cifras grandes; grotesca de
+     formulario para todo lo demás. Los números tabulares se piden en body. */
+  --serif: 'Source Serif 4', 'Source Serif Pro', Georgia, 'Times New Roman', serif;
+  --fuente: 'Libre Franklin', 'Franklin Gothic Medium', 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  --t-cifra: 56px;            /* la cifra protagonista de una vista */
+  --t-titulo: 34px;           /* título de la hoja o de la vista (h1) */
+  --t-seccion: 22px;          /* título de sección (h2) */
+  --t-cifra-media: 30px;      /* conteos del encabezado de la hoja */
+  --t-cuerpo: 16px;           /* cuerpo y tablas (en proyector se lee desde el fondo del aula) */
+  --t-ui: 15px;               /* botones, campos y avisos */
+  --t-caption: 13px;          /* etiquetas de campo y pies */
 
-  /* Escala. Hero 56 px; baja a 40 px bajo 1068 px y a 34 px bajo 640 px. */
-  --t-hero: 56px;
-  --t-hero-interlinea: 1.07;
-  --t-display: 40px;          /* h1 de cada vista */
-  --t-titular: 28px;          /* titular de sección */
-  --t-cuerpo: 17px;
-  --t-caption: 14px;
-
-  /* Movimiento. Curva de entrada fuerte; las salidas (quitar hover, soltar un
-     botón) son más rápidas que las entradas. */
+  /* Movimiento. Curva de salida fuerte para entradas y salidas, sin rebotes
+     (el único resorte es el del diálogo). Las salidas son más rápidas que las
+     entradas, y lo que se presiona responde en 100 ms. */
   --ease-entrada: cubic-bezier(0.23, 1, 0.32, 1);
-  --d-pulsar: 100ms;          /* botón o segmento presionado */
-  --d-salida: 150ms;          /* quitar hover o foco */
-  --d-vista: 180ms;           /* cambio de vista */
-  --d-indicador: 200ms;       /* segmento activo */
+  --ease-movimiento: cubic-bezier(0.77, 0, 0.175, 1);
+  /* Para lo que se escribe (el renglón, la palomita): arranca y termina suave,
+     como un trazo de bolígrafo; con la curva de salida fuerte el barrido se
+     acabaría en una décima y no se vería. */
+  --ease-escribir: cubic-bezier(0.45, 0.05, 0.3, 1);
+  --d-pulsar: 100ms;          /* botón presionado */
+  --d-realce: 160ms;          /* puntero encima de un botón o una fila */
+  --d-salida: 180ms;          /* quitar el puntero; salida del diálogo */
+  --d-salir-vista: 120ms;     /* la vista que se va */
+  --d-entrada: 300ms;         /* bloques de una vista */
+  --escalon: 50ms;            /* entre bloques */
+  --d-fila: 360ms;            /* renglón que se escribe (el escalón, de 40 ms, está en TablaAlumnos) */
+  --d-trazo: 560ms;           /* la palomita que se traza */
+  --d-indicador: 260ms;       /* subrayado activo de la navegación */
+  --d-toast: 320ms;           /* avisos de Sonner al entrar y al reubicarse */
+  --d-resorte: 420ms;         /* diálogo: lo que tarda el resorte en asentarse */
+  /* Resorte subamortiguado (ζ = 0.55, asentado en 420 ms, rebote de 12.6 %),
+     muestreado en 24 tramos como curva linear(): una transición CSS, así que se
+     interrumpe y se revierte desde donde va. Solo lo usa el diálogo, al entrar. */
+  --ease-resorte: linear(0, 0.074, 0.248, 0.461, 0.67, 0.847, 0.98, 1.067, 1.113, 1.126, 1.117, 1.096, 1.069, 1.042, 1.02, 1.003, 0.992, 0.986, 0.984, 0.985, 0.988, 0.991, 0.995, 0.997, 1);
 
-  --contenedor: 1200px;
-  --margen: var(--e-6);
-
-  color-scheme: light dark;
-}
-
-/* Tema oscuro. Va dos veces porque CSS no deja unir una media query con un
-   atributo: una para "Sistema" (preferencia del sistema, salvo que se haya
-   elegido Claro) y otra para la elección explícita. Mantenerlas iguales.
-   Hero y tabla en negro, gráfica en #272729 y tarjeta en #1d1d1f: la
-   alternancia negro, gris oscuro, negro sigue leyéndose sin bordes. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --superficie-hero: #000000;
-    --superficie-tabla: #000000;
-    --tarjeta: #1d1d1f;
-    --hover: #2c2c2e;
-
-    --tinta: #f5f5f7;
-    --cuerpo: #a1a1a6;
-
-    --borde-tarjeta: rgba(255, 255, 255, 0.14);
-    --linea: rgba(255, 255, 255, 0.12);
-    --borde-control: #8e8e93;
-
-    --acento: #4cc38a;
-
-    --barra: rgba(29, 29, 31, 0.92);
-    --barra-solida: #1d1d1f;
-    --pista: #2c2c2e;
-    --segmento: #48484a;
-
-    --error: #ff6166;
-    --error-hondo: #ff6166;
-    --error-suave: #3a1315;
-    --advertencia: #f7b955;
-    --advertencia-hondo: #f7b955;
-    --advertencia-suave: #2d1d05;
-  }
-}
-
-:root[data-theme='dark'] {
-  color-scheme: dark;
-
-  --superficie-hero: #000000;
-  --superficie-tabla: #000000;
-  --tarjeta: #1d1d1f;
-  --hover: #2c2c2e;
-
-  --tinta: #f5f5f7;
-  --cuerpo: #a1a1a6;
-
-  --borde-tarjeta: rgba(255, 255, 255, 0.14);
-  --linea: rgba(255, 255, 255, 0.12);
-  --borde-control: #8e8e93;
-
-  --acento: #4cc38a;
-
-  --barra: rgba(29, 29, 31, 0.92);
-  --barra-solida: #1d1d1f;
-  --pista: #2c2c2e;
-  --segmento: #48484a;
-
-  --error: #ff6166;
-  --error-hondo: #ff6166;
-  --error-suave: #3a1315;
-  --advertencia: #f7b955;
-  --advertencia-hondo: #f7b955;
-  --advertencia-suave: #2d1d05;
+  /* Ancho fluido con tope: el contenido crece con la ventana, con un margen
+     lateral fijo de 32 px, y se detiene en 1680 px (margen incluido) para que
+     las columnas no se separen demasiado en monitores muy anchos. La cabecera y
+     las vistas usan el mismo .contenedor, así que se alinean en todos los anchos. */
+  --contenedor: 1680px;
+  --margen: var(--e-8);
 }
 
 :root[data-theme='light'] {
   color-scheme: light;
 }
 
-@media (max-width: 1067px) {
-  :root {
-    --t-hero: 40px;
-  }
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 @media (max-width: 640px) {
   :root {
     --margen: var(--e-4);
-    --t-hero: 34px;
-    --t-display: 32px;
+    --t-titulo: 28px;
+    --t-seccion: 20px;
+    --t-cifra: 44px;
+    --t-cifra-media: 26px;
   }
 }
 
@@ -233,19 +212,16 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
-/* Cuerpo: 17 px, interlínea 1.47 y tracking de -0.374 px, la escala de lectura
-   de Apple. Cifras tabulares en todo el documento: las lecturas que se
-   refrescan no deben bailar. El fondo del body es el del hero, para que una
-   vista corta (Alumnos, Registro) no deje una franja de otro color. */
 body {
   margin: 0;
-  background: var(--superficie-hero);
+  background: var(--fondo);
   color: var(--cuerpo);
   font-family: var(--fuente);
   font-size: var(--t-cuerpo);
-  line-height: 1.47;
-  letter-spacing: -0.374px;
+  line-height: 1.55;
   font-weight: 400;
+  /* Cuentas, horas y conteos: cifras tabulares, para que las columnas alineen y
+     las cifras no bailen al contar. */
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
 }
@@ -265,14 +241,25 @@ ul {
   list-style: none;
 }
 
-:focus-visible {
-  outline: 2px solid var(--acento);
-  outline-offset: 2px;
+/* Todo lo que se opera muestra la mano; lo deshabilitado, el cursor de no permitido. */
+a[href],
+button,
+select,
+summary,
+label[for],
+[role='button'] {
+  cursor: pointer;
 }
 
-/* En la sección oscura el foco usa la variante clara del acento. */
-.franja--oscura :focus-visible {
-  outline-color: var(--g-acento);
+button:disabled,
+[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
+/* El foco es de pluma, uno de sus tres usos. */
+:focus-visible {
+  outline: 2px solid var(--pluma);
+  outline-offset: 2px;
 }
 
 /* Destino de foco programático al navegar: no es un control. */
@@ -280,14 +267,21 @@ h1[tabindex='-1']:focus {
   outline: none;
 }
 
-/* Etiquetas técnicas (horas, unidades): caption de 14 px en tabulares. Ya no
-   van en monoespaciada: la alineación la da tabular-nums. */
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border: 1px solid var(--regla);
+  border-radius: var(--r-papel);
+  background: var(--papel2);
+  color: var(--tinta);
+}
+
+/* Pies, unidades y etiquetas pequeñas. */
 .etiqueta-tecnica {
   font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  font-weight: 400;
-  color: var(--cuerpo);
+  line-height: 1.45;
+  color: var(--suave);
 }
 
 /* Texto solo para lectores de pantalla */
@@ -303,7 +297,6 @@ h1[tabindex='-1']:focus {
   border: 0;
 }
 
-/* Estructura */
 .contenedor {
   width: 100%;
   max-width: var(--contenedor);
@@ -312,40 +305,70 @@ h1[tabindex='-1']:focus {
   padding-right: var(--margen);
 }
 
-/* Cambio de vista. Propósito: señalar que el contenido cambió sin un salto
-   brusco; opacidad y 4 px de desplazamiento, una sola vez, sin cascada. */
-.vista {
-  animation: entrada-vista var(--d-vista) var(--ease-entrada) both;
+.salto {
+  position: absolute;
+  left: var(--e-2);
+  top: -64px;
+  z-index: 30;
+  padding: var(--e-3) var(--e-4);
+  border: 1px solid var(--borde-control);
+  border-radius: var(--r-control);
+  background: var(--hoja);
+  color: var(--tinta);
 }
 
-@keyframes entrada-vista {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
+.salto:focus {
+  top: var(--e-2);
 }
 
-/* Barra superior: fija, translúcida y con desenfoque. Es el único elemento de
-   la página con backdrop-filter: el desenfoque es lo que la eleva sobre el
-   contenido sin sombra ni borde. Con prefers-reduced-transparency el fondo es
-   sólido y no hay desenfoque. */
+/* Marca de asistencia (componentes/MarcaAsistencia.tsx). Es el motivo de la
+   identidad: la casilla de papel y lo que el profesor pone en ella. Mide 1.5 em,
+   así que crece con el texto que acompaña: 24 px junto a un renglón de la lista,
+   20 px en el indicador de la cabecera. La casilla es de tinta suave; el trazo
+   es de pluma (presente) o rojo (falta). Es decorativa, siempre con texto al lado. */
+.marca-asistencia {
+  flex: none;
+  width: 1.5em;
+  height: 1.5em;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  overflow: visible;
+}
+
+.marca-asistencia__caja {
+  stroke: var(--suave);
+  stroke-width: 1.5;
+}
+
+.marca-asistencia__trazo {
+  stroke-width: 2.5;
+}
+
+.marca-asistencia--presente .marca-asistencia__trazo {
+  stroke: var(--pluma);
+}
+
+.marca-asistencia--falta .marca-asistencia__trazo {
+  stroke: var(--error);
+}
+
+/* Barra superior. Sobre la mesa, con una regla de tinta debajo, como el borde de
+   una hoja impresa: sin desenfoque ni sombra. Fija solo con espacio de sobra:
+   desde 960 px de ancho y 600 px de alto, en una sola fila. En pantallas angostas
+   pasa a tres filas y fija tapa media ventana en horizontal o con zoom al 400 %
+   (WCAG 1.4.10 y 2.4.11), así que se desplaza con la página. Donde es fija,
+   scroll-padding y scroll-margin dejan el destino de un foco por debajo. */
 .encabezado {
   position: relative;
   z-index: 20;
-  background: var(--barra);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
+  background: var(--fondo);
+  border-bottom: 2px solid var(--tinta);
 }
 
-/* Fija solo con espacio de sobra: desde 960 px de ancho (una sola fila de 56 px)
-   y 600 px de alto. En pantallas angostas la barra mide hasta unos 136 px, y en
-   horizontal o con zoom al 400 % (WCAG 1.4.10) se comería media ventana y podría
-   tapar el foco (WCAG 2.4.11): ahí se desplaza con la página. Donde es fija, el
-   scroll-padding y el scroll-margin dejan el destino de un foco o de un ancla
-   por debajo de la barra. */
 @media (min-width: 960px) and (min-height: 600px) {
   html {
-    scroll-padding-top: 72px;
+    scroll-padding-top: 80px;
   }
 
   .encabezado {
@@ -353,17 +376,8 @@ h1[tabindex='-1']:focus {
     top: 0;
   }
 
-  h1[tabindex='-1'],
-  .titular {
-    scroll-margin-top: 72px;
-  }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  .encabezado {
-    background: var(--barra-solida);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
+  h1[tabindex='-1'] {
+    scroll-margin-top: 80px;
   }
 }
 
@@ -372,11 +386,11 @@ h1[tabindex='-1']:focus {
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   grid-template-areas: 'marca nav estado tema';
   align-items: center;
-  column-gap: var(--e-6);
-  min-height: 56px;
+  column-gap: var(--e-8);
+  min-height: 64px;
 }
 
-/* Bajo 960 px el control segmentado no cabe junto al resto: pasa a su propia fila. */
+/* Bajo 960 px la navegación pasa a su propia fila. */
 @media (max-width: 959px) {
   .encabezado__interior {
     grid-template-columns: auto minmax(0, 1fr) auto;
@@ -385,13 +399,12 @@ h1[tabindex='-1']:focus {
       'nav nav nav';
     column-gap: var(--e-4);
     row-gap: var(--e-2);
-    padding-top: var(--e-2);
+    padding-top: var(--e-3);
     padding-bottom: var(--e-2);
   }
 }
 
-/* A 360 px el texto del estado ("Conectando con la placa") no cabe junto a la
-   marca y al selector: baja a una tercera fila. */
+/* A 360 px el texto del estado no cabe junto a la marca y al selector: baja. */
 @media (max-width: 640px) {
   .encabezado__interior {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -399,47 +412,38 @@ h1[tabindex='-1']:focus {
       'marca tema'
       'nav nav'
       'estado estado';
-    row-gap: var(--e-2);
   }
 }
 
-/* Wordmark: tipográfico, sin símbolo. "Auto" en tinta y "List" en el acento.
-   Es un logotipo, exento del requisito de contraste de texto. */
+/* Wordmark: la palabra AutoList en la serif de documento, sin símbolo ni logotipo. */
 .marca {
   grid-area: marca;
-  font-size: 21px;
-  line-height: 28px;
+  font-family: var(--serif);
+  font-size: 26px;
+  line-height: 32px;
   font-weight: 600;
-  letter-spacing: -0.4px;
+  letter-spacing: -0.01em;
   color: var(--tinta);
 }
 
-.marca__acento {
-  color: var(--acento);
-}
-
-/* Control segmentado: pista gris en píldora con contorno de 1 px (WCAG 1.4.11:
-   la pista sola, #e8e8ed sobre perla, no se distingue). Las vistas son enlaces
-   y no botones: cambian el hash. */
+/* Navegación: pestañas de texto. Son enlaces (cambian el hash). La vista activa
+   lleva un subrayado de tinta que se desliza entre vistas: continuidad espacial,
+   solo al cambiar de ruta. */
 .navegacion-contenedor {
   grid-area: nav;
-  position: relative; /* referencia del segmento activo */
-  justify-self: center;
-  padding: 2px;
-  border: 1px solid var(--borde-control);
-  border-radius: var(--radio-pildora);
-  background: var(--pista);
+  position: relative;
+  justify-self: start;
 }
 
 @media (max-width: 959px) {
   .navegacion-contenedor {
-    width: 100%;
-    max-width: 560px;
+    justify-self: stretch;
   }
 }
 
 .navegacion {
   display: flex;
+  gap: var(--e-2);
 }
 
 @media (max-width: 959px) {
@@ -449,27 +453,23 @@ h1[tabindex='-1']:focus {
   }
 }
 
-/* z-index 1: el texto va sobre el segmento deslizante. Peso fijo en 400 para
-   que el ancho no cambie al activarse y el segmento no tiemble. */
 .navegacion__enlace {
   position: relative;
   z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--e-1);
-  min-height: 36px;
-  padding: 0 14px;
-  border-radius: var(--radio-pildora);
-  color: var(--cuerpo);
-  font-size: var(--t-caption);
-  line-height: 1.29;
-  letter-spacing: -0.224px;
-  font-weight: 400;
+  gap: var(--e-2);
+  min-height: 44px;
+  padding: 0 var(--e-4);
+  border-radius: var(--r-control);
+  color: var(--suave);
+  font-size: var(--t-ui);
+  line-height: 1.25;
+  font-weight: 600;
   text-align: center;
   text-decoration: none;
-  cursor: pointer;
-  transition: color var(--d-salida) var(--ease-entrada), transform var(--d-salida) var(--ease-entrada);
+  transition: color var(--d-realce) var(--ease-entrada), transform var(--d-realce) var(--ease-entrada);
 }
 
 .navegacion__enlace:hover,
@@ -477,46 +477,42 @@ h1[tabindex='-1']:focus {
   color: var(--tinta);
 }
 
-/* Al presionar el segmento se encoge: respuesta táctil de 100 ms. */
 .navegacion__enlace:active {
-  transform: scale(0.95);
+  transform: scale(0.97);
   transition-duration: var(--d-pulsar);
 }
 
-/* "Pronto": la vista aún no funciona. Es la única etiqueta de 12 px: va dentro
-   de un segmento y a 14 px lo ensancharía más de lo que cabe. 6.5:1 sobre la pista. */
+/* "Pronto": la vista aún no funciona; es un estado real, no un adorno. */
 .navegacion__pronto {
-  font-size: 12px;
-  line-height: 16px;
-  letter-spacing: 0;
+  padding: 0 6px;
+  border: 1px solid var(--borde-control);
+  border-radius: var(--r-papel);
+  color: var(--suave);
+  font-size: var(--t-caption);
+  line-height: 18px;
+  font-weight: 400;
 }
 
 @media (max-width: 959px) {
   .navegacion__enlace {
-    min-height: 44px;
     padding: 0 var(--e-2);
   }
 }
 
-/* Con 360 px de pantalla, el nombre y "Pronto" van en dos líneas. */
 @media (max-width: 640px) {
   .navegacion__enlace {
     flex-direction: column;
-    gap: 0;
+    gap: 2px;
   }
 }
 
-/* Segmento activo: blanco (o un escalón elevado en oscuro) con un anillo de 1 px
-   en el acento, que marca el control activo y lo distingue de la pista con más
-   de 3:1. Se desliza entre vistas (continuidad espacial); la primera posición
-   no se anima. El anillo es un borde, no una sombra. */
+/* Subrayado activo: el recuadro lo coloca App con el DOM y aquí solo se dibuja
+   su borde inferior. */
 .navegacion__indicador {
   position: absolute;
   left: 0;
   top: 0;
-  border: 1px solid var(--acento);
-  border-radius: var(--radio-pildora);
-  background: var(--segmento);
+  border-bottom: 3px solid var(--tinta);
   pointer-events: none;
 }
 
@@ -527,10 +523,10 @@ h1[tabindex='-1']:focus {
     height var(--d-indicador) var(--ease-entrada);
 }
 
-/* Estado de la placa */
+/* Estado de la placa: marca un hecho real (la API respondió o no). La marca de
+   asistencia lo dice y el texto lleva la información. */
 .estado-vivo {
   grid-area: estado;
-  position: relative;
   display: flex;
   align-items: center;
   gap: var(--e-2);
@@ -545,56 +541,11 @@ h1[tabindex='-1']:focus {
 
 .estado-vivo__texto {
   font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
+  line-height: 1.45;
   color: var(--cuerpo);
   white-space: nowrap;
 }
 
-.punto {
-  position: relative;
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.punto--vivo {
-  background: var(--acento);
-}
-
-.punto--conectando,
-.punto--obsoleto {
-  background: var(--borde-control);
-}
-
-.punto--sin-conexion {
-  background: var(--error);
-}
-
-/* Pulso único al llegar una lectura nueva: un anillo que se abre y se
-   desvanece una sola vez, nunca en bucle. */
-.punto--pulso::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: var(--acento);
-  animation: pulso 600ms var(--ease-entrada) 1 both;
-}
-
-@keyframes pulso {
-  from {
-    opacity: 0.5;
-    transform: scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: scale(2.8);
-  }
-}
-
-/* Selector de tema */
 .selector-tema {
   grid-area: tema;
   display: flex;
@@ -602,41 +553,36 @@ h1[tabindex='-1']:focus {
   gap: var(--e-2);
 }
 
-/* Etiqueta visible del selector: todo campo de formulario lleva su etiqueta. */
 .selector-tema__etiqueta {
   font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  color: var(--cuerpo);
+  font-weight: 600;
+  color: var(--suave);
 }
 
-/* Selector nativo en píldora, con contorno de 3:1 o más sobre la barra. */
+/* Campo de selección nativo, con borde de control. */
 .selector {
-  min-height: 36px;
-  padding: 0 var(--e-3);
+  min-height: 40px;
+  padding: 0 var(--e-2);
   border: 1px solid var(--borde-control);
-  border-radius: var(--radio-pildora);
-  background: var(--tarjeta);
+  border-radius: var(--r-control);
+  background: var(--hoja);
   color: var(--tinta);
   font: inherit;
-  font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  cursor: pointer;
-  transition: background-color var(--d-salida) var(--ease-entrada), transform var(--d-salida) var(--ease-entrada);
+  font-size: var(--t-ui);
+  line-height: 1.4;
+  transition: background-color var(--d-realce) var(--ease-entrada), transform var(--d-realce) var(--ease-entrada);
 }
 
 .selector:hover {
-  background: var(--hover);
+  background: var(--papel2);
 }
 
 .selector:active {
-  transform: scale(0.95);
+  transform: scale(0.98);
   transition-duration: var(--d-pulsar);
 }
 
 .selector:disabled {
-  cursor: not-allowed;
   opacity: 0.5;
 }
 
@@ -646,80 +592,257 @@ h1[tabindex='-1']:focus {
   }
 }
 
-.salto {
-  position: absolute;
-  left: var(--e-2);
-  top: -64px;
-  z-index: 30;
-  padding: var(--e-3) var(--e-4);
-  border: 1px solid var(--borde-tarjeta);
-  border-radius: var(--radio-control);
-  background: var(--tarjeta);
-  color: var(--tinta);
+/* Vista. Se remonta al cambiar de ruta (App la identifica por ruta): sus
+   bloques entran escalonados (ver "Movimiento de las vistas"). Cuando se va, la
+   anterior sale con un fundido corto. */
+.vista {
+  transition:
+    opacity var(--d-salir-vista) var(--ease-entrada),
+    transform var(--d-salir-vista) var(--ease-entrada);
 }
 
-.salto:focus {
-  top: var(--e-2);
+.vista--sale {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
-/* Hero: sección a todo el ancho en gris perla (casi negro en oscuro). */
-.hero {
-  background: var(--superficie-hero);
-  padding-top: var(--e-16);
+.pagina {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-6);
+  padding-top: var(--e-8);
   padding-bottom: var(--e-16);
 }
 
 @media (max-width: 640px) {
-  .hero {
-    padding-top: var(--e-8);
+  .pagina {
+    gap: var(--e-4);
+    padding-top: var(--e-4);
     padding-bottom: var(--e-12);
   }
 }
 
-/* h1 de cada vista: display de 40 px, peso 600, interlínea 1.1. */
-.titulo-vista {
-  font-size: var(--t-display);
-  line-height: 1.1;
-  letter-spacing: -0.28px;
+.pagina__cabecera {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-2);
+}
+
+/* Título de la vista: la serif de documento, 34 px (28 en pantallas angostas). */
+.titulo-vista,
+.hoja__titulo {
+  font-family: var(--serif);
+  font-size: var(--t-titulo);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
   font-weight: 600;
   color: var(--tinta);
 }
 
-/* Entradilla: titular de 28 px en peso 400 y color secundario; baja a 21 px en
-   pantallas angostas, donde 28 px ocuparía cuatro líneas. */
 .entradilla {
-  margin-top: var(--e-3);
-  max-width: 48ch;
-  font-size: var(--t-titular);
-  line-height: 1.2;
-  letter-spacing: 0;
-  font-weight: 400;
+  max-width: 62ch;
+  font-size: var(--t-cuerpo);
+  line-height: 1.55;
   color: var(--cuerpo);
+}
+
+/* Hoja: el papel de la lista. Se separa de la mesa por tono, un borde fino y la
+   regla doble de tinta de arriba (como el borde de un formulario impreso): sin
+   sombra. Esquinas casi rectas. */
+.hoja {
+  border: 1px solid var(--regla);
+  border-top: 4px double var(--tinta);
+  border-radius: var(--r-papel);
+  background: var(--hoja);
+}
+
+.hoja__encabezado {
+  padding: var(--e-8) var(--e-8) var(--e-6);
+  border-bottom: 1px solid var(--regla);
+}
+
+.hoja__encabezado--tabla {
+  padding: var(--e-5) var(--e-8) var(--e-4);
 }
 
 @media (max-width: 640px) {
-  .entradilla {
-    font-size: 21px;
-    line-height: 1.19;
+  .hoja__encabezado {
+    padding: var(--e-5) var(--e-4) var(--e-4);
+  }
+
+  .hoja__encabezado--tabla {
+    padding: var(--e-4);
   }
 }
 
-.hero .tarjeta,
-.hero .aviso,
-.cifra-principal {
-  margin-top: var(--e-8);
+.hoja__subtitulo {
+  font-family: var(--serif);
+  font-size: var(--t-seccion);
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--tinta);
 }
 
-/* Cifras. La potencia es la protagonista: estilo hero (56 px, 600, interlínea
-   1.07, tracking de -0.28 px), con su unidad a media escala, en peso 300 y en
-   la línea base. En tinta y no en el acento, que queda para los elementos
-   interactivos y la serie de la gráfica. */
+.hoja__cuerpo {
+  padding: var(--e-5) var(--e-8);
+}
+
+.hoja__cuerpo + .hoja__cuerpo {
+  padding-top: 0;
+}
+
+@media (max-width: 640px) {
+  .hoja__cuerpo {
+    padding: var(--e-4);
+  }
+
+  .hoja__cuerpo + .hoja__cuerpo {
+    padding-top: 0;
+  }
+}
+
+.hoja__desplazable {
+  overflow-x: auto;
+}
+
+.hoja__pie {
+  padding: var(--e-3) var(--e-8);
+  border-top: 1px solid var(--regla);
+}
+
+@media (max-width: 640px) {
+  .hoja__pie {
+    padding: var(--e-3) var(--e-4);
+  }
+}
+
+/* Campos del encabezado, como en un formulario impreso: el texto preimpreso
+   (la materia) va sin línea y en la serif de documento; solo el espacio por
+   llenar (el grupo, que se elige) lleva su línea de tinta. */
+.campos {
+  display: grid;
+  align-items: end;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--e-4) var(--e-8);
+  margin-top: var(--e-6);
+}
+
+@media (max-width: 640px) {
+  .campos {
+    grid-template-columns: minmax(0, 1fr);
+    margin-top: var(--e-4);
+  }
+}
+
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-1);
+  min-width: 0;
+}
+
+.campo__etiqueta {
+  font-size: var(--t-caption);
+  line-height: 1.4;
+  font-weight: 600;
+  color: var(--suave);
+}
+
+.campo__valor {
+  padding-bottom: var(--e-1);
+  border-bottom: 1px solid var(--tinta);
+  font-size: 18px;
+  line-height: 1.4;
+  color: var(--tinta);
+  overflow-wrap: anywhere;
+}
+
+/* Preimpreso: sin línea de llenado, en la serif y en peso 600. */
+.campo--materia .campo__valor {
+  border-bottom: 0;
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 1.3;
+  padding-bottom: var(--e-2);
+}
+
+/* El filtro de grupo es el espacio en blanco de la hoja: sin caja, sobre su línea. */
+.selector--campo {
+  width: 100%;
+  min-height: 0;
+  padding: 0 var(--e-1) var(--e-1) 0;
+  border: 0;
+  border-bottom: 1px solid var(--tinta);
+  border-radius: 0;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1.4;
+}
+
+.selector--campo:hover {
+  background: var(--papel2);
+}
+
+@media (max-width: 959px) {
+  .selector--campo {
+    min-height: 44px;
+  }
+}
+
+/* Conteos del encabezado: lo que se ve, con la marca de cada estado. */
+.resumen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--e-3) var(--e-8);
+  margin-top: var(--e-6);
+}
+
+@media (max-width: 640px) {
+  .resumen {
+    gap: var(--e-3) var(--e-6);
+    margin-top: var(--e-4);
+  }
+}
+
+.resumen__item {
+  min-width: 0;
+}
+
+.resumen__valor {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  margin-top: var(--e-1);
+  font-family: var(--serif);
+  font-size: var(--t-cifra-media);
+  line-height: 1.15;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.resumen__valor .marca-asistencia {
+  font-size: 18px;
+}
+
+.resumen__valor--presente {
+  color: var(--pluma);
+}
+
+/* Cifras. Una vista tiene una cifra protagonista (56 px, la serif de documento)
+   y las demás como renglones con puntos guía, como un recibo: jerarquía por
+   tamaño y por forma, no cuatro tarjetas iguales. */
+.cifras {
+  display: grid;
+  gap: var(--e-1) 0;
+}
+
 .cifra__etiqueta {
   font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  font-weight: 400;
-  color: var(--cuerpo);
+  line-height: 1.4;
+  font-weight: 600;
+  color: var(--suave);
 }
 
 .cifra__valor {
@@ -730,138 +853,206 @@ h1[tabindex='-1']:focus {
 }
 
 .cifra__numero {
-  font-size: var(--t-titular);
-  line-height: 1.14;
+  font-size: 22px;
+  line-height: 1.2;
   font-weight: 600;
-  letter-spacing: 0;
   color: var(--tinta);
 }
 
 .cifra__unidad {
   font-size: var(--t-cuerpo);
-  line-height: 1;
-  font-weight: 300;
-  color: var(--cuerpo);
+  color: var(--suave);
 }
 
 .cifra--destacada .cifra__numero {
-  font-size: var(--t-hero);
-  line-height: var(--t-hero-interlinea);
-  letter-spacing: -0.28px;
+  font-family: var(--serif);
+  font-size: var(--t-cifra);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
 }
 
 .cifra--destacada .cifra__unidad {
-  font-size: calc(var(--t-hero) / 2);
+  font-size: var(--t-seccion);
 }
 
-/* Datos secundarios: una fila que se parte en columnas según el ancho. Sin
-   bordes entre ellos; el espacio los separa. */
-.cifras {
+/* Renglones con puntos guía: etiqueta, puntos y valor. */
+.cifras--renglones {
+  gap: 0;
+}
+
+.cifras--renglones .cifra {
+  display: flex;
+  align-items: baseline;
+  gap: var(--e-2);
+  padding: var(--e-2) 0;
+}
+
+.cifras--renglones .cifra__etiqueta {
+  order: 1;
+  font-size: var(--t-cuerpo);
+  font-weight: 400;
+  color: var(--cuerpo);
+}
+
+.cifras--renglones .cifra::after {
+  content: '';
+  order: 2;
+  flex: 1 1 auto;
+  min-width: var(--e-4);
+  border-bottom: 2px dotted var(--borde-control);
+  transform: translateY(-4px);
+}
+
+.cifras--renglones .cifra__valor {
+  order: 3;
+  margin-top: 0;
+}
+
+.cifras--renglones .cifra__numero {
+  font-size: 18px;
+}
+
+/* La unidad ocupa un hueco fijo, y el renglón sin unidad (un conteo) lo deja
+   vacío, para que las cifras de la columna terminen en el mismo sitio. */
+.cifras--renglones .cifra__unidad {
+  width: 1.2em;
+}
+
+.cifras--renglones .cifra__valor:not(:has(.cifra__unidad)) {
+  padding-right: calc(1.2em + var(--e-2));
+}
+
+/* Métricas: una hoja de dos columnas. A la izquierda la potencia y los renglones;
+   a la derecha la gráfica. Bajo 900 px se apilan. */
+.hoja--energia {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 200px));
-  gap: var(--e-6) var(--e-8);
-  margin-top: var(--e-8);
+  grid-template-columns: minmax(0, 23rem) minmax(0, 1fr);
+}
+
+.energia__cifras {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-4);
+  padding: var(--e-8);
+}
+
+.energia__grafica {
+  min-width: 0;
+  padding: var(--e-8) var(--e-8) var(--e-6) var(--e-6);
+  border-left: 1px solid var(--regla);
+}
+
+@media (max-width: 900px) {
+  .hoja--energia {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .energia__grafica {
+    padding: var(--e-6) var(--e-4) var(--e-4);
+    border-left: 0;
+    border-top: 1px solid var(--regla);
+  }
 }
 
 @media (max-width: 640px) {
-  .cifras {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--e-6) var(--e-4);
-    margin-top: var(--e-6);
+  .energia__cifras {
+    padding: var(--e-5) var(--e-4);
   }
 }
 
-.hero__hora {
-  margin-top: var(--e-8);
+.hora-lectura {
+  max-width: 40ch;
 }
 
-.hero__hora + .hero__hora {
-  margin-top: var(--e-1);
+/* Alumnos: la hoja y su margen. A partir de 1000 px el margen (la importación)
+   queda a la derecha; debajo, bajo la hoja. */
+.rejilla-alumnos {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 19rem;
+  gap: var(--e-6);
+  align-items: start;
 }
 
-/* Secciones a todo el ancho que alternan fondo: tabla en blanco, gráfica en casi negro. */
-.franja {
-  background: var(--superficie-tabla);
-  padding-top: var(--e-20);
-  padding-bottom: var(--e-20);
+@media (max-width: 999px) {
+  .rejilla-alumnos {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--e-4);
+  }
+
+  .margen {
+    max-width: 40rem;
+  }
 }
 
-.franja--oscura {
-  background: var(--superficie-oscura);
-  color: var(--g-texto);
+@media (min-width: 1000px) and (min-height: 600px) {
+  .margen {
+    position: sticky;
+    top: 96px;
+  }
+}
+
+/* Estados vacíos y de carga: la casilla vacía, la causa y la siguiente acción. */
+.estado {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--e-4);
+}
+
+.hoja.estado {
+  padding: var(--e-8);
 }
 
 @media (max-width: 640px) {
-  .franja {
-    padding-top: var(--e-12);
-    padding-bottom: var(--e-12);
+  .hoja.estado {
+    padding: var(--e-5) var(--e-4);
   }
 }
 
-/* Titular de sección: 28 px, peso 600. */
-.titular {
-  font-size: var(--t-titular);
-  line-height: 1.14;
-  letter-spacing: 0;
-  font-weight: 600;
-  color: var(--tinta);
-  margin-bottom: var(--e-8);
+.estado > .marca-asistencia {
+  font-size: 26px;
+  margin-top: 2px;
 }
 
-.franja--oscura .titular {
-  color: var(--g-titulo);
+.estado--grande > .marca-asistencia {
+  font-size: 48px;
 }
 
-.franja--oscura .etiqueta-tecnica {
-  color: var(--g-texto);
+.estado__cuerpo {
+  min-width: 0;
 }
 
-/* Tarjetas: 18 px de radio, borde de 1 px y sin sombra. La elevación sale del
-   cambio de superficie. */
-.tarjeta {
-  background: var(--tarjeta);
-  border: 1px solid var(--borde-tarjeta);
-  border-radius: var(--radio-tarjeta);
-  padding: var(--e-6);
-}
-
-.tarjeta--tabla {
-  padding: var(--e-2) var(--e-6) var(--e-6);
-}
-
-@media (max-width: 640px) {
-  .tarjeta {
-    padding: var(--e-4);
-  }
-
-  .tarjeta--tabla {
-    padding: var(--e-1) var(--e-4) var(--e-4);
-  }
-}
-
-/* Estados */
 .estado__titulo {
+  font-family: var(--serif);
+  font-size: var(--t-seccion);
+  line-height: 1.25;
   font-weight: 600;
   color: var(--tinta);
 }
 
 .estado__texto {
-  max-width: 68ch;
+  max-width: 62ch;
 }
 
 .estado__titulo + .estado__texto {
   margin-top: var(--e-1);
 }
 
-/* Avisos de error y de advertencia: borde de 1 px en el color del estado (no
-   anillo de sombra) y el mismo radio de las tarjetas. */
+.estado .boton {
+  margin-top: var(--e-4);
+}
+
+/* Avisos. Error: rojo sobre su fondo, con borde del mismo rojo. Advertencia:
+   sin color propio, tinta sobre --papel2 con borde de tinta. Radio de 2 px. */
 .aviso {
   padding: var(--e-3) var(--e-4);
   border: 1px solid transparent;
-  border-radius: var(--radio-tarjeta);
-  font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
+  border-radius: var(--r-papel);
+  font-size: var(--t-ui);
+  line-height: 1.5;
+}
+
+.aviso > p {
+  max-width: 80ch;
 }
 
 .aviso__titulo {
@@ -869,94 +1060,171 @@ h1[tabindex='-1']:focus {
 }
 
 .aviso--error {
-  background: var(--error-suave);
-  color: var(--error-hondo);
+  background: var(--error-fondo);
+  color: var(--error);
   border-color: var(--error);
 }
 
 .aviso--advertencia {
-  background: var(--advertencia-suave);
-  color: var(--advertencia-hondo);
-  border-color: var(--advertencia);
+  background: var(--papel2);
+  color: var(--tinta);
+  border-color: var(--tinta);
 }
 
-/* Gráfica */
-.grafica {
-  width: 100%;
-  min-width: 0;
-  height: 340px;
-  overflow: hidden; /* la gráfica nunca debe ensanchar la sección */
-  /* Se dibuja una sola vez, de izquierda a derecha, al montar: da una lectura
-     del tiempo y confirma que la serie es nueva. El contenedor no se remonta
-     en cada sondeo, así que no se repite. */
-  animation: revelar-grafica 400ms var(--ease-entrada) both;
+.aviso .boton {
+  margin-top: var(--e-3);
 }
 
-@keyframes revelar-grafica {
-  from {
-    clip-path: inset(0 100% 0 0);
-  }
-  to {
-    clip-path: inset(0);
-  }
+.aviso--entra {
+  animation: entrada-bloque var(--d-entrada) var(--ease-entrada) backwards;
+}
+
+.aviso--entra p + p,
+.aviso--entra p + .aviso__filas {
+  margin-top: var(--e-1);
+}
+
+.aviso__filas {
+  max-height: 15rem;
+  overflow-y: auto;
+  margin-top: var(--e-2);
+}
+
+.aviso__filas li + li {
+  margin-top: var(--e-1);
+}
+
+.aviso__fila {
+  font-weight: 600;
+}
+
+/* Botones. 3 px de radio (el papel no tiene píldoras), 40 px de alto (44 en
+   pantallas angostas) y peso 600. Presionado, se encoge un 3 % en 100 ms. El
+   hover cambia de superficie, sin sombra. */
+.boton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 var(--e-4);
+  border: 1px solid var(--borde-control);
+  border-radius: var(--r-control);
+  background: var(--hoja);
+  color: var(--tinta);
+  font: inherit;
+  font-size: var(--t-ui);
+  line-height: 1.25;
+  font-weight: 600;
+  text-decoration: none;
+  transition:
+    background-color var(--d-realce) var(--ease-entrada),
+    border-color var(--d-realce) var(--ease-entrada),
+    transform var(--d-realce) var(--ease-entrada);
+}
+
+.boton:hover {
+  background: var(--papel2);
+}
+
+.boton:active {
+  transform: scale(0.97);
+  transition-duration: var(--d-pulsar);
+}
+
+.boton:disabled,
+.boton[aria-disabled='true'] {
+  opacity: 0.55;
+  transform: none;
+}
+
+/* Primario: relleno de pluma con texto de papel. Es la acción principal de la
+   zona, y es uno de los tres usos de la pluma. */
+.boton--primario {
+  border-color: var(--pluma);
+  background: var(--pluma);
+  color: var(--sobre-pluma);
+}
+
+.boton--primario:hover {
+  border-color: var(--pluma-hover);
+  background: var(--pluma-hover);
+}
+
+.boton--primario:active {
+  border-color: var(--pluma-pulsada);
+  background: var(--pluma-pulsada);
 }
 
 @media (max-width: 640px) {
-  .grafica {
-    height: 240px;
+  .boton {
+    min-height: 44px;
   }
 }
 
-/* Resumen visible de la gráfica: es también su descripción accesible. */
-.grafica__resumen {
-  margin-top: var(--e-4);
-  max-width: 68ch;
-  font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  color: var(--g-texto);
-}
-
-/* Tooltip de la gráfica: una superficie un escalón sobre la sección oscura,
-   con borde de 1 px y sin sombra. */
-.tooltip {
-  padding: var(--e-2) var(--e-3);
-  border: 1px solid var(--g-tooltip-borde);
-  border-radius: var(--radio-control);
-  background: var(--g-tooltip);
-}
-
-.tooltip .etiqueta-tecnica {
-  color: var(--g-texto);
-}
-
-.tooltip__valor {
-  font-weight: 600;
-  color: var(--g-titulo);
-}
-
-/* Tabla */
+/* Tablas: renglones de una lista impresa. Cada renglón lleva su regla de 1 px, la
+   cabecera una regla de tinta de 1.5 px, y las cifras son tabulares. Las reglas
+   solo existen donde hay renglones de datos. */
 .tabla {
   width: 100%;
   border-collapse: collapse;
-  font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
+  font-size: var(--t-cuerpo);
+  line-height: 1.4;
   font-variant-numeric: tabular-nums;
 }
 
 .tabla th,
 .tabla td {
-  padding: var(--e-3) var(--e-2);
-  border-bottom: 1px solid var(--linea);
+  padding: var(--e-3) var(--e-4);
+  border-bottom: 1px solid var(--regla);
   text-align: left;
   vertical-align: baseline;
   font-weight: 400;
 }
 
+.tabla th:first-child,
+.tabla td:first-child {
+  padding-left: var(--e-8);
+}
+
+.tabla th:last-child,
+.tabla td:last-child {
+  padding-right: var(--e-8);
+}
+
+@media (max-width: 640px) {
+  .tabla th,
+  .tabla td {
+    padding-left: var(--e-2);
+    padding-right: var(--e-2);
+  }
+
+  .tabla th:first-child,
+  .tabla td:first-child {
+    padding-left: var(--e-4);
+  }
+
+  .tabla th:last-child,
+  .tabla td:last-child {
+    padding-right: var(--e-4);
+  }
+}
+
 .tabla thead th {
+  padding-top: var(--e-3);
+  padding-bottom: var(--e-2);
+  border-bottom: 1.5px solid var(--tinta);
+  color: var(--suave);
+  font-size: var(--t-caption);
   font-weight: 600;
-  color: var(--cuerpo);
+  white-space: nowrap;
+}
+
+/* Las cabeceras con unidad (Potencia (W)) se parten en dos líneas en pantallas
+   angostas para que las cuatro columnas de lecturas quepan sin desplazarse. */
+@media (max-width: 640px) {
+  .tabla thead th {
+    white-space: normal;
+  }
 }
 
 .tabla tbody th {
@@ -966,6 +1234,21 @@ h1[tabindex='-1']:focus {
 .tabla tbody tr:last-child th,
 .tabla tbody tr:last-child td {
   border-bottom: 0;
+}
+
+.tabla td {
+  color: var(--tinta);
+}
+
+.tabla tbody > tr > * {
+  transition: background-color var(--d-realce) var(--ease-entrada);
+}
+
+/* Fila con el puntero: se realza para seguir un renglón a lo ancho. */
+@media (hover: hover) and (pointer: fine) {
+  .tabla tbody > tr:hover > * {
+    background: var(--papel2);
+  }
 }
 
 .tabla__dia {
@@ -983,63 +1266,637 @@ h1[tabindex='-1']:focus {
   text-align: right;
 }
 
-.tabla td {
-  color: var(--tinta);
-}
-
-.tabla + .boton {
-  margin-top: var(--e-4);
-}
-
-/* Botón secundario en píldora: contorno de 3:1 o más, texto en tinta. Al
-   presionar se encoge un 5 % en 100 ms (respuesta táctil); al soltar vuelve más
-   despacio. El hover cambia de superficie, sin sombra. */
-.boton {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 var(--e-6);
-  border: 1px solid var(--borde-control);
-  border-radius: var(--radio-pildora);
-  background: transparent;
-  color: var(--tinta);
-  font: inherit;
+/* Número de renglón, como en la hoja impresa. */
+.tabla .tabla__n {
+  width: 1%;
+  color: var(--suave);
   font-size: var(--t-caption);
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background-color var(--d-salida) var(--ease-entrada),
-    transform var(--d-salida) var(--ease-entrada);
+  text-align: right;
 }
 
-.boton:hover {
-  background: var(--hover);
+/* Gráfica. Se traza una sola vez, de izquierda a derecha, al montar: da una
+   lectura del tiempo y confirma que la serie es nueva. El contenedor no se
+   remonta en cada sondeo, así que no se repite. */
+.grafica {
+  width: 100%;
+  min-width: 0;
+  height: clamp(320px, 22vw, 460px);
+  overflow: hidden;
+  margin-top: var(--e-4);
+  animation: revelar-grafica 800ms var(--ease-entrada) both;
 }
 
-.boton:active {
-  transform: scale(0.95);
-  transition-duration: var(--d-pulsar);
-}
-
-.boton:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-  transform: none;
-}
-
-@media (max-width: 640px) {
-  .boton {
-    min-height: 44px;
+@keyframes revelar-grafica {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0);
   }
 }
 
-/* Movimiento reducido: sin transiciones, sin animaciones y sin pulso. */
+@media (max-width: 640px) {
+  .grafica {
+    height: 240px;
+  }
+}
+
+.grafica__resumen {
+  margin-top: var(--e-4);
+  max-width: 68ch;
+  font-size: var(--t-caption);
+  line-height: 1.45;
+  color: var(--suave);
+}
+
+/* Tooltip de la gráfica: un trozo de hoja con borde de tinta, sin sombra. */
+.tooltip {
+  padding: var(--e-2) var(--e-3);
+  border: 1px solid var(--tinta);
+  border-radius: var(--r-papel);
+  background: var(--hoja);
+}
+
+.tooltip__valor {
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+/* Margen de la hoja de Alumnos: la zona para soltar el CSV. Propósito del
+   movimiento: decirle a quien arrastra que la zona lo oye (encima), que recibió
+   el archivo (soltar) y que lo rechazó (sacudida). Todo es transform y opacity:
+   el anillo y su tinte son un pseudoelemento que solo cambia de opacidad. La
+   sacudida son keyframes porque es un evento aislado; lo demás son transiciones. */
+.zona {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--e-3);
+  padding: var(--e-5);
+  border: 1.5px dashed var(--borde-control);
+  border-radius: var(--r-papel);
+  background: transparent;
+  transition: transform var(--d-realce) var(--ease-entrada);
+}
+
+.zona::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  z-index: -1;
+  border: 1.5px solid var(--pluma);
+  border-radius: inherit;
+  background: var(--pluma-suave);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--d-realce) var(--ease-entrada);
+}
+
+.zona[data-estado='encima'] {
+  transform: scale(1.015);
+}
+
+.zona[data-estado='encima']::before,
+.zona[data-estado='soltado']::before {
+  opacity: 1;
+}
+
+.zona[data-estado='soltado'] {
+  animation: zona-soltar 340ms var(--ease-entrada);
+}
+
+.zona[data-estado='rechazado'] {
+  animation: zona-rechazo 400ms var(--ease-entrada);
+}
+
+.zona[data-estado='rechazado']::before {
+  border-color: var(--error);
+  background: var(--error-fondo);
+  opacity: 1;
+}
+
+@keyframes zona-soltar {
+  from {
+    transform: scale(1.015);
+  }
+  45% {
+    transform: scale(0.98);
+  }
+}
+
+@keyframes zona-rechazo {
+  15% {
+    transform: translateX(-8px);
+  }
+  35% {
+    transform: translateX(7px);
+  }
+  55% {
+    transform: translateX(-5px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
+
+.zona__titulo {
+  font-family: var(--serif);
+  font-size: 19px;
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.zona__ayuda {
+  max-width: 56ch;
+}
+
+.zona__archivo {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .zona {
+    padding: var(--e-4);
+  }
+}
+
+/* Alumnos: la tabla. Los nombres vienen del CSV y pueden ser largos o no
+   tener espacios: overflow-wrap: anywhere deja que la columna se encoja y
+   parta la palabra en lugar de ensanchar la página. El grupo, en cambio, no se
+   parte: con 40 caracteres de grupo la tabla se desplaza (el contenedor es una
+   región enfocable) antes que partir "3CM1-A" en dos líneas. Nombre y grupo se
+   aíslan para texto bidireccional. */
+.tabla--alumnos {
+  min-width: 38rem;
+}
+
+/* El ancho extra de una hoja ancha va a Nombre: las demás columnas se quedan
+   del tamaño de su contenido (width: 1% con nowrap), así Rostro no se aleja de
+   Nombre más de lo necesario. */
+.tabla--alumnos th:not(.tabla__nombre-col),
+.tabla--alumnos td:not(.tabla__nombre) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.tabla--alumnos .tabla__nombre-col {
+  width: auto;
+}
+
+/* Centrado vertical: la marca de asistencia es un SVG y su línea base sale de su
+   borde inferior, así que con baseline quedaba más arriba que el texto. */
+.tabla--alumnos tbody > tr > * {
+  vertical-align: middle;
+}
+
+.tabla--alumnos .tabla__texto {
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+
+.tabla--alumnos .tabla__nombre {
+  color: var(--tinta);
+}
+
+.tabla--alumnos .tabla__grupo {
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+.tabla__sub {
+  display: none;
+  font-size: var(--t-caption);
+  font-weight: 400;
+  color: var(--suave);
+}
+
+/* En un teléfono caben nombre y estado del rostro, que es lo que importa: la
+   cuenta y el grupo pasan debajo del nombre en lugar de quedar fuera de la vista
+   detrás de un desplazamiento. */
+@media (max-width: 640px) {
+  .tabla--alumnos {
+    min-width: 0;
+  }
+
+  .tabla--alumnos tr > :nth-child(2),
+  .tabla--alumnos tr > :nth-child(4) {
+    display: none;
+  }
+
+  .tabla--alumnos .tabla__n {
+    padding-right: 0;
+  }
+
+  .tabla--alumnos .tabla__nombre {
+    padding-left: var(--e-3);
+  }
+
+  .tabla--alumnos .tabla__sub {
+    display: block;
+  }
+}
+
+.tabla__cuenta {
+  font-size: 15px;
+  color: var(--cuerpo);
+}
+
+/* Los renglones se escriben, de arriba abajo: cada uno se descubre de izquierda
+   a derecha, como la tinta sobre la línea, una sola vez (la clase se quita al
+   terminar). Solo los 12 primeros: el resto se pinta sin animación. Sin rebote. */
+.tabla__fila--entra {
+  animation: escribir-fila var(--d-fila) var(--ease-escribir) backwards;
+}
+
+/* El destino es explícito: clip-path no interpola entre inset() y none. */
+@keyframes escribir-fila {
+  from {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0.4;
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+  }
+}
+
+/* Estado del rostro: el texto lleva el estado; la marca refuerza. Registrado: la
+   palomita de pluma, con el texto en pluma. Pendiente: la casilla vacía, en
+   tinta suave. */
+/* display: flex y no inline-flex: sin la caja de línea (su strut baja la base)
+   la marca y el texto quedan centrados en la celda. */
+.rostro {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  color: var(--suave);
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.rostro--registrado {
+  color: var(--pluma);
+  font-weight: 600;
+}
+
+/* Cuando un alumno pasa a "registrado" la palomita se traza: comunica el cambio
+   de estado y es lo único que se espera ver en vivo. La fila resalta una vez. */
+.tabla__fila[data-cambio] > * {
+  animation: resaltar-cambio 1200ms var(--ease-entrada);
+}
+
+.tabla__fila[data-cambio] .rostro--registrado .marca-asistencia__trazo {
+  stroke-dasharray: 1;
+  animation: trazar var(--d-trazo) var(--ease-escribir) backwards;
+}
+
+@keyframes trazar {
+  from {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+  6% {
+    opacity: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes resaltar-cambio {
+  from {
+    background-color: var(--pluma-suave);
+  }
+}
+
+/* Esqueleto de carga. Ocupa el lugar de los renglones; un solo elemento cambia
+   de opacidad. Corre 4 ciclos de 1.2 s (menos de 5 s) y se detiene: pasado ese
+   tiempo, el mensaje de error o de espera ya dice más que un parpadeo infinito.
+   Con movimiento reducido queda quieto. */
+.esqueleto {
+  animation: pulso-esqueleto 1.2s var(--ease-movimiento) 4 alternate;
+}
+
+@keyframes pulso-esqueleto {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.4;
+  }
+}
+
+.esqueleto__fila {
+  display: flex;
+  align-items: center;
+  gap: var(--e-4);
+  padding: var(--e-4) var(--e-8);
+  border-bottom: 1px solid var(--regla);
+}
+
+.esqueleto__fila:last-child {
+  border-bottom: 0;
+}
+
+.esqueleto__bloque {
+  display: block;
+  flex: none;
+  height: 12px;
+  border-radius: var(--r-papel);
+  background: var(--regla);
+}
+
+.esqueleto__bloque--n {
+  width: 20px;
+}
+
+.esqueleto__bloque--cuenta {
+  width: 92px;
+}
+
+.esqueleto__bloque--nombre {
+  flex: 1 1 auto;
+  max-width: 280px;
+}
+
+.esqueleto__bloque--grupo {
+  width: 60px;
+}
+
+.esqueleto__bloque--rostro {
+  width: 96px;
+}
+
+.esqueleto__bloque--cifra {
+  width: 48px;
+  height: 28px;
+}
+
+@media (max-width: 640px) {
+  .esqueleto__fila {
+    padding: var(--e-4);
+  }
+
+  .esqueleto__bloque--grupo {
+    display: none;
+  }
+}
+
+/* Diálogo de las cuentas existentes: <dialog> nativo con showModal(). Estado
+   oculto: opacidad 0, 20 px abajo y a 90 %, nunca desde scale(0). Entra
+   (data-visible) con un resorte en transform y un ease-out de 180 ms en la
+   opacidad; sale en 180 ms con ease-out, más rápido porque la persona ya
+   decidió. Un modal no está anclado a un disparador: su transform-origin es el
+   centro. Es una hoja con su regla doble, y lo único con sombra junto a los
+   avisos: flota sobre toda la página. */
+.dialogo {
+  width: min(620px, calc(100% - 2 * var(--margen)));
+  padding: 0;
+  border: 1px solid var(--tinta);
+  border-top: 4px double var(--tinta);
+  border-radius: var(--r-modal);
+  background: var(--hoja);
+  color: var(--cuerpo);
+  box-shadow: 0 16px 48px var(--sombra);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(20px) scale(0.9);
+  transition:
+    opacity var(--d-salida) var(--ease-entrada),
+    transform var(--d-salida) var(--ease-entrada);
+}
+
+.dialogo[data-visible] {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--d-salida) var(--ease-entrada),
+    transform var(--d-resorte) var(--ease-resorte);
+}
+
+.dialogo::backdrop {
+  background: var(--velo);
+  opacity: 0;
+  transition: opacity var(--d-salida) var(--ease-entrada);
+}
+
+.dialogo[data-visible]::backdrop {
+  opacity: 1;
+  transition-duration: var(--d-indicador);
+}
+
+.dialogo__interior {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-4);
+  max-height: min(85vh, 720px);
+  padding: var(--e-6);
+  overflow-y: auto;
+}
+
+@media (max-width: 640px) {
+  .dialogo__interior {
+    padding: var(--e-4);
+  }
+}
+
+.dialogo__titulo {
+  font-family: var(--serif);
+  font-size: var(--t-seccion);
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.existentes {
+  flex: none;
+  max-height: 14rem;
+  overflow-y: auto;
+  border: 1px solid var(--regla);
+  border-radius: var(--r-papel);
+  background: var(--fondo);
+  font-size: var(--t-ui);
+  line-height: 1.43;
+}
+
+.existentes__item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--e-3);
+  padding: var(--e-2) var(--e-3);
+  border-bottom: 1px solid var(--regla);
+}
+
+.existentes__item:last-child {
+  border-bottom: 0;
+}
+
+.existentes__texto {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+
+.existentes__actual {
+  color: var(--tinta);
+}
+
+.dialogo__acciones {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--e-2);
+}
+
+@media (max-width: 640px) {
+  .dialogo__acciones {
+    flex-direction: column;
+  }
+}
+
+/* Avisos de Sonner. Sonner trae su propia hoja (se importa en main.tsx); aquí
+   se le ponen los tokens del proyecto: un trozo de hoja con borde de tinta,
+   tinta, radio de 2 px y tipografía. Va después de su hoja y con la misma
+   especificidad, así que gana por orden. El tema Claro u Oscuro sale de los
+   tokens, por lo que no se le pasa `theme`. Los iconos son la marca de
+   asistencia (componentes/Avisos.tsx). Entrada en --d-toast con ease-out
+   (Sonner usa 400 ms con ease); la salida dura 200 ms, el tiempo que Sonner
+   espera antes de desmontar. */
+[data-sonner-toaster][data-sonner-theme] {
+  --normal-bg: var(--hoja);
+  --normal-text: var(--tinta);
+  --normal-border: var(--tinta);
+  --border-radius: var(--r-papel);
+  font-family: var(--fuente);
+  transition: transform var(--d-toast) var(--ease-entrada);
+}
+
+[data-sonner-toast] {
+  transition:
+    transform var(--d-toast) var(--ease-entrada),
+    opacity var(--d-toast) var(--ease-entrada),
+    height var(--d-toast) var(--ease-entrada);
+}
+
+[data-sonner-toast] > * {
+  transition: opacity var(--d-toast) var(--ease-entrada);
+}
+
+[data-sonner-toast][data-removed='true'],
+[data-sonner-toast][data-removed='true'][data-front='false'][data-swipe-out='false'][data-expanded='false'] {
+  transition:
+    transform 200ms var(--ease-entrada),
+    opacity 200ms var(--ease-entrada);
+}
+
+[data-sonner-toast][data-styled='true'] {
+  padding: var(--e-3) var(--e-4);
+  font-size: var(--t-ui);
+  line-height: 1.43;
+  box-shadow: 0 8px 24px var(--sombra);
+}
+
+[data-sonner-toast][data-styled='true']:focus-visible {
+  outline: 2px solid var(--pluma);
+  outline-offset: 2px;
+}
+
+[data-sonner-toast][data-styled='true'] [data-title] {
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+[data-sonner-toast][data-styled='true'] [data-description] {
+  color: var(--cuerpo);
+}
+
+[data-sonner-toast] [data-icon] {
+  width: 22px;
+  height: 22px;
+}
+
+[data-sonner-toast] [data-icon] .marca-asistencia {
+  width: 22px;
+  height: 22px;
+}
+
+[data-sonner-toast][data-styled='true'] [data-close-button] {
+  border-color: var(--borde-control);
+  background: var(--hoja);
+  color: var(--tinta);
+}
+
+[data-sonner-toast][data-styled='true']:hover [data-close-button]:hover {
+  border-color: var(--borde-control);
+  background: var(--papel2);
+}
+
+/* Movimiento de las vistas. Propósito: marcar que el contenido cambió y en qué
+   orden leerlo (de arriba abajo), con los bloques entrando uno tras otro
+   (opacidad y 6 px de subida, --d-entrada, un escalón de --escalon): la hoja
+   nueva se pone sobre la mesa. Es "backwards" y no "both": al terminar la
+   animación suelta el transform. Los bloques posteriores al octavo entran junto
+   con el octavo. */
+.pagina > *,
+.rejilla-alumnos > * {
+  animation: entrada-bloque var(--d-entrada) var(--ease-entrada) backwards;
+}
+
+/* La rejilla de Alumnos entra por sus dos bloques, no como uno solo. */
+.pagina > .rejilla-alumnos {
+  animation: none;
+}
+
+@keyframes entrada-bloque {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.pagina > :nth-child(2),
+.rejilla-alumnos > :nth-child(2) {
+  animation-delay: var(--escalon);
+}
+
+.pagina > :nth-child(3) {
+  animation-delay: calc(var(--escalon) * 2);
+}
+
+.pagina > :nth-child(4) {
+  animation-delay: calc(var(--escalon) * 3);
+}
+
+.pagina > :nth-child(5) {
+  animation-delay: calc(var(--escalon) * 4);
+}
+
+.pagina > :nth-child(6) {
+  animation-delay: calc(var(--escalon) * 5);
+}
+
+.pagina > :nth-child(n + 7) {
+  animation-delay: calc(var(--escalon) * 6);
+}
+
+/* Movimiento reducido: sin transiciones, sin animaciones y sin escalonado. La
+   página queda quieta y completa (ningún estado inicial oculta contenido, así
+   que al quitar las animaciones todo se ve; la palomita queda trazada). Alcanza
+   a los avisos de Sonner, al esqueleto y al diálogo (su fondo, ::backdrop, no es
+   hijo de nada, por eso se nombra). Las cifras que cuentan lo comprueban en JS y
+   muestran el valor final. El código del diálogo cierra al instante cuando la
+   transición dura 0 s. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
-  *::after {
+  *::after,
+  ::backdrop {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;

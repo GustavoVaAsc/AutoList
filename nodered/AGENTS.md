@@ -39,7 +39,7 @@ Antes de editar, lee el [AGENTS.md de la raíz](../AGENTS.md). Para el stack que
 ## Settings e imagen
 
 - Cambiar `settings.js`, `autenticacion-api.js`, `Dockerfile`, `package.json`, `package-lock.json` o cualquier archivo de `web/` exige reconstruir la imagen desde `orangepi/`: `docker compose up -d --build`.
-- Antes de reconstruir, sube el sufijo de la etiqueta en la línea `image:` del servicio `nodered` de `orangepi/docker-compose.yml`: de `5.0.9-12` a `-13`, `-14` y así sucesivamente. El comentario del compose sobre la etiqueta de Node-RED lo pide.
+- Antes de reconstruir, sube el sufijo de la etiqueta en la línea `image:` del servicio `nodered` de `orangepi/docker-compose.yml`: de `5.0.9-16` a `-17`, `-18` y así sucesivamente. El comentario del compose sobre la etiqueta de Node-RED lo pide.
 - `settings.js` vive en `/etc/nodered`, un directorio de root que el contenedor no puede modificar (comentarios del `Dockerfile`). No lo muevas a `flows/` ni a `/data`.
 - Node-RED no instala módulos. `settings.js` bloquea la instalación desde la paleta y desde los nodos function (bloque `externalModules` y `functionExternalModules`). Las dependencias van en `package.json` y `package-lock.json`.
 - La imagen instala con `npm ci --omit=dev --ignore-scripts` (instrucción `RUN` del `Dockerfile`). Ninguna dependencia necesita scripts de instalación.

@@ -53,7 +53,7 @@ Estas acciones requieren que una persona lo apruebe en la conversación. No las 
 
 ## Verificación
 
-Ejecuta esta lista en la placa después de cualquier cambio en el stack. Un paso no cuenta como verificado si no se ejecutó. Los comandos salen de este archivo y de `orangepi/README.md`; los pasos 1 a 10 se ejecutaron en la placa el 2 de noviembre de 2026, tras activar la ACL. Los pasos 11 a 14 (autenticación de la API, galería, importación del CSV y frontend) están escritos, pero **no se han ejecutado en la placa**: el código está en el repo y falta desplegarlo (`5.0.9-12`).
+Ejecuta esta lista en la placa después de cualquier cambio en el stack. Un paso no cuenta como verificado si no se ejecutó. Los comandos salen de este archivo y de `orangepi/README.md`; los pasos 1 a 10 se ejecutaron en la placa el 2 de noviembre de 2026, tras activar la ACL. Los pasos 11 a 14 (autenticación de la API, galería, importación del CSV y frontend) se ejecutaron en la placa el 2 de noviembre de 2026, con la imagen `5.0.9-12`, la primera con autenticación. Las 3 filas de prueba del grupo `PRUEBA` (cuentas 999000001 a 999000003) quedaron en `alumnos`, porque el rol de Node-RED no puede borrarlas. **Antes de cualquier comando `docker compose` con este compose, `orangepi/.env` debe tener `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` y `GALERIA_TOKEN`** (`:?` en el compose: sin ellas ni `ps` ni `config -q` funcionan). Node-RED tampoco arranca si `NODERED_PROFESOR_PASSWORD`, `GALERIA_TOKEN` o `NODERED_ADMIN_PASSWORD` contienen `cambiar_esta_clave`, si dos de esos tres son iguales, si `GALERIA_TOKEN` tiene menos de 32 caracteres, si `NODERED_PROFESOR_PASSWORD` tiene menos de 16 o si alguno de esos dos tiene menos de 8 caracteres distintos; `openssl rand -hex 16` cumple todo (`orangepi/.env.example`).
 
 Antes de cada uno de los pasos 4, 5 y 6, vuelve a anotar N, el id máximo actual de `metricas_energia`, con este comando. Guarda además el N anotado antes del paso 4 como N₀: es el que usa la limpieza acotada.
 
@@ -151,12 +151,6 @@ No rompas estas reglas sin decisión humana.
 ## Diferido y sin decidir
 
 No implementes ni quites estos puntos en silencio. Si tu cambio los toca, dilo en el resumen.
-
-### Diferido al 11 de noviembre (plan, sección 12.1)
-
-| Punto | Estado actual |
-|---|---|
-| Autenticación de la API (`httpNodeMiddleware`) y `GALERIA_TOKEN` | Implementada en el repo (Basic del profesor en `/api/*`, solo `X-Galeria-Token` en `/api/galeria`); falta desplegarla y verificarla en la placa (pasos 11 a 14 de [Verificación](#verificación)). Hasta verificarla rige la regla de los embeddings reales de [Cambios de esquema](#cambios-de-esquema). **Antes de cualquier comando `docker compose` con este compose, `orangepi/.env` debe tener `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` y `GALERIA_TOKEN`** (`:?` en el compose: sin ellas ni `ps` ni `config -q` funcionan; el stack vivo sigue corriendo). Node-RED tampoco arranca con secretos de ejemplo (`cambiar_esta_clave`), repetidos, o con `GALERIA_TOKEN` < 32 o `NODERED_PROFESOR_PASSWORD` < 16 caracteres (`openssl rand -hex 16` cumple). |
 
 ### Sin decidir: no implementar sin decisión humana
 

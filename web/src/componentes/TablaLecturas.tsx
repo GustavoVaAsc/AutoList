@@ -12,7 +12,7 @@ interface Props {
 
 const FILAS_INICIALES = 10
 
-/** Lecturas recientes, de la más nueva a la más vieja. También es la alternativa accesible a la gráfica. */
+/** Lecturas recientes, de la más nueva a la más vieja, como renglones de una bitácora. También es la alternativa accesible a la gráfica. */
 export function TablaLecturas({ lecturas, idTitulo }: Props) {
   const [todas, setTodas] = useState(false)
   const recientes = [...lecturas].reverse()
@@ -30,35 +30,39 @@ export function TablaLecturas({ lecturas, idTitulo }: Props) {
 
   return (
     <>
-      <table className="tabla" aria-labelledby={idTitulo}>
-        <thead>
-          <tr>
-            <th scope="col">Hora</th>
-            <th scope="col" className="numerico">Potencia (W)</th>
-            <th scope="col" className="numerico">Voltaje (V)</th>
-            <th scope="col" className="numerico">Corriente (A)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {visibles.map(({ l, clave }) => (
-            <tr key={clave}>
-              <th scope="row" className="etiqueta-tecnica">
-                <time dateTime={new Date(l.t).toISOString()}>
-                  {conDia && <span className="tabla__dia">{formatearDia(l.t)}</span>}
-                  {formatearHora(l.t)}
-                </time>
-              </th>
-              <td className="numerico">{formatearPotencia(l.p)}</td>
-              <td className="numerico">{formatearVoltaje(l.v)}</td>
-              <td className="numerico">{formatearCorriente(l.i)}</td>
+      <div className="hoja__desplazable">
+        <table className="tabla" aria-labelledby={idTitulo}>
+          <thead>
+            <tr>
+              <th scope="col">Hora</th>
+              <th scope="col" className="numerico">Potencia (W)</th>
+              <th scope="col" className="numerico">Voltaje (V)</th>
+              <th scope="col" className="numerico">Corriente (A)</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {visibles.map(({ l, clave }) => (
+              <tr key={clave}>
+                <th scope="row" className="tabla__cuenta">
+                  <time dateTime={new Date(l.t).toISOString()}>
+                    {conDia && <span className="tabla__dia">{formatearDia(l.t)}</span>}
+                    {formatearHora(l.t)}
+                  </time>
+                </th>
+                <td className="numerico">{formatearPotencia(l.p)}</td>
+                <td className="numerico">{formatearVoltaje(l.v)}</td>
+                <td className="numerico">{formatearCorriente(l.i)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {hayMas && (
-        <button type="button" className="boton" aria-expanded={todas} onClick={() => setTodas(!todas)}>
-          {todas ? `Mostrar solo las ${FILAS_INICIALES} más recientes` : `Mostrar las ${recientes.length} lecturas`}
-        </button>
+        <div className="hoja__pie">
+          <button type="button" className="boton" aria-expanded={todas} onClick={() => setTodas(!todas)}>
+            {todas ? `Mostrar solo las ${FILAS_INICIALES} más recientes` : `Mostrar las ${recientes.length} lecturas`}
+          </button>
+        </div>
       )}
     </>
   )

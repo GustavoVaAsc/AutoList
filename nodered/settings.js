@@ -98,6 +98,10 @@ fs.writeFileSync(archivoCredenciales, JSON.stringify(credenciales), { mode: 0o60
 const CSP_FRONTEND = [
     "default-src 'self'",
     "script-src 'self'",
+    // Sonner (avisos del frontend) intenta insertar una etiqueta <style> al cargar y
+    // esta directiva la bloquea: la consola del navegador registra una violación de
+    // CSP y es esperada. Es inofensiva, porque web/src/main.tsx importa la hoja de
+    // Sonner como archivo propio. No la relajes con 'unsafe-inline'.
     "style-src 'self'",
     "img-src 'self' data:",
     "font-src 'self'",

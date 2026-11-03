@@ -11,7 +11,7 @@ function preferenciaActual(): PreferenciaTema {
   return atributo === 'light' ? 'claro' : atributo === 'dark' ? 'oscuro' : 'sistema'
 }
 
-/** Tema elegido por la persona; "sistema" sigue prefers-color-scheme (en CSS). */
+/** Tema elegido por la persona; "sistema" sigue prefers-color-scheme (en CSS). El inicial, sin elección guardada, es claro. */
 export function useTema(): [PreferenciaTema, (nueva: PreferenciaTema) => void] {
   const [preferencia, setPreferencia] = useState<PreferenciaTema>(preferenciaActual)
 
@@ -23,11 +23,8 @@ export function useTema(): [PreferenciaTema, (nueva: PreferenciaTema) => void] {
     }
     setPreferencia(nueva)
     try {
-      if (nueva === 'sistema') {
-        localStorage.removeItem(CLAVE)
-      } else {
-        localStorage.setItem(CLAVE, VALOR_ATRIBUTO[nueva])
-      }
+      // "Sistema" se guarda como tal: sin valor guardado el tema es claro (public/tema.js).
+      localStorage.setItem(CLAVE, nueva === 'sistema' ? 'system' : VALOR_ATRIBUTO[nueva])
     } catch (error) {
       // Sin almacenamiento (modo privado o bloqueado): el tema vale solo en esta sesión.
       console.warn('No se pudo guardar el tema elegido:', error)
