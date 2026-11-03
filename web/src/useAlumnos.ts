@@ -14,8 +14,13 @@ export interface EstadoAlumnos {
   sinSesion: boolean
   /** Cuentas cuyo rostro cambió entre la consulta anterior y la última (SIN_CAMBIOS si ninguna). */
   cambiadas: readonly string[]
-  /** Consulta ya y retoma el sondeo; abre otra vez el diálogo de credenciales si hace falta. Sirve tras importar. */
-  recargar: () => void
+  /**
+   * Consulta ya y retoma el sondeo; abre otra vez el diálogo de credenciales si hace falta. Sirve
+   * tras importar y tras retirar un rostro. Devuelve una promesa que se cumple cuando la lista
+   * nueva ya está pintada, y se rechaza si la consulta falla o la vista se desmonta antes. Quien
+   * no la use puede ignorarla: nunca queda un rechazo sin atender.
+   */
+  recargar: () => Promise<void>
 }
 
 type DatosAlumnos = Omit<EstadoAlumnos, 'recargar'>
@@ -41,8 +46,34 @@ export function useAlumnos(cadaMs: number): EstadoAlumnos {
     cambiadas: SIN_CAMBIOS,
   })
   const [intento, setIntento] = useState(0)
-  const recargar = useCallback(() => setIntento((n) => n + 1), [])
   const primeraPendiente = useRef(true)
+  // Promesas de `recargar` que esperan la consulta en curso, y las que ya la vieron salir bien y
+  // esperan a que su lista esté pintada (se cumplen en un efecto, después del commit).
+  const esperas = useRef<{ ok: () => void; fallo: (motivo: Error) => void }[]>([])
+  const porCumplir = useRef<{ ok: () => void; fallo: (motivo: Error) => void }[]>([])
+  const recargar = useCallback(() => {
+    const promesa = new Promise<void>((ok, fallo) => {
+      esperas.current.push({ ok, fallo })
+    })
+    promesa.catch(() => {}) // quien la ignora no deja un rechazo sin atender
+    setIntento((n) => n + 1)
+    return promesa
+  }, [])
+
+  useEffect(() => {
+    const pendientes = porCumplir.current
+    porCumplir.current = []
+    pendientes.forEach((p) => p.ok())
+  }, [estado])
+
+  // Al desmontar, las que esperan se rechazan: nadie debe actuar sobre una vista que ya no está.
+  useEffect(
+    () => () => {
+      const todas = [...esperas.current.splice(0), ...porCumplir.current.splice(0)]
+      todas.forEach((p) => p.fallo(new Error('La vista se desmontó antes de recibir la lista')))
+    },
+    [],
+  )
 
   useEffect(() => {
     const cancelacion = new AbortController()
@@ -59,6 +90,7 @@ export function useAlumnos(cadaMs: number): EstadoAlumnos {
           return
         }
         primeraPendiente.current = false
+        porCumplir.current.push(...esperas.current.splice(0))
         setEstado((anterior) => {
           const cambiadas = anterior.alumnos === null ? SIN_CAMBIOS : cuentasConRostroCambiado(anterior.alumnos, alumnos)
           return { alumnos, error: null, horaServidor, sinSesion: false, cambiadas: cambiadas.length === 0 ? SIN_CAMBIOS : cambiadas }
@@ -69,6 +101,7 @@ export function useAlumnos(cadaMs: number): EstadoAlumnos {
         }
         sinSesion = error instanceof ErrorSinSesion
         const mensaje = error instanceof ErrorApi ? error.message : 'Ocurrió un error inesperado al consultar la API.'
+        esperas.current.splice(0).forEach((p) => p.fallo(new Error(mensaje)))
         setEstado((anterior) => ({ ...anterior, error: mensaje, sinSesion, cambiadas: SIN_CAMBIOS }))
       } finally {
         enCurso = false

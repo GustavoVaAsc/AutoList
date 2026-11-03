@@ -13,16 +13,15 @@ interface Vista {
   ruta: string
   nombre: string
   componente: ComponentType
-  /** Vista que aún no funciona; la navegación lo dice. */
-  pronto?: boolean
 }
 
 // Las tres vistas del plan, sección 6.7. La ruta va en el hash (#/metricas)
 // para que recargar la página conserve la vista sin que Node-RED tenga que
-// resolver rutas del lado del servidor.
+// resolver rutas del lado del servidor. Después de la ruta puede ir una consulta
+// (#/registro?cuenta=320068234): la ruta es lo que va antes del "?", y la vista la lee.
 const VISTAS: Vista[] = [
   { ruta: 'alumnos', nombre: 'Alumnos', componente: Alumnos },
-  { ruta: 'registro', nombre: 'Registro', componente: Registro, pronto: true },
+  { ruta: 'registro', nombre: 'Registro', componente: Registro },
   { ruta: 'metricas', nombre: 'Métricas y asistencia', componente: Metricas },
 ]
 const VISTA_INICIAL = 'metricas'
@@ -33,7 +32,7 @@ const CONSULTA_CADA_MS = 5000
 const SALIDA_VISTA_MS = 120
 
 function rutaActual(): string {
-  const ruta = window.location.hash.replace(/^#\/?/, '')
+  const ruta = window.location.hash.replace(/^#\/?/, '').split('?')[0] ?? ''
   return VISTAS.some((v) => v.ruta === ruta) ? ruta : VISTA_INICIAL
 }
 
@@ -194,7 +193,6 @@ export function App() {
                       aria-current={v.ruta === destino ? 'page' : undefined}
                     >
                       {v.nombre}
-                      {v.pronto && <span className="navegacion__pronto">Pronto</span>}
                     </a>
                   </li>
                 ))}
