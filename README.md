@@ -1,6 +1,6 @@
 # AutoList: pase de lista con reconocimiento facial en Edge AI
 
-> Última actualización: 2 nov 2026. Actualizamos este README con cada avance significativo; resume el estado del proyecto. El detalle técnico está en [`docs/HIGH-LEVEL-PLAN.md`](docs/HIGH-LEVEL-PLAN.md).
+> Última actualización: 3 nov 2026. Actualizamos este README con cada avance significativo; resume el estado del proyecto. El detalle técnico está en [`docs/HIGH-LEVEL-PLAN.md`](docs/HIGH-LEVEL-PLAN.md).
 
 ## Datos generales
 
@@ -61,7 +61,7 @@ Tópicos MQTT y esquema de la base: [sección 7](docs/HIGH-LEVEL-PLAN.md#7-datos
 | Servicio de visión | C++20 nativo con systemd, NPU (VIPLite), OpenCV 4.6 | `orangepi/vision` | Proceso de producción, adaptadores reales de MQTT y HTTP, contrato MQTT v0.3, unidad systemd y pruebas; faltan los modelos `.nb`, el detector y el embedder sobre la NPU |
 | Firmware de campo | XIAO ESP32S3, Arduino C++, MQTT y HTTP | `firmware/xiao` | Placa y cámara disponibles; firmware sin iniciar |
 | Pantalla | Python en el host (systemd), ILI9341 + táctil XPT2046, RTC DS3231 | `orangepi/pantalla`, `orangepi/systemd` | Controladores, pantalla de arranque con la hora y unidad systemd; faltan la prueba con la pantalla conectada, MQTT y las 3 vistas |
-| Frontend web | Vite + React + TypeScript, servido por Node-RED | `web/` | Esqueleto con la vista de energía (cifras, gráfica de potencia y tabla); faltan las vistas de Alumnos y Registro |
+| Frontend web | Vite + React + TypeScript, servido por Node-RED | `web/` | Vistas de energía y de Alumnos (lista e importación de CSV) sobre la API real, con el rediseño descrito en [`web/DESIGN.md`](web/DESIGN.md); la vista de Registro sigue con su estado vacío |
 
 Modelos decididos: RetinaFace para detección e InsightFace `w600k_mbf` (MobileFaceNet, embedding de 512) para reconocimiento ([sección 6.2](docs/HIGH-LEVEL-PLAN.md#62-servicio-de-visión-orangepivision-c-nativo)). Hardware y pines: [sección 8](docs/HIGH-LEVEL-PLAN.md#8-hardware). Estructura del repositorio: [sección 11](docs/HIGH-LEVEL-PLAN.md#11-estructura-del-repositorio).
 
@@ -74,8 +74,8 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Fecha | Hito | Estado |
 |---|---|---|
 | 28 oct | Proyecto y planeación | Hecho |
-| 4 nov | Primer avance | Parcial: 7 de 8 entregables hechos y 1 pendiente |
-| 11 nov | Segundo avance | Con avance: alineación, galería, esqueleto del frontend, flujo y vista de energía, autenticación de la API y API de alumnos (estas dos, en el repo) |
+| 4 nov | Primer avance | Parcial: 9 de 10 entregables hechos y 1 pendiente |
+| 11 nov | Segundo avance | Con avance: alineación, galería, esqueleto del frontend, flujo y vista de energía |
 | 18 nov | Tercer avance | Con avance: filtro de nitidez y parte de energía de la pestaña de Métricas |
 | 25 nov | Entrega final | Por presentar |
 
@@ -98,6 +98,8 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Esquema de Postgres | Hecho | [`orangepi/sql/schema.sql`](orangepi/sql/schema.sql) y rol de Node-RED con privilegios mínimos |
 | ACL de Mosquitto y usuarios por rol | Hecho | [`orangepi/mosquitto/acl`](orangepi/mosquitto/acl) y [contrato MQTT v0.5](docs/contrato-mqtt.md), sección 6; verificada en la placa con permitidos y denegados por usuario |
 | Arranque del esqueleto del frontend | Hecho | [`web/`](web/README.md), compilado dentro de la imagen de Node-RED |
+| Autenticación de la API en Node-RED (`httpNodeMiddleware`) y `GALERIA_TOKEN` | Hecho; desplegada y verificada en la placa (2 nov) | Basic del profesor en `/api/*` y solo `X-Galeria-Token` en `/api/galeria` ([`nodered/autenticacion-api.js`](nodered/autenticacion-api.js)); defensa contra CSRF en los `POST`; variables nuevas en [`orangepi/.env.example`](orangepi/.env.example); pruebas en `nodered/pruebas/` |
+| API de alumnos e importación de CSV | Hecho; verificada en la placa (2 nov) | `GET /api/alumnos`, `POST /api/alumnos/importar` (CSV, con 400 y 409 antes de escribir) y `GET /api/galeria` en [`nodered/flows/flows.json`](nodered/flows/flows.json); formato en el [plan, sección 6.7](docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript) |
 | Adaptadores reales de MQTT y HTTP, proceso de producción y unidad systemd del servicio de visión | Hecho | Adaptadores reales de MQTT y HTTP; proceso de producción con configuración y señales; unidad `orangepi/systemd/orangepi-vision.service`; prueba de humo `orangepi/vision/tools/humo.sh` |
 
 ### 11 nov: Segundo avance
@@ -117,10 +119,8 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Prueba de la pantalla y de su unidad systemd con la pantalla conectada | La unidad y el programa mínimo ya están, con sus pruebas sin hardware; falta conectar la pantalla e instalar la unidad |
 | Flujos de pase de lista y de sesiones en Node-RED | |
 | Reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV | |
-| API de alumnos e importación de CSV | Implementada en el repo; falta desplegar y verificar en la placa. `GET /api/alumnos`, `POST /api/alumnos/importar` (CSV, con 400 y 409 antes de escribir) y `GET /api/galeria` en `nodered/flows/flows.json`; formato en el [plan, sección 6.7](docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript) |
-| Esqueleto del frontend | Navegación, selector de tema y vista de energía; Alumnos y Registro con su estado vacío |
+| Esqueleto del frontend | Navegación, selector de tema, vista de energía y vista de Alumnos sobre la API real; Registro sigue con su estado vacío |
 | Menú base de la pantalla (sesión, lista y guía de registro) | |
-| Autenticación de la API en Node-RED (`httpNodeMiddleware`) y `GALERIA_TOKEN` | Implementada en el repo; falta desplegar y verificar en la placa. Basic del profesor en `/api/*` y solo `X-Galeria-Token` en `/api/galeria` (`nodered/autenticacion-api.js`); variables nuevas en `orangepi/.env.example` |
 | Ingesta a `metricas_energia` y primer gráfico de energía con lecturas reales del INA219 | El flujo de ingesta y la vista de energía ya están (gráfica de potencia de los últimos 30 min y tabla de lecturas sobre `GET /api/metricas/energia` en `https://<ip>:1880/app/`); falta el medidor (INA219) para probarlos. No usamos datos simulados como evidencia |
 
 ### 18 nov: Tercer avance
@@ -131,7 +131,7 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Validaciones y chequeo antifraude del registro | |
 | Experimentos E1 a E5 ([sección 9](docs/HIGH-LEVEL-PLAN.md#9-experimentos)) | |
 | Umbral de similitud calibrado con LFW | |
-| Frontend de registro completo, con la pestaña de Métricas y Asistencia | La pestaña de Métricas ya muestra la energía; faltan asistencia, latencia y confianza, y las vistas de Alumnos y Registro |
+| Frontend de registro completo, con la pestaña de Métricas y Asistencia | La pestaña de Métricas ya muestra la energía; falta la vista de Registro, y faltan asistencia, latencia y confianza |
 | Pantalla completa con sus 3 vistas y los botones de control | |
 
 ### 25 nov: Entrega final
@@ -162,7 +162,6 @@ Resumen de la [sección 13](docs/HIGH-LEVEL-PLAN.md#13-riesgos) y de los pendien
 | Precisión del modelo cuantizado | Más falsos positivos o rechazos | Pasar a cuantización int16 o mixta, o a `w600k_r50` (mismo embedding de 512) |
 | Conflictos de hardware en la XIAO: timers LEDC, I²C compartido con la cámara y GPIO3 de strapping | El servo, el INA219 o la consola USB pueden fallar | Las verificaciones que describe el plan, en cuanto se conecten los componentes |
 | La cámara no se autentica | Alguien en la LAN podría inyectar o leer fotos | Decisión pendiente del equipo: HMAC, punto de acceso dedicado o TLS ([`orangepi/vision/README.md`](orangepi/vision/README.md#limitaciones-conocidas)) |
-| La API HTTP de la placa desplegada aún sin autenticación | Cualquier equipo de la red llega a la API de Node-RED desplegada | MQTT ya tiene ACL con usuarios por rol (contrato v0.5); la autenticación de la API (Basic del profesor y `GALERIA_TOKEN`) está en el repo y falta desplegarla y verificarla; mientras tanto no registramos a ninguna persona real |
 | MQTT (1883) sin TLS | La contraseña de la XIAO viaja en claro por la LAN; con una clave filtrada se expulsa al cliente legítimo y se inyectan lecturas | Los consumidores descartan mensajes retenidos y vacíos; quedan pendientes limitar el 1883 a la IP de la XIAO en el firewall del host y decidir TLS ([`orangepi/README.md`](orangepi/README.md#seguridad-y-riesgos-aceptados)) |
 | Todo el stack en 4 GB de RAM | Visión, Docker y pantalla compiten por memoria | Vigilar la RAM con las métricas del SoC |
 

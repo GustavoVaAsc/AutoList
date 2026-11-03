@@ -415,7 +415,7 @@ Los nombres de servicio son `mosquitto`, `postgres`, `nodered` y `portainer`.
 
 Usar `--build` después de cambiar `nodered/settings.js`, `nodered/Dockerfile`, `nodered/package.json`, `nodered/package-lock.json` o cualquier archivo de `web/`. Estos archivos se copian a la imagen (los de `web/` se compilan en ella), así que sin reconstruirla el cambio no tiene efecto.
 
-La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-12`). Al reconstruir por un cambio, subir el sufijo (`-13`, `-14`...), como indica el comentario del archivo.
+La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-16`). Al reconstruir por un cambio, subir el sufijo (`-17`, `-18`...), como indica el comentario del archivo.
 
 Para aplicar solo un cambio de Node-RED o del frontend, sin tocar los demás servicios, desde `orangepi/`:
 
@@ -497,7 +497,6 @@ Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` también vienen de 
 
 | Riesgo | Detalle |
 |---|---|
-| Autenticación de la API sin desplegar | La API con HTTP Basic y `GALERIA_TOKEN` está en el repo, pero la placa sigue con la imagen anterior hasta desplegarla (`5.0.9-12`): mientras tanto `/api/metricas/energia` responde a cualquiera que llegue a la placa. |
 | Sin límite de intentos ni registro de los 401 | La API no limita los intentos de contraseña ni deja registro de las peticiones rechazadas (401 o 403). Con una sola cuenta de profesor, la defensa es una contraseña larga (mínimo 16 caracteres, forzado al arrancar; `openssl rand -hex 16`). Pendiente (no es de esta ronda): limitar intentos y registrar los 401 sin escribir credenciales. |
 | Certificado autofirmado: riesgo de MITM | HTTP Basic y `X-Galeria-Token` viajan por HTTPS con certificado autofirmado: protegen contra quien solo escucha, pero quien se interponga y presente otro certificado se llevaría la contraseña si el usuario acepta el aviso del navegador. Recomendación: instalar `nodered.crt` como certificado de confianza en la laptop del profesor (ver [Node-RED](#node-red)) y no aceptar avisos de certificado; el servicio de visión debe validarlo con `http.ca_file`. |
 | Inyección de fórmulas en el reporte CSV | La lista maestra se importa tal cual: un nombre que empiece con `=`, `+`, `-` o `@` queda guardado así. El peligro aparece al abrir en Excel un CSV exportado. **Requisito del reporte CSV (trabajo futuro, flujo con nodo `exec`):** neutralizar esos prefijos al exportar (por ejemplo, anteponer `'`). No se implementa en la importación. |
@@ -509,13 +508,12 @@ Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` también vienen de 
 
 ### Pendiente
 
-No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: Node-RED no arranca si faltan sus variables. No se registra a ninguna persona real sin esa autenticación verificada en la placa y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo). Las ACL de Mosquitto ya están activas (contrato MQTT v0.5); la autenticación de la API está en el repo y falta desplegarla y verificarla.
+No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: Node-RED no arranca si faltan sus variables. No se registra a ninguna persona real sin esa autenticación verificada en la placa y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo). Las ACL de Mosquitto ya están activas (contrato MQTT v0.5); la autenticación de la API está desplegada y verificada en la placa (2 nov).
 
 #### Para el 11 de noviembre
 
 | Pendiente | Estado en el repo |
 |---|---|
-| Autenticación de la API (`httpNodeMiddleware` de `nodered/settings.js`) | Implementada en el repo. Falta añadir las variables nuevas a `.env`, reconstruir (`5.0.9-12`) y verificar en la placa con los `curl` de [API de alumnos y galería](#api-de-alumnos-y-galería). |
 | `GALERIA_TOKEN` | Node-RED lo recibe por el compose. `GET /api/galeria` solo acepta el encabezado `X-Galeria-Token`; solo Node-RED y el servicio de visión tienen el token. Falta copiarlo a `/etc/pase-lista/vision.env` y verificarlo en la placa. |
 
 #### Sin fecha (sin decidir)
