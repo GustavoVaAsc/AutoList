@@ -268,6 +268,58 @@ test("CSRF: la respuesta 403 no es un desafío de autenticación", () => {
     assert.equal(res.cabeceras["www-authenticate"], undefined);
 });
 
+// Endpoints de registro (POST /api/enrolamiento, POST /api/enrolamiento/cancelar y
+// DELETE /api/alumnos/:cuenta/rostro). El middleware no mira el Content-Type: dejar
+// pasar un JSON y rechazar un tipo incorrecto (415) es cosa de cada flujo ("Validar y
+// apartar inscripción" en flows.json). Aquí se fija que la protección CSRF y el tope de
+// cuerpo cubren esas rutas sin cambios y que no bloquean application/json.
+const JSON_PROPIO = { Host: HOST, "X-Pase-Lista": "1", Origin: "https://" + HOST, "Sec-Fetch-Site": "same-origin" };
+
+test("registro: POST application/json autenticado, con X-Pase-Lista y del mismo origen pasa", () => {
+    const { siguio } = post({ ...JSON_PROPIO, "Content-Type": "application/json", "Content-Length": "58" }, { ruta: "/api/enrolamiento" });
+    assert.equal(siguio, true);
+});
+
+test("registro: POST /api/enrolamiento/cancelar sin cuerpo pasa con X-Pase-Lista", () => {
+    assert.equal(post(JSON_PROPIO, { ruta: "/api/enrolamiento/cancelar" }).siguio, true);
+});
+
+test("registro: el middleware no mira el Content-Type (el flujo responde 415)", () => {
+    const { siguio } = post({ ...JSON_PROPIO, "Content-Type": "text/plain" }, { ruta: "/api/enrolamiento" });
+    assert.equal(siguio, true);
+});
+
+test("registro: DELETE /api/alumnos/:cuenta/rostro pasa con X-Pase-Lista y del mismo origen, sin cuerpo", () => {
+    const { siguio } = post(JSON_PROPIO, { metodo: "DELETE", ruta: "/api/alumnos/320068234/rostro" });
+    assert.equal(siguio, true);
+});
+
+test("registro: DELETE sin X-Pase-Lista o de otro origen: 403", () => {
+    for (const cabeceras of [{ Host: HOST }, { ...JSON_PROPIO, Origin: "https://sitio-malo.example" }, { ...JSON_PROPIO, "Sec-Fetch-Site": "cross-site" }]) {
+        const { siguio, res } = post(cabeceras, { metodo: "DELETE", ruta: "/api/alumnos/320068234/rostro" });
+        assert.equal(siguio, false);
+        assert.equal(res.statusCode, 403);
+    }
+});
+
+test("registro: los POST de registro sin credenciales: 401", () => {
+    for (const ruta of ["/api/enrolamiento", "/api/enrolamiento/cancelar"]) {
+        const { siguio, res } = ejecutar({}, { metodo: "POST", ruta, cabeceras: { "Content-Type": "application/json" } });
+        assert.equal(siguio, false, ruta);
+        assert.equal(res.statusCode, 401, ruta);
+    }
+    const baja = ejecutar({}, { metodo: "DELETE", ruta: "/api/alumnos/320068234/rostro" });
+    assert.equal(baja.siguio, false);
+    assert.equal(baja.res.statusCode, 401);
+});
+
+test("registro: GET /api/enrolamiento/estado exige Basic y no el token de la galería", () => {
+    assert.equal(ejecutar({}, { ruta: "/api/enrolamiento/estado", cabeceras: { Authorization: basic(USUARIO, CLAVE) } }).siguio, true);
+    const conToken = ejecutar({}, { ruta: "/api/enrolamiento/estado", cabeceras: { "X-Galeria-Token": TOKEN } });
+    assert.equal(conToken.siguio, false);
+    assert.equal(conToken.res.statusCode, 401);
+});
+
 // ---------------------------------------------------------------- secretos
 
 const BUENOS = {

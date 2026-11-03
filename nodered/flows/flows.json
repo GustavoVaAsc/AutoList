@@ -697,5 +697,816 @@
                 "a1f0c0de00000050"
             ]
         ]
+    },
+    {
+        "id": "a1f0c0de00000060",
+        "type": "tab",
+        "label": "Registro",
+        "disabled": false,
+        "info": "Registro del rostro (enrolamiento) y retiro del consentimiento: POST /api/enrolamiento, POST /api/enrolamiento/cancelar, GET /api/enrolamiento/estado y DELETE /api/alumnos/:cuenta/rostro, más los manejadores de aula/vision/enrolamiento y aula/vision/embedding. La inscripción abierta vive en el contexto de este flujo (flow.inscripcion), en memoria: no sobrevive a un reinicio ni a un despliegue (plan, sección 5.4). La autenticación no está aquí: la hace el httpNodeMiddleware de settings.js, antes de cualquier http in."
+    },
+    {
+        "id": "a1f0c0de00000061",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: POST /api/enrolamiento",
+        "info": "Cuerpo JSON {\"cuenta\",\"consentimiento\":true}. Orden: aparta el lugar de la inscripción (409 si ya hay un registro abierto), escribe el consentimiento con su fecha en la base (404 si la cuenta no existe, 409 si el alumno ya tiene rostro), abre la inscripción, publica aula/vision/cmd {\"accion\":\"enrolar\",\"cuenta\",\"nombre\"} y responde 202. El embedding anterior de un alumno con rostro no se pisa: volver a registrarlo exige antes retirar el rostro (DELETE).",
+        "x": 190,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000062",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/enrolamiento",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 160,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000063"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000063",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Validar y apartar inscripción",
+        "func": "// POST /api/enrolamiento {\"cuenta\":\"320068234\",\"consentimiento\":true}\n// Cuerpo JSON (Content-Type: application/json). Valida la entrada, comprueba que no\n// haya otro registro abierto y aparta el lugar de la inscripción ANTES de tocar la\n// base: esta función corre sin interrupción, así que dos peticiones a la vez (doble\n// clic, segunda pestaña) no pueden pasar las dos, y la segunda no escribe nada.\n// Si la base falla o el alumno no sirve, el lugar se libera (\"Abrir inscripción y\n// ordenar enrolar\" y \"Cerrar y responder 500\").\n// Salida 1: sigue al UPDATE del consentimiento (msg.params, msg.reserva).\n// Salida 2: respuesta de error (400, 409 o 415).\nconst CUENTA = /^[0-9]{9}$/;\nconst POSES = [\"frente\", \"izquierda\", \"derecha\", \"arriba\", \"frente_2\"];\n\nfunction rechazar(codigo, cuerpo) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    return [null, msg];\n}\n\n// Solo application/json: los tipos que un formulario HTML de otro sitio puede enviar\n// sin permiso (text/plain, urlencoded) se rechazan; la segunda capa contra CSRF está\n// en autenticacion-api.js (X-Pase-Lista y el mismo origen).\nconst tipo = String(msg.req.headers[\"content-type\"] || \"\").split(\";\")[0].trim().toLowerCase();\nif (tipo !== \"application/json\") {\n    return rechazar(415, { error: \"El Content-Type debe ser application/json\" });\n}\nconst cuerpo = msg.payload;\nif (cuerpo === null || typeof cuerpo !== \"object\" || Array.isArray(cuerpo)) {\n    return rechazar(400, { error: \"El cuerpo debe ser un objeto JSON con cuenta y consentimiento\" });\n}\nif (typeof cuerpo.cuenta !== \"string\" || !CUENTA.test(cuerpo.cuenta)) {\n    return rechazar(400, { error: \"cuenta debe ser un texto de 9 dígitos\" });\n}\nif (cuerpo.consentimiento !== true) {\n    return rechazar(400, { error: \"Sin consentimiento no se registra el rostro: consentimiento debe ser true\" });\n}\nconst abierta = flow.get(\"inscripcion\");\nif (abierta && abierta.abierto === true) {\n    return rechazar(409, { error: \"Ya hay un registro abierto: termínalo o cancélalo antes de iniciar otro\", motivo: \"registro_abierto\" });\n}\n\nconst ahora = Date.now();\nconst id = \"r\" + ahora + \"-\" + Math.random().toString(36).slice(2, 8);\nflow.set(\"inscripcion\", {\n    id: id,\n    abierto: true,\n    apartada: true, // hasta que la base confirme el consentimiento y se publique la orden\n    cuenta: cuerpo.cuenta,\n    nombre: null,\n    estado: \"esperando_vision\",\n    motivo: null,\n    poses: POSES.map((pose) => ({ pose: pose, estado: \"pendiente\", motivo: null })),\n    advertencia: null,\n    inicio_ms: ahora,\n    actualizado_ms: ahora,\n    // Ticks de 15 s sin progreso (reloj monotónico de los temporizadores, ver \"Vencer inscripción\").\n    ticks: 0\n});\nmsg.reserva = id;\nmsg.params = [cuerpo.cuenta];\nmsg.payload = null;\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000064"
+            ],
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000064",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE consentimiento",
+        "query": "WITH antes AS (\n  SELECT nombre, (embedding IS NOT NULL) AS tiene_rostro FROM alumnos WHERE no_cuenta = $1\n),\nahora AS (\n  UPDATE alumnos SET consentimiento = true, consentimiento_fecha = now()\n  WHERE no_cuenta = $1 AND embedding IS NULL\n  RETURNING no_cuenta\n)\nSELECT (SELECT count(*) FROM antes)::int AS existe,\n       (SELECT nombre FROM antes) AS nombre,\n       COALESCE((SELECT tiene_rostro FROM antes), false) AS tiene_rostro,\n       (SELECT count(*) FROM ahora)::int AS actualizadas",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 660,
+        "y": 80,
+        "wires": [
+            [
+                "a1f0c0de00000065"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000065",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Abrir inscripción y ordenar enrolar",
+        "func": "// Respuesta del UPDATE del consentimiento: una fila {existe, nombre, tiene_rostro,\n// actualizadas}, leída y escrita en la misma sentencia. Aquí se decide:\n//   - la cuenta no existe: 404;\n//   - el alumno ya tiene rostro: 409. Volver a registrar a alguien con rostro exige\n//     antes retirarlo (plan, sección 5.4): el embedding anterior no se pisa nunca;\n//   - si no, el consentimiento ya quedó escrito: se abre la inscripción, se ordena\n//     enrolar a la visión y se responde 202.\n// Salida 1: respuesta HTTP. Salida 2: orden a aula/vision/cmd.\n// Salida 3: revertir el consentimiento (solo si el lugar se perdió mientras tanto).\nconst fila = Array.isArray(msg.payload) ? msg.payload[0] : undefined;\nif (!fila) {\n    throw new Error(\"la consulta del consentimiento no devolvió filas\");\n}\nconst cuenta = msg.params[0];\n\nfunction liberar() {\n    const i = flow.get(\"inscripcion\");\n    if (i && i.id === msg.reserva && i.apartada === true) {\n        flow.set(\"inscripcion\", undefined);\n    }\n}\n\nfunction responder(codigo, cuerpo) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    return msg;\n}\n\nif (fila.existe === 0) {\n    liberar();\n    return [responder(404, { error: \"No existe un alumno con esa cuenta\" }), null, null];\n}\nif (fila.tiene_rostro === true) {\n    liberar();\n    return [responder(409, {\n        error: \"El alumno ya tiene rostro registrado: retíralo antes de volver a registrarlo\",\n        motivo: \"tiene_rostro\"\n    }), null, null];\n}\nif (fila.actualizadas !== 1) {\n    liberar();\n    throw new Error(\"el consentimiento no se escribió\");\n}\n\nconst insc = flow.get(\"inscripcion\");\nif (!insc || insc.id !== msg.reserva || insc.abierto !== true) {\n    // Mientras se escribía, el lugar se cerró (cancelación, reinicio de los flujos):\n    // sin inscripción no hay quien reciba el progreso, y el consentimiento ya quedó escrito.\n    return [responder(409, { error: \"El registro se interrumpió antes de empezar: vuelve a intentarlo\", motivo: \"interrumpido\" }), null, { params: [cuenta] }];\n}\n// El consentimiento se escribió porque la cuenta no tenía rostro: un retiro tardío pendiente de\n// ella ya no hace falta (y borraría el rostro del registro nuevo).\nconst pendientes = flow.get(\"retiros_pendientes\");\nif (Array.isArray(pendientes) && pendientes.includes(cuenta)) {\n    const resto = pendientes.filter((c) => c !== cuenta);\n    flow.set(\"retiros_pendientes\", resto.length > 0 ? resto : undefined);\n}\ninsc.nombre = fila.nombre;\ninsc.apartada = false;\ninsc.actualizado_ms = Date.now();\ninsc.ticks = 0;\nflow.set(\"inscripcion\", insc);\n\nconst orden = {\n    topic: \"aula/vision/cmd\",\n    payload: JSON.stringify({ accion: \"enrolar\", cuenta: cuenta, nombre: fila.nombre }),\n    qos: 1,\n    retain: false\n};\nreturn [responder(202, { cuenta: cuenta, nombre: fila.nombre, abierto: true }), orden, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 940,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ],
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000066",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: POST /api/enrolamiento/cancelar",
+        "info": "Sin cuerpo. Con un registro abierto: lo cierra, publica aula/vision/cmd {\"accion\":\"cancelar\",\"cuenta\"} y revierte el consentimiento; responde 200 {\"cancelado\":true,\"abierto\":false} cuando la base confirma. Sin registro abierto responde 200 {\"cancelado\":false,\"abierto\":false} y no publica nada (idempotente).",
+        "x": 190,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000067",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/enrolamiento/cancelar",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 180,
+        "y": 280,
+        "wires": [
+            [
+                "a1f0c0de00000068"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000068",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Cancelar inscripción",
+        "func": "// POST /api/enrolamiento/cancelar\n// Con un registro abierto: lo cierra en memoria (desde ese instante un embedding tardío\n// ya no se acepta), ordena cancelar a la visión y revierte el consentimiento (el alumno\n// no tiene rostro: solo se registra uno cuando no lo tiene). La respuesta sale cuando\n// la base confirma (\"Tras revertir\").\n// Sin registro abierto responde 200 con cancelado: false y no publica nada: es\n// idempotente. Un 409 haría fallar al frontend cuando el registro terminó justo antes\n// de pulsar \"Cancelar\", y lo que la persona quiere (que no haya registro abierto) ya\n// se cumple.\n// Salida 1: respuesta HTTP. Salida 2: orden a aula/vision/cmd. Salida 3: revertir el consentimiento.\nconst insc = flow.get(\"inscripcion\");\nif (!insc || insc.abierto !== true) {\n    msg.statusCode = 200;\n    msg.payload = { cancelado: false, abierto: false };\n    return [msg, null, null];\n}\ninsc.abierto = false;\ninsc.apartada = false;\ninsc.estado = \"cancelado\";\ninsc.motivo = null;\ninsc.actualizado_ms = Date.now();\nflow.set(\"inscripcion\", insc);\n\nmsg.params = [insc.cuenta];\nconst orden = {\n    topic: \"aula/vision/cmd\",\n    payload: JSON.stringify({ accion: \"cancelar\", cuenta: insc.cuenta }),\n    qos: 1,\n    retain: false\n};\nreturn [null, orden, msg];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 280,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ],
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000069",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: GET /api/enrolamiento/estado",
+        "info": "Solo lectura. {\"abierto\",\"cuenta\",\"nombre\",\"estado\",\"motivo\",\"poses\":[{\"pose\",\"estado\",\"motivo\"}],\"advertencia\":{\"parecido_a\"}|null,\"inicio\",\"actualizado\"}. Devuelve el último registro, abierto o recién cerrado, para que el frontend vea cómo terminó. Nunca incluye embeddings ni imágenes. El frontend lo consulta cada ~1 s mientras hay un registro abierto.",
+        "x": 190,
+        "y": 400,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000006a",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/enrolamiento/estado",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 190,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de0000006b"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000006b",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Estado de la inscripción",
+        "func": "// GET /api/enrolamiento/estado: solo lectura. Devuelve el estado del último registro\n// (abierto o recién cerrado, para que el frontend vea cómo terminó):\n// {abierto, cuenta, nombre, estado, motivo, poses:[{pose,estado,motivo}],\n//  advertencia:{parecido_a}|null, inicio, actualizado}\n// Sin ningún registro desde que arrancó Node-RED: abierto false, estado \"sin_registro\".\n// Cada campo se copia por su nombre: nunca sale de aquí un embedding ni una imagen\n// (la inscripción tampoco los guarda).\nconst insc = flow.get(\"inscripcion\");\nconst iso = (ms) => new Date(ms).toISOString();\n\nif (!insc) {\n    msg.payload = {\n        abierto: false,\n        cuenta: null,\n        nombre: null,\n        estado: \"sin_registro\",\n        motivo: null,\n        poses: [],\n        advertencia: null,\n        inicio: null,\n        actualizado: null\n    };\n} else {\n    msg.payload = {\n        abierto: insc.abierto === true,\n        cuenta: insc.cuenta,\n        nombre: insc.nombre,\n        estado: insc.estado,\n        motivo: insc.motivo,\n        poses: insc.poses.map((p) => ({ pose: p.pose, estado: p.estado, motivo: p.motivo })),\n        advertencia: insc.advertencia ? { parecido_a: insc.advertencia.parecido_a } : null,\n        inicio: iso(insc.inicio_ms),\n        actualizado: iso(insc.actualizado_ms)\n    };\n}\nmsg.statusCode = 200;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000006c",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: DELETE /api/alumnos/:cuenta/rostro",
+        "info": "Retira el consentimiento: embedding NULL, consentimiento false y fecha NULL en una sola sentencia. 400 con cuenta inválida, 404 si no existe, 409 si hay un registro abierto de esa cuenta. Idempotente: si el alumno ya estaba pendiente responde 200 sin publicar. Si tenía rostro, publica aula/vision/galeria/baja {\"cuenta\"} (QoS 1, sin retención) después de escribir en la base.",
+        "x": 200,
+        "y": 580,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000006d",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/alumnos/:cuenta/rostro",
+        "method": "delete",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 210,
+        "y": 640,
+        "wires": [
+            [
+                "a1f0c0de0000006e"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000006e",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Validar cuenta de la baja",
+        "func": "// DELETE /api/alumnos/:cuenta/rostro\n// La cuenta sale de la ruta: 9 dígitos, o 400. Con un registro abierto de esa cuenta\n// responde 409: retirar el consentimiento a media captura dejaría al registro sin\n// permiso; primero se cancela. Un registro abierto de otra cuenta no estorba.\n// Salida 1: sigue al UPDATE (msg.params). Salida 2: respuesta de error (400 o 409).\nconst cuenta = msg.req.params && msg.req.params.cuenta;\n\nfunction rechazar(codigo, texto, motivo) {\n    msg.statusCode = codigo;\n    msg.payload = motivo === undefined ? { error: texto } : { error: texto, motivo: motivo };\n    return [null, msg];\n}\n\nif (typeof cuenta !== \"string\" || !/^[0-9]{9}$/.test(cuenta)) {\n    return rechazar(400, \"cuenta debe ser de 9 dígitos\");\n}\nconst insc = flow.get(\"inscripcion\");\nif (insc && insc.abierto === true && insc.cuenta === cuenta) {\n    return rechazar(409, \"Hay un registro abierto de este alumno: cancélalo antes de retirar su rostro\", \"registro_abierto\");\n}\nmsg.params = [cuenta];\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 640,
+        "wires": [
+            [
+                "a1f0c0de0000006f"
+            ],
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000006f",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE retirar rostro",
+        "query": "WITH antes AS (\n  SELECT (embedding IS NOT NULL) AS tenia_rostro FROM alumnos WHERE no_cuenta = $1\n),\nretirado AS (\n  UPDATE alumnos SET embedding = NULL, consentimiento = false, consentimiento_fecha = NULL\n  WHERE no_cuenta = $1 AND (embedding IS NOT NULL OR consentimiento)\n  RETURNING no_cuenta\n)\nSELECT (SELECT count(*) FROM antes)::int AS existe,\n       COALESCE((SELECT tenia_rostro FROM antes), false) AS tenia_rostro,\n       (SELECT count(*) FROM retirado)::int AS actualizadas",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 740,
+        "y": 620,
+        "wires": [
+            [
+                "a1f0c0de00000070"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000070",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Decidir baja",
+        "func": "// Respuesta del UPDATE que retira el rostro: una fila {existe, tenia_rostro, actualizadas},\n// leída y escrita en la misma sentencia.\n//   - la cuenta no existe: 404;\n//   - responde 200 con el estado nuevo, siempre \"pendiente\". Es idempotente: si el\n//     alumno ya estaba pendiente, retirado es false y no se publica nada;\n//   - si tenía rostro, publica aula/vision/galeria/baja (QoS 1, sin retención), DESPUÉS\n//     de escribir en la base, para que la visión lo quite de su galería en RAM.\n// Salida 1: respuesta HTTP. Salida 2: baja a la visión.\nconst fila = Array.isArray(msg.payload) ? msg.payload[0] : undefined;\nif (!fila) {\n    throw new Error(\"la consulta de la baja no devolvió filas\");\n}\nconst cuenta = msg.params[0];\nif (fila.existe === 0) {\n    msg.statusCode = 404;\n    msg.payload = { error: \"No existe un alumno con esa cuenta\" };\n    return [msg, null];\n}\nconst teniaRostro = fila.tenia_rostro === true;\nmsg.statusCode = 200;\nmsg.payload = { cuenta: cuenta, rostro: \"pendiente\", retirado: teniaRostro };\nif (!teniaRostro) {\n    return [msg, null];\n}\nconst baja = {\n    topic: \"aula/vision/galeria/baja\",\n    payload: JSON.stringify({ cuenta: cuenta }),\n    qos: 1,\n    retain: false\n};\nreturn [msg, baja];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 970,
+        "y": 640,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ],
+            [
+                "a1f0c0de00000081"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000071",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "MQTT: aula/vision/enrolamiento (progreso del registro)",
+        "info": "QoS 0, sin retención. Actualiza la inscripción abierta si la cuenta coincide; completado no la cierra (falta el embedding, que llega por otro tópico); cancelado y error la cierran y revierten el consentimiento. Descarta retain (contrato MQTT, sección 1) y vacíos. La miniatura no se guarda ni se registra.",
+        "x": 200,
+        "y": 760,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000072",
+        "type": "mqtt in",
+        "z": "a1f0c0de00000060",
+        "name": "aula/vision/enrolamiento",
+        "topic": "aula/vision/enrolamiento",
+        "qos": "0",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 190,
+        "y": 820,
+        "wires": [
+            [
+                "a1f0c0de00000073"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000073",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Aplicar progreso del registro",
+        "func": "// Progreso del registro: aula/vision/enrolamiento (QoS 0, sin retención).\n// Solo actualiza la inscripción abierta, y solo si la cuenta del mensaje es la suya.\n//   - esperando_pose, capturando, aceptada, rechazada: actualizan la pose del mensaje.\n//   - advertencia: guarda la cuenta a la que se parece (informativa; no detiene nada).\n//   - completado: la visión aceptó las 5 poses, pero la inscripción SIGUE ABIERTA hasta\n//     que llegue el embedding (aula/vision/embedding, otro tópico y otra QoS: la visión\n//     publica \"completado\" antes, pero no hay garantía de orden en la entrega). Si\n//     \"completado\" la cerrara, el embedding que llega después se rechazaría y se\n//     perdería el registro. Cierra \"Tras guardar embedding\".\n//   - cancelado y error: cierran la inscripción y revierten el consentimiento.\n// Cada mensaje aceptado (de este registro: ver la guarda de `ts`) renueva el plazo de 5 minutos. La miniatura (base64) se ignora y\n// no se guarda ni se registra: el contrato no define cómo llega al navegador.\n// Salida 1: revertir el consentimiento. Salida 2: descarte (nunca lleva el contenido).\nconst MAX_CARACTERES = 32768; // un mensaje con miniatura de ~8 KB pesa unos 11 KB\nconst ESTADOS_POSE = [\"esperando_pose\", \"capturando\", \"aceptada\", \"rechazada\"];\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\n// El progreso nunca se retiene (contrato MQTT, sección 1): un retenido sería un\n// progreso falso que se repetiría en cada conexión.\n// El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido publicado en vivo llega\n// con retain = false (la opción rap no existe), y solo se ve retain = true en la entrega inicial\n// al (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": el progreso no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (el progreso no se retiene)\");\n}\n// Payload vacío: no es un progreso. Es el mensaje en vivo que provoca la limpieza en\n// cada conexión al broker.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\nconst insc = flow.get(\"inscripcion\");\nif (!insc || insc.abierto !== true) {\n    return descartar(\"no hay un registro abierto\");\n}\nif (datos.cuenta !== insc.cuenta) {\n    return descartar(\"la cuenta no coincide con el registro abierto\");\n}\nif (typeof datos.estado !== \"string\") {\n    return descartar(\"falta estado\");\n}\n\n// Sesión rezagada: el mensaje debe ser de este registro. `ts` es obligatorio (contrato MQTT,\n// sección 1); uno anterior al inicio (con 2 s de margen) es de una sesión pasada de la misma\n// cuenta, y sin `ts` legible no hay cómo saberlo: se descarta.\nconst MARGEN_TS_MS = 2000;\nconst instante = typeof datos.ts === \"string\" ? Date.parse(datos.ts) : NaN;\nif (Number.isNaN(instante)) {\n    return descartar(\"falta ts o no se puede leer\");\n}\nif (instante > Date.now() + 5 * 60 * 1000) {\n    return descartar(\"ts posterior a la hora actual\");\n}\nif (instante < insc.inicio_ms - MARGEN_TS_MS) {\n    return descartar(\"el mensaje es anterior al inicio del registro\");\n}\n\n// Un código del contrato (rostro_chico, ocupado...): solo minúsculas y guion bajo.\n// Texto libre de la red no llega al frontend.\nconst motivo = (typeof datos.motivo === \"string\" && /^[a-z_]{1,40}$/.test(datos.motivo)) ? datos.motivo : null;\nlet revertir = null;\n\nif (ESTADOS_POSE.includes(datos.estado)) {\n    const pose = insc.poses.find((p) => p.pose === datos.pose);\n    if (!pose) {\n        return descartar(\"pose desconocida\");\n    }\n    pose.estado = datos.estado;\n    pose.motivo = datos.estado === \"rechazada\" ? motivo : null;\n    if (insc.estado === \"esperando_vision\") {\n        insc.estado = \"en_curso\";\n    }\n} else if (datos.estado === \"advertencia\") {\n    const parecido = (typeof datos.parecido_a === \"string\" && /^[0-9]{9}$/.test(datos.parecido_a)) ? datos.parecido_a : null;\n    insc.advertencia = { parecido_a: parecido };\n} else if (datos.estado === \"completado\") {\n    insc.estado = \"guardando\";\n} else if (datos.estado === \"cancelado\" || datos.estado === \"error\") {\n    insc.abierto = false;\n    insc.estado = datos.estado;\n    insc.motivo = datos.estado === \"error\" ? (motivo || \"desconocido\") : null;\n    revertir = { params: [insc.cuenta] };\n} else {\n    return descartar(\"estado desconocido\");\n}\ninsc.actualizado_ms = Date.now();\ninsc.ticks = 0;\nflow.set(\"inscripcion\", insc);\nreturn [revertir, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 820,
+        "wires": [
+            [
+                "a1f0c0de0000007f"
+            ],
+            [
+                "a1f0c0de00000087"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000074",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "MQTT: aula/vision/embedding (guardar el rostro)",
+        "info": "QoS 1, sin retención. Solo se guarda si la cuenta es la de la inscripción abierta y dim es 512; el UPDATE exige consentimiento y rostro vacío. Después publica aula/vision/galeria/alta. Ningún nodo de esta ruta registra el payload ni el mensaje: es un embedding (dato biométrico).",
+        "x": 200,
+        "y": 920,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000075",
+        "type": "mqtt in",
+        "z": "a1f0c0de00000060",
+        "name": "aula/vision/embedding",
+        "topic": "aula/vision/embedding",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 190,
+        "y": 980,
+        "wires": [
+            [
+                "a1f0c0de00000076"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000076",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Validar embedding",
+        "func": "// Embedding final del registro: aula/vision/embedding (QoS 1, sin retención).\n// Se guarda solo si la cuenta del mensaje es la de la inscripción abierta; nunca para\n// otra cuenta. La cuenta que va al UPDATE sale de la inscripción, no del mensaje.\n// El consentimiento lo comprueba el propio UPDATE (AND consentimiento AND embedding IS\n// NULL): este flujo nunca lo escribe a favor de nadie (plan, sección 6.4).\n// Si el mensaje es de la cuenta abierta pero no sirve (dim distinta de 512, arreglo\n// que no son 512 números, sin modelo), el registro termina en error y el consentimiento\n// se revierte. Nunca se registra el contenido del mensaje: es un dato biométrico.\n// Salida 1: UPDATE del embedding (msg.params = [texto del vector, cuenta]).\n// Salida 2: descarte. Salida 3: revertir el consentimiento.\nconst MAX_CARACTERES = 65536; // 512 números con 4 decimales pesan unos 4 KB\nconst DIM = 512; // vector(512) en orangepi/sql/schema.sql\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }, null];\n}\n\n// El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido publicado en vivo llega\n// con retain = false (la opción rap no existe), y solo se ve retain = true en la entrega inicial\n// al (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": el embedding no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (el embedding no se retiene)\");\n}\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\nconst insc = flow.get(\"inscripcion\");\nif (!insc || insc.abierto !== true) {\n    return descartar(\"no hay un registro abierto\");\n}\nif (datos.cuenta !== insc.cuenta) {\n    return descartar(\"la cuenta no coincide con el registro abierto\");\n}\n\n// Sesión rezagada: el mensaje debe ser de este registro. `ts` es obligatorio (contrato MQTT,\n// sección 1). Un `ts` ilegible, vacío o de antes de 2000 (la visión usa 1970 como hora de reserva\n// si su reloj falla) en el embedding de la cuenta abierta no se descarta en silencio: el registro\n// termina en error y el consentimiento se revierte. Uno posterior a ahora + 5 min se descarta, y\n// uno anterior al inicio (con 2 s de margen) es de una sesión pasada de la misma cuenta: también.\nconst MARGEN_TS_MS = 2000;\nconst TS_MINIMO_MS = Date.UTC(2000, 0, 1);\nconst ADELANTO_MAXIMO_MS = 5 * 60 * 1000;\nconst instante = typeof datos.ts === \"string\" ? Date.parse(datos.ts) : NaN;\nif (Number.isNaN(instante) || instante < TS_MINIMO_MS) {\n    return fallar(\"ts ilegible, vacío o de antes de 2000\");\n}\nif (instante > Date.now() + ADELANTO_MAXIMO_MS) {\n    return descartar(\"ts posterior a la hora actual\");\n}\nif (instante < insc.inicio_ms - MARGEN_TS_MS) {\n    return descartar(\"el mensaje es anterior al inicio del registro\");\n}\n\nfunction fallar(texto) {\n    insc.abierto = false;\n    insc.estado = \"error\";\n    insc.motivo = \"embedding_invalido\";\n    insc.actualizado_ms = Date.now();\n    flow.set(\"inscripcion\", insc);\n    return [null, { payload: \"Descartado, \" + texto }, { params: [insc.cuenta] }];\n}\n\nif (datos.dim !== DIM) {\n    return fallar(\"dim distinto de \" + DIM);\n}\nif (!Array.isArray(datos.embedding) || datos.embedding.length !== DIM ||\n    !datos.embedding.every((x) => typeof x === \"number\" && Number.isFinite(x))) {\n    return fallar(\"el embedding no es un arreglo de \" + DIM + \" números\");\n}\nif (typeof datos.modelo !== \"string\" || datos.modelo.trim() === \"\") {\n    return fallar(\"falta modelo\");\n}\n// El contrato lo define \"Normalizado L2\" (sección 4, aula/vision/embedding) con 4 decimales: el\n// redondeo mueve la norma menos de 0.001, así que 0.01 de tolerancia no rechaza uno bueno. Un\n// vector de norma cero (o muy lejos de 1) no sirve para comparar por coseno.\nconst norma = Math.sqrt(datos.embedding.reduce((suma, x) => suma + x * x, 0));\nif (!(Math.abs(norma - 1) <= 0.01)) {\n    return fallar(\"el embedding no tiene norma L2 igual a 1\");\n}\nmsg.params = [\"[\" + datos.embedding.join(\",\") + \"]\", insc.cuenta];\nmsg.fuente = \"embedding\";\nmsg.inscripcion_id = insc.id; // \"Tras guardar embedding\" solo da de alta si sigue abierta ESTA inscripción\nmsg.payload = null;\nreturn [msg, null, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 980,
+        "wires": [
+            [
+                "a1f0c0de00000077"
+            ],
+            [
+                "a1f0c0de00000087"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000077",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE embedding",
+        "query": "UPDATE alumnos SET embedding = $1::vector\nWHERE no_cuenta = $2 AND consentimiento AND embedding IS NULL\nRETURNING no_cuenta",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 700,
+        "y": 960,
+        "wires": [
+            [
+                "a1f0c0de00000078"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000078",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Tras guardar embedding",
+        "func": "// Respuesta del UPDATE del embedding (RETURNING no_cuenta): una fila si lo guardó, ninguna\n// si el alumno ya no tenía consentimiento o ya tenía rostro.\n//   - guardado: cierra la inscripción como \"completado\" y publica aula/vision/galeria/alta\n//     (QoS 1, sin retención), DESPUÉS de escribir en la base; la visión recarga entonces su\n//     galería con GET /api/galeria. Si la inscripción ya se había cerrado (se canceló\n//     mientras se escribía), el rostro quedó guardado de todos modos y el alta se publica:\n//     la galería sigue a la base.\n//   - guardado cuando la inscripción YA NO estaba abierta (se cerró como cancelado, error o\n//     vencido mientras el embedding estaba en vuelo): no se da de alta. Se retira el rostro y\n//     el consentimiento (esa cuenta no tenía rostro antes: si lo tuviera, no habría podido\n//     abrir el registro) y \"Publicar baja tras retiro tardío\" avisa a la visión. El estado de\n//     la API sigue diciendo la verdad (cancelado, error...).\n//   - no guardado: el registro termina en error y se revierte el consentimiento.\n// Salida 1: alta a la visión. Salida 2: revertir el consentimiento. Salida 3: retirar el rostro tardío\n// (con fuente \"retiro_tardio\": si falla, \"Cerrar y responder 500\" lo deja en retiros_pendientes).\nconst filas = msg.payload;\nconst cuenta = msg.params[1];\nconst insc = flow.get(\"inscripcion\");\n// Solo cuenta la inscripción a la que se ligó este embedding al validarlo (`inscripcion_id`): si\n// el registro R1 se canceló y R2 se abrió para la misma cuenta, el embedding de R1 que se confirma\n// tarde NO es de R2 y se retira (R2 queda sin consentimiento y termina en no_guardado: falla cerrado).\nconst abierta = Boolean(insc) && insc.abierto === true && insc.cuenta === cuenta && insc.id === msg.inscripcion_id;\n\nif (!Array.isArray(filas) || filas.length !== 1) {\n    node.warn(\"Embedding rechazado por la base: sin consentimiento vigente o el alumno ya tiene rostro\");\n    if (!abierta) {\n        return null;\n    }\n    insc.abierto = false;\n    insc.estado = \"error\";\n    insc.motivo = \"no_guardado\";\n    insc.actualizado_ms = Date.now();\n    flow.set(\"inscripcion\", insc);\n    return [null, { params: [cuenta] }, null];\n}\n\nif (!abierta) {\n    node.warn(\"El embedding se guardó con el registro ya cerrado: se retira y no se da de alta\");\n    return [null, null, { params: [cuenta], fuente: \"retiro_tardio\" }];\n}\ninsc.abierto = false;\ninsc.estado = \"completado\";\ninsc.motivo = null;\ninsc.actualizado_ms = Date.now();\nflow.set(\"inscripcion\", insc);\nconst alta = {\n    topic: \"aula/vision/galeria/alta\",\n    payload: JSON.stringify({ cuenta: cuenta }),\n    qos: 1,\n    retain: false\n};\nreturn [alta, null, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 940,
+        "y": 980,
+        "wires": [
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ],
+            [
+                "a1f0c0de00000088"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000088",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE retirar rostro tardío",
+        "query": "UPDATE alumnos SET embedding = NULL, consentimiento = false, consentimiento_fecha = NULL\nWHERE no_cuenta = $1",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 1200,
+        "y": 1060,
+        "wires": [
+            [
+                "a1f0c0de00000089"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000089",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Publicar baja tras retiro tardío",
+        "func": "// Tras retirar el rostro que se guardó con el registro ya cerrado (\"Tras guardar embedding\"):\n// avisa a la visión con aula/vision/galeria/baja (QoS 1, sin retención) por si había recargado\n// la galería. Solo se publica después de escribir en la base.\nconst cuenta = msg.params[0];\n// El retiro tuvo éxito (también si era un reintento): la cuenta sale de la lista de pendientes.\nconst pendientes = flow.get(\"retiros_pendientes\");\nif (Array.isArray(pendientes)) {\n    const resto = pendientes.filter((c) => c !== cuenta);\n    flow.set(\"retiros_pendientes\", resto.length > 0 ? resto : undefined);\n}\nnode.warn(\"Rostro tardío retirado y baja publicada\");\nreturn {\n    topic: \"aula/vision/galeria/baja\",\n    payload: JSON.stringify({ cuenta: cuenta }),\n    qos: 1,\n    retain: false\n};",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1440,
+        "y": 1060,
+        "wires": [
+            [
+                "a1f0c0de00000081"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000079",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "Vencimiento y arranque",
+        "info": "Cada 15 s revisa si la inscripción abierta lleva 5 minutos sin progreso y, si es así, la cierra como vencida, ordena cancelar y revierte el consentimiento. Al arrancar o desplegar, borra la inscripción del contexto y quita los consentimientos sin rostro (plan, sección 5.4, pasos 9 y 10).",
+        "x": 200,
+        "y": 1080,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000007a",
+        "type": "inject",
+        "z": "a1f0c0de00000060",
+        "name": "Cada 15 s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "15",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 1140,
+        "wires": [
+            [
+                "a1f0c0de0000007b"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007b",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Vencer inscripción",
+        "func": "// Cada 15 s (\"Cada 15 s\"):\n// 1. Vencimiento: si la inscripción abierta lleva 5 minutos sin progreso (cada mensaje de\n//    aula/vision/enrolamiento de su cuenta renueva el plazo; plan, sección 5.4), la cierra\n//    como error \"vencido\", ordena cancelar a la visión (por si sigue capturando) y revierte\n//    el consentimiento. Con la visión apagada, es lo que cierra un registro que nadie atiende.\n//    El plazo se cuenta en ticks de este temporizador (20 x 15 s) y no con Date.now(): el\n//    reloj de la placa puede saltar (RTC, NTP) y un salto hacia adelante vencería un registro\n//    vivo. Los temporizadores de Node.js son monotónicos y la función no tiene performance ni\n//    process. Un tick tardío solo retrasa el vencimiento, nunca lo adelanta.\n// 2. Reintento de la limpieza de arranque: si el UPDATE de \"Al arrancar\" falló (la base aún no\n//    estaba lista), queda la marca `limpieza_pendiente` y se reintenta aquí, solo si no hay un\n//    registro abierto (el UPDATE quitaría su consentimiento).\n// 3. Reintento de los retiros tardíos que fallaron (flow.retiros_pendientes, ver \"Cerrar y\n//    responder 500\"): se reenvían al UPDATE de retiro; la baja se publica cuando sale bien\n//    (\"Publicar baja tras retiro tardío\"). Una cuenta con un registro abierto no se reintenta.\n// Salida 1: orden a aula/vision/cmd. Salida 2: revertir el consentimiento.\n// Salida 3: limpieza de arranque. Salida 4: retiros tardíos (uno por cuenta pendiente).\nconst TICKS_PARA_VENCER = 20;\nconst insc = flow.get(\"inscripcion\");\nconst abierta = Boolean(insc) && insc.abierto === true;\n\nlet limpieza = null;\nif (flow.get(\"limpieza_pendiente\") === true && !abierta) {\n    node.log(\"Se reintenta la limpieza de arranque\");\n    limpieza = { payload: null };\n}\nconst pendientes = flow.get(\"retiros_pendientes\");\nconst retiros = Array.isArray(pendientes)\n    ? pendientes.filter((c) => !(abierta && insc.cuenta === c)).map((c) => ({ params: [c], fuente: \"retiro_tardio\" }))\n    : [];\nif (retiros.length > 0) {\n    node.log(\"Se reintenta el retiro de \" + retiros.length + \" rostro(s) tardío(s)\");\n}\nconst adicionales = [limpieza, retiros.length > 0 ? retiros : null];\n\nif (!abierta) {\n    return (limpieza === null && retiros.length === 0) ? null : [null, null, ...adicionales];\n}\ninsc.ticks = (Number.isInteger(insc.ticks) ? insc.ticks : 0) + 1;\nif (insc.ticks < TICKS_PARA_VENCER) {\n    flow.set(\"inscripcion\", insc);\n    return retiros.length === 0 ? null : [null, null, null, retiros];\n}\ninsc.abierto = false;\ninsc.apartada = false;\ninsc.estado = \"error\";\ninsc.motivo = \"vencido\";\ninsc.actualizado_ms = Date.now();\nflow.set(\"inscripcion\", insc);\nnode.warn(\"Registro vencido: 5 minutos sin progreso\");\nconst orden = {\n    topic: \"aula/vision/cmd\",\n    payload: JSON.stringify({ accion: \"cancelar\", cuenta: insc.cuenta }),\n    qos: 1,\n    retain: false\n};\nreturn [orden, { params: [insc.cuenta] }, null, retiros.length === 0 ? null : retiros];",
+        "outputs": 4,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 1140,
+        "wires": [
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ],
+            [
+                "a1f0c0de0000007e"
+            ],
+            [
+                "a1f0c0de00000088"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007c",
+        "type": "inject",
+        "z": "a1f0c0de00000060",
+        "name": "Al arrancar o desplegar",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 3,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 170,
+        "y": 1220,
+        "wires": [
+            [
+                "a1f0c0de0000007d"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007d",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Al arrancar: borrar inscripciones",
+        "func": "// Al arrancar Node-RED o desplegar los flujos (plan, sección 5.4, paso 10): las\n// inscripciones viven en memoria y no sobreviven. Primero se borra la inscripción del\n// contexto; el nodo siguiente ejecuta el UPDATE que quita los consentimientos que\n// quedaron sin rostro. Un registro que la visión siga atendiendo termina con un\n// embedding que ya no se acepta (no hay inscripción abierta).\n// La marca `limpieza_pendiente` queda puesta hasta que el UPDATE tenga éxito\n// (\"Limpieza de arranque lista\"): si falla (la base aún no estaba lista), \"Vencer\n// inscripción\" lo reintenta cada 15 s.\nflow.set(\"inscripcion\", undefined);\nflow.set(\"limpieza_pendiente\", true);\nnode.log(\"Arranque: se borran las inscripciones pendientes y los consentimientos sin rostro\");\nmsg.payload = null;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 1220,
+        "wires": [
+            [
+                "a1f0c0de0000007e"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007e",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE limpiar consentimientos sin rostro",
+        "query": "UPDATE alumnos SET consentimiento = false, consentimiento_fecha = NULL\nWHERE consentimiento AND embedding IS NULL",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 750,
+        "y": 1220,
+        "wires": [
+            [
+                "a1f0c0de0000008a"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000008a",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Limpieza de arranque lista",
+        "func": "// El UPDATE de limpieza de arranque tuvo éxito: ya no hace falta reintentarlo.\nflow.set(\"limpieza_pendiente\", undefined);\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1000,
+        "y": 1220,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007f",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE revertir consentimiento",
+        "query": "UPDATE alumnos SET consentimiento = false, consentimiento_fecha = NULL\nWHERE no_cuenta = $1 AND embedding IS NULL",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 1200,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de00000080"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000080",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Tras revertir",
+        "func": "// Respuesta del UPDATE que revierte el consentimiento. Solo POST /api/enrolamiento/cancelar\n// trae msg.req y espera respuesta; las demás rutas (progreso, embedding, vencimiento,\n// fallos) mandan un mensaje nuevo y terminan aquí sin responder.\nif (!msg.req) {\n    return null;\n}\nmsg.statusCode = 200;\nmsg.payload = { cancelado: true, abierto: false };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1420,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000081",
+        "type": "mqtt out",
+        "z": "a1f0c0de00000060",
+        "name": "Publicar (tópico en msg)",
+        "topic": "",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 1440,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000082",
+        "type": "http response",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "statusCode": "",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 1440,
+        "y": 620,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000083",
+        "type": "catch",
+        "z": "a1f0c0de00000060",
+        "name": "Errores del registro",
+        "scope": [
+            "a1f0c0de00000063",
+            "a1f0c0de00000064",
+            "a1f0c0de00000065",
+            "a1f0c0de00000068",
+            "a1f0c0de0000006e",
+            "a1f0c0de0000006f",
+            "a1f0c0de00000070",
+            "a1f0c0de00000073",
+            "a1f0c0de00000076",
+            "a1f0c0de00000077",
+            "a1f0c0de00000078",
+            "a1f0c0de0000007b",
+            "a1f0c0de0000007d",
+            "a1f0c0de0000007e",
+            "a1f0c0de0000007f",
+            "a1f0c0de00000080",
+            "a1f0c0de00000088",
+            "a1f0c0de00000089",
+            "a1f0c0de0000008a"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 1320,
+        "wires": [
+            [
+                "a1f0c0de00000084"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000084",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Cerrar y responder 500",
+        "func": "// Error de ejecución (la base, sobre todo) en cualquier ruta de este flujo.\n// Se registra solo el código SQLSTATE (cinco caracteres), o un mensaje truncado y sin\n// secuencias de 9 dígitos: nunca msg ni msg.params (traen embeddings y cuentas), el\n// detalle de Postgres, el mensaje completo ni la ruta con la cuenta (se registra la\n// plantilla de la ruta, /api/alumnos/:cuenta/rostro).\n// Además:\n//   - si la petición había apartado el lugar de la inscripción y no llegó a abrirla, lo libera;\n//   - si falla el UPDATE del embedding, el registro termina en error y se revierte el\n//     consentimiento (si esa reversión falla también, solo se registra);\n//   - si falla el retiro de un rostro tardío (fuente \"retiro_tardio\"), la cuenta queda en\n//     flow.retiros_pendientes y \"Vencer inscripción\" lo reintenta cada 15 s hasta que salga.\n// Se responde 500 si el mensaje viene de una petición HTTP (trae msg.req).\n// Salida 1: respuesta HTTP. Salida 2: revertir el consentimiento.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nlet ruta = \"\";\nif (msg.req) {\n    const plantilla = msg.req.route && typeof msg.req.route.path === \"string\" ? msg.req.route.path : \"(ruta)\";\n    ruta = msg.req.method + \" \" + plantilla.replace(/[0-9]{9}/g, \"*********\") + \" \";\n}\nnode.warn(\"Registro: \" + ruta + \"falló: \" + causa);\n\nif (msg.reserva) {\n    const i = flow.get(\"inscripcion\");\n    if (i && i.id === msg.reserva && i.apartada === true) {\n        flow.set(\"inscripcion\", undefined);\n    }\n}\nlet revertir = null;\nif (msg.fuente === \"retiro_tardio\" && Array.isArray(msg.params) && /^[0-9]{9}$/.test(String(msg.params[0]))) {\n    const pendientes = flow.get(\"retiros_pendientes\") || [];\n    if (!pendientes.includes(msg.params[0])) {\n        pendientes.push(msg.params[0]);\n    }\n    flow.set(\"retiros_pendientes\", pendientes);\n}\nif (msg.fuente === \"embedding\") {\n    const insc = flow.get(\"inscripcion\");\n    if (insc && insc.abierto === true && Array.isArray(msg.params) && insc.cuenta === msg.params[1] && insc.id === msg.inscripcion_id) {\n        insc.abierto = false;\n        insc.estado = \"error\";\n        insc.motivo = \"no_guardado\";\n        insc.actualizado_ms = Date.now();\n        flow.set(\"inscripcion\", insc);\n        revertir = { params: [insc.cuenta] };\n    }\n}\nlet respuesta = null;\nif (msg.req) {\n    msg.statusCode = 500;\n    msg.payload = { error: \"No se pudo completar la operación en la base de datos\" };\n    respuesta = msg;\n}\nreturn [respuesta, revertir];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 1320,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000085",
+        "type": "catch",
+        "z": "a1f0c0de00000060",
+        "name": "Errores del estado",
+        "scope": [
+            "a1f0c0de0000006b"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 1400,
+        "wires": [
+            [
+                "a1f0c0de00000086"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000086",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Responder 500 de estado",
+        "func": "// Error al leer el estado del registro (GET, solo lectura): se registra el mensaje\n// truncado, sin secuencias de 9 dígitos, y se responde 500.\nconst error = msg.error || {};\nconst causa = (typeof error.message === \"string\" && error.message !== \"\")\n    ? error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120)\n    : \"error desconocido\";\nnode.warn(\"GET /api/enrolamiento/estado falló: \" + causa);\nmsg.statusCode = 500;\nmsg.payload = { error: \"No se pudo leer el estado del registro\" };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 1400,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000087",
+        "type": "debug",
+        "z": "a1f0c0de00000060",
+        "name": "Descartados del registro",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 760,
+        "y": 880,
+        "wires": []
     }
 ]
