@@ -134,6 +134,36 @@ build/npu_smoke /opt/vpm_run/network_binary.nb /opt/vpm_run/input_0.dat 200
 
 Imprime los tensores (forma `w x h x c x n`, formato, cuantización) y el tiempo promedio de copia de entrada, ejecución y lectura de salida. El archivo de entrada debe medir exactamente lo que ocupa el tensor. Los `.nb` no se versionan (plan, sección 11).
 
+## Congelar los paquetes del kernel
+
+El `.nb` (Acuity v2.0.10.2), el driver `vipcore` 1.13.0 y las librerías VIPLite tienen que ser compatibles entre sí. Si el kernel cambia, la NPU deja de funcionar y hay que rehacer la conversión del modelo (plan, sección 13, riesgos).
+
+**Estado en la placa (3 de noviembre de 2026).** `apt-mark showhold` solo retiene `libawispapi-isp-602-arm64` y `wiringpi`. **Los paquetes del kernel no están retenidos.**
+
+El kernel que corre es el del fabricante, `6.6.98-sun60iw2`, del paquete `linux-image-current-sun60iw2` (1.0.0). Ese paquete no viene de ningún repositorio configurado en `apt` (su origen es `/var/lib/dpkg/status`), así que `apt upgrade` no lo actualiza por sí solo. El riesgo real es que una actualización de Debian instale otro kernel y lo deje por delante en el orden de arranque, con otro driver `vipcore` o sin él.
+
+**Retenerlos.** Hace falta `sudo` y el agente no lo usa: lo aplica una persona a mano.
+
+```bash
+sudo apt-mark hold linux-image-current-sun60iw2
+# Si llega a instalarse el paquete de cabeceras del fabricante:
+sudo apt-mark hold linux-headers-current-sun60iw2
+```
+
+**Comprobación.** `apt-mark showhold` tiene que listarlos:
+
+```bash
+apt-mark showhold
+```
+
+**Después de cualquier cambio de kernel**, hay que volver a verificar la NPU antes de dar por bueno el servicio. El modelo de ejemplo del fabricante es la prueba rápida:
+
+```bash
+cd /opt/vpm_run && ./vpm_run -s sample.txt -l 2 -d 0
+```
+
+El índice de dispositivo es `0`: con `-d 1` el programa falla con `value is more than device count=1`. Si termina con `vpm run ret=0`, la NPU sigue viva.
+
 ## El proceso de producción
 
 `build/vision_service` es el binario de producción: el proceso que corre en la Orange Pi, el que lanza systemd y el que se comunica con el broker y con la cámara. `build/vision_dry_run` es el recorrido en seco (ver la sección siguiente).
