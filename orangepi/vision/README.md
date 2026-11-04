@@ -188,9 +188,23 @@ El índice de dispositivo es `0`: con `-d 1` el programa falla con `value is mor
 | 8 bits con otra cuantización afín | **falla cerrado**: hay que confirmar la convención |
 | punto flotante, o punto fijo dinámico | **falla cerrado**: hay que elegir el modo a mano |
 
-El motivo de que esto sea automático: con el modo equivocado, `quantize` satura la entrada a 255 en silencio y la red ve una imagen casi blanca. Con la galería poblada, los embeddings salen casi idénticos y la primera entrada de la galería gana todos los empates: cualquier cara se reconoce como el alumno registrado primero. Por eso `quantize` además cuenta los valores recortados y falla si saturan más del 1%: una imagen que satura es un error de configuración, no un dato de entrada.
+El motivo de que esto sea automático: con el modo equivocado, `quantize` satura la entrada a 255 en silencio y la red ve una imagen casi blanca. Con la galería poblada, los embeddings salen casi idénticos y la primera entrada de la galería gana todos los empates: cualquier cara se reconoce como el alumno registrado primero.
 
-**Todo se valida al arrancar, no en pleno registro.** Los constructores comprueban el número de entradas (debe ser 1), el formato de la salida (que tiene que estar soportado por `dequantize`), el número de elementos de la salida frente a lo que espera el layout, los índices de salida del layout, el tamaño de la entrada (con un techo de 4096 px por lado y lote 1) y que los bytes necesarios quepan en el tensor **antes** de reservar memoria. Si algo no cuadra, el proceso avisa del motivo y sale con error: es preferible no arrancar a fallar con el alumno posando y la luz encendida.
+**El rango se comprueba contra el tensor, no contra la imagen.** Además de deducir el modo, al arrancar se comprueba que el dominio que ese modo implica (`[0,1]` en `Unit`, `[0,255]` en `None`, `[-1,1]` en `ArcFace`) quepa en el rango que el tensor representa (`[(min−zp)·scale, (max−zp)·scale]`). Un `int8` con escala 1/255 representa `[-0.502, 0.498]`, que **no** cubre el `[0,1]` de `Unit`: ese modelo se rechaza al arrancar, con los dos rangos en el mensaje. La comprobación es estática (el rango del tensor es un dato del `.nb`), así que no depende de la luz de la sala: con la comprobación dependiente de la imagen, un tensor mal cuantizado pasaba inadvertido con poca luz y tumbaba el servicio con luz. El porcentaje de valores recortados queda como red secundaria para valores sueltos fuera de rango, no como la barrera principal.
+
+**Todo se valida al arrancar, no en pleno registro.** Los constructores comprueban: el número de entradas (debe ser 1), el formato del tensor de **entrada** (tiene que estar soportado), sus canales (3), su lote (1), los techos de tamaño (4096 px por lado, 4 M de elementos, 32 MB de preproceso), el rango representable frente al dominio del modo de escala, el formato de la **salida** (que tiene que estar soportado por `dequantize`), el número de elementos de la salida frente a lo que espera el layout y los índices de salida del layout. Todo eso **antes** de reservar memoria y antes del primer fotograma. Si algo no cuadra, el proceso avisa del motivo y sale con error: es preferible no arrancar a fallar con el alumno posando y la luz encendida.
+
+**Los parámetros que dependen del modelo están en la configuración**, en el bloque `npu`, para no tener que recompilar cuando llegue el `.nb`:
+
+```json
+"npu": {"color": "rgb", "escala": "auto", "ancho": 640, "alto": 640}
+```
+
+- `color`: `rgb` o `bgr` (por omisión `rgb`).
+- `escala`: `auto` (deducir del tensor), `ninguna` (el byte crudo), `unidad` (x/255) o `arcface` ((x−127.5)/127.5). Por omisión `auto`.
+- `ancho` y `alto`: tamaño de entrada del detector; `0` significa "el que tenga el `.nb`". Por omisión 640.
+
+El bloque es opcional: si no está, el comportamiento es el de siempre. Un color o una escala desconocidos hacen fallar la carga de la configuración, como las demás claves.
 
 **El decodificador de RetinaFace** (funciones puras, sin NPU, probadas con tensores sintéticos) genera las anclas de tres strides (8, 16, 32) con dos anclas por posición, decodifica cajas y landmarks, y aplica NMS. Dos decisiones de rendimiento, porque el servicio tiene un solo hilo de trabajo con `poll_ms = 20`:
 
@@ -199,7 +213,7 @@ El motivo de que esto sea automático: con el modo equivocado, `quantize` satura
 
 Medido en la placa: decodificar las 16 800 anclas bajó de **487 ms a 2,2 ms**, y un fotograma completo (preproceso 15 ms + inferencia 4-8 ms + decode 2 ms) queda por debajo de los 30 ms.
 
-**Lo que sigue siendo PROVISIONAL**, porque el `.nb` todavía no existe: la disposición de la salida del detector (15 valores por ancla), la convención de decodificación (varianzas 0.1/0.2/0.3/0.3 aplicadas al valor predicho **sin** factor de stride, al estilo de InsightFace; el stride solo fija la rejilla y el tamaño del ancla), el color por omisión (RGB) y el tamaño de entrada (640x640 el detector, 112x112 el embedder). El código falla cerrado si el `.nb` no encaja con lo pedido; hay que contrastar estos supuestos con el modelo real en cuanto exista.
+**Lo que sigue siendo PROVISIONAL**, porque el `.nb` todavía no existe: la disposición de la salida del detector (15 valores por ancla), la convención de decodificación (varianzas 0.1/0.2/0.3/0.3 aplicadas al valor predicho **sin** factor de stride, al estilo de InsightFace; el stride solo fija la rejilla y el tamaño del ancla) y el tamaño de entrada del embedder (112x112, que todavía no tiene palanca de configuración). El color y la escala del detector sí se pueden ajustar ya, con el bloque `npu`. El código falla cerrado si el `.nb` no encaja con lo pedido; hay que contrastar estos supuestos con el modelo real en cuanto exista.
 
 ## El proceso de producción
 
@@ -215,9 +229,9 @@ El proceso (plan 6.2, un solo hilo de trabajo):
 - **Bucle**: `VisionService::poll()` cada `poll_ms` (20 ms por omisión) y una espera corta entre llamadas. Todo el trabajo ocurre en el hilo que llama a `poll()`; el hilo de red de libmosquitto solo encola mensajes.
 - **Señales**: `SIGINT` y `SIGTERM` paran el bucle. El manejador solo pone una bandera (`volatile std::sig_atomic_t`): no hace trabajo bloqueante ni lanza.
 - **Salida ordenada**: al parar, el proceso (1) cancela el registro en curso y publica su estado `cancelado`, apaga la luz y deja el modo del servicio en `inactivo` (`VisionService::shutdown()`); (2) publica `aula/vision/estado` con `en_linea: false` y el esquema completo (retenido); (3) vacía la cola de salida del bus (`MosquittoBus::flush()`) y solo entonces cierra el bus. Sin el paso (1), un `SIGTERM` en mitad de un registro dejaba la luz encendida y el enrolamiento a medias. Así el frontend no se queda con el servicio "en línea" y no queda retenido un "en línea" fantasma (ver "El bus MQTT"). El Will no hace falta en la salida ordenada: sigue puesto para la caída sin cerrar limpio.
-- **Detector y embedder**: con `--dry-run` son los dobles en memoria de `fakes.hpp`. Sin `--dry-run`, si existen los `.nb`, el proceso construye los adaptadores reales sobre la NPU (`NpuFaceDetector` y `NpuFaceEmbedder`, biblioteca `vision_models`) y los enchufa en el servicio. Si los `.nb` no están, termina con el código 78; si están pero no se pueden cargar, avisa del motivo y termina con error: en producción nunca se arranca con los dobles. El driver de la NPU se crea antes que las redes para que viva más que ellas, y la NPU se usa solo desde el hilo de trabajo (el que llama a `poll()`): `npu::Network` no es seguro entre hilos.
+- **Detector y embedder**: con `--dry-run` son los dobles en memoria de `fakes.hpp`. Sin `--dry-run`, si existen los `.nb`, el proceso construye los adaptadores reales sobre la NPU (`NpuFaceDetector` y `NpuFaceEmbedder`, biblioteca `vision_models`) y los enchufa en el servicio. Si los `.nb` no están, termina con el código 78; si existen pero no encajan con el código (otra disposicion de salidas, otra entrada, otro formato), avisa del motivo y sale con el 78 tambien; si no se pueden cargar, avisa y sale con el 1. En producción nunca se arranca con los dobles. El driver de la NPU se crea antes que las redes para que viva más que ellas, y la NPU se usa solo desde el hilo de trabajo (el que llama a `poll()`): `npu::Network` no es seguro entre hilos.
 
-**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error** (código 1): es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código 78 (`EX_CONFIG`) es el de "faltan los modelos `.nb`".
+**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error** (código 1): es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código 78 (`EX_CONFIG`) es el de los errores de configuración: "faltan los modelos `.nb`" y "el `.nb` no encaja con el código".
 
 ```bash
 build/vision_service --config /etc/pase-lista/vision.conf
@@ -243,6 +257,7 @@ El archivo de configuración es JSON, con las claves en español como el resto d
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN", "timeout_ms": 5000},
   "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45, "min_similitud_pose": 0.5},
   "servicio": {"poll_ms": 20, "max_inbox_events": 16, "modelo": "w600k_mbf-uint8-v1", "acepta_png": false},
+  "npu": {"color": "rgb", "escala": "auto", "ancho": 640, "alto": 640},
   "http": {"allow_invalid_certificates": false, "ca_file": ""}
 }
 ```
@@ -269,6 +284,10 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
 | | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
 | | `acepta_png` | aceptar PNG además de JPEG (pruebas) | `false` |
+| `npu` | `color` | orden de color de la entrada (`rgb` o `bgr`) | `rgb` |
+| | `escala` | modo de escala (`auto`, `ninguna`, `unidad` o `arcface`) | `auto` |
+| | `ancho` | ancho de la entrada del detector (`0` = el del `.nb`) | `640` |
+| | `alto` | alto de la entrada del detector (`0` = el del `.nb`) | `640` |
 | `http` | `allow_invalid_certificates` | aceptar cualquier certificado (modo inseguro) | `false` |
 | | `ca_file` | ruta al CA (o al certificado de Node-RED) con el que se valida el servidor | `""` (los CA del sistema) |
 
@@ -346,7 +365,7 @@ Notas:
 - `EnvironmentFile=/etc/pase-lista/vision.env` tiene que existir: si falta, systemd no arranca la unidad. Para probarlo sin credenciales, se puede dejar el archivo con los placeholders.
 - `Restart=on-failure` y `RestartSec=5`: el servicio vuelve a levantarse solo si se cae. La salida por `SIGTERM` (código 0) no lo rearranca.
 - `TimeoutStopSec=30`: la salida ordenada necesita margen (el bucle puede estar en una recarga de la galería o en una captura), y 30 s lo dan.
-- `RestartPreventExitStatus=78`: el código 78 (`EX_CONFIG`) es el de "faltan los modelos `.nb`". Es una configuración que falta, no un fallo del proceso: sin esta línea systemd lo relanzaría cada 5 s para siempre y llenaría el journal.
+- `RestartPreventExitStatus=78`: el código 78 (`EX_CONFIG`) es el de los errores de configuración ("faltan los modelos `.nb`" y "el `.nb` no encaja con el código"). Es una configuración que falta o que no encaja, no un fallo del proceso: sin esta línea systemd lo relanzaría cada 5 s para siempre y llenaría el journal.
 - Endurecimiento del núcleo (`LimitCORE=0` para no dejar volcados de core y `UMask=0077` para que los archivos que cree el servicio solo los vea su usuario): está decidido, pero todavía no está en la unidad. Queda pendiente.
 - Sin los modelos `.nb`, el proceso no arranca: avisa por stderr y sale con el código 78. Es lo esperado hasta que existan (ver "Lo que falta"). Con `--dry-run` en el `ExecStart` se puede verificar el cableado sin modelos.
 
