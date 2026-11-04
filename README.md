@@ -18,6 +18,7 @@ Eduardo Fragoso Navarro
 - Solé Pi Arnau Roger
 - Valenzuela Ascencio Gustavo
 
+
 ### Plataforma Edge AI
 
 Orange Pi Zero 3W (Allwinner A733, NPU de 3 TOPS, 4 GB de RAM)
