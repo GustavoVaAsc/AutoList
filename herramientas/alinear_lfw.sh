@@ -6,6 +6,11 @@
 # ejecuta. El binario se compila en un directorio temporal: el script no
 # modifica el repositorio, solo escribe en el directorio de salida.
 #
+# AVISO: la salida son recortes de rostros (datos biometricos irreversibles) y
+# no debe versionarse. El directorio de salida tiene que estar FUERA del
+# repositorio: la herramienta rechaza escribir dentro de el, porque un
+# "git add ." meteria la biometria en el historial de forma permanente.
+#
 # Uso:
 #   herramientas/alinear_lfw.sh --manifest RUTA --out DIR
 #
@@ -26,7 +31,18 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || { echo "Error: --out necesita una ruta" >&2; exit 1; }
             SALIDA="$2"; shift 2 ;;
         -h|--help)
-            echo "Uso: $(basename "$0") --manifest RUTA --out DIR"; exit 0 ;;
+            echo "Uso: $(basename "$0") --manifest RUTA --out DIR"
+            echo ""
+            echo "Formatos de manifiesto aceptados (una imagen por linea):"
+            echo "  (a) ruta x1 y1 x2 y2 x3 y3 x4 y4 x5 y5      (todo por espacios)"
+            echo "  (b) ruta<TAB>x1 y1 x2 y2 x3 y3 x4 y4 x5 y5   (TAB entre ruta y coordenadas)"
+            echo "  (c) ruta<TAB>x1<TAB>y1<TAB>...<TAB>y5       (todo por TAB)"
+            echo "En (b) y (c) la ruta puede contener espacios."
+            echo ""
+            echo "AVISO: la salida contiene recortes de rostros (datos biometricos"
+            echo "irreversibles) y no debe versionarse. El directorio de salida tiene"
+            echo "que estar fuera del repositorio."
+            exit 0 ;;
         *)
             echo "Error: argumento desconocido: $1" >&2
             echo "Uso: $(basename "$0") --manifest RUTA --out DIR" >&2
@@ -48,6 +64,17 @@ if ! pkg-config --exists opencv4; then
     echo "Error: no se encuentra opencv4 con pkg-config" >&2
     exit 1
 fi
+
+# Comprobacion rapida antes de compilar (la comprobacion que manda es la del
+# binario): la salida no puede caer dentro del repositorio.
+case "$SALIDA" in
+    "$RAIZ"/*)
+        echo "Error: el directorio de salida $SALIDA esta dentro del repositorio $RAIZ." >&2
+        echo "Los recortes de rostros son datos biometricos irreversibles: escribirlos" >&2
+        echo "dentro del repo haria que un 'git add .' los metiera en el historial." >&2
+        echo "Usa un directorio de salida fuera del repositorio." >&2
+        exit 1 ;;
+esac
 
 CFLAGS="$(pkg-config --cflags opencv4)"
 LIBS="$(pkg-config --libs opencv4)"
@@ -72,4 +99,4 @@ g++ -std=c++20 -O2 -Wall -Wextra \
     "$RAIZ/orangepi/vision/src/alignment.cpp" \
     $CFLAGS -o "$DIR_TMP/alinear_lfw" $LIBS
 
-"$DIR_TMP/alinear_lfw" --manifest "$MANIFIESTO" --out "$SALIDA"
+"$DIR_TMP/alinear_lfw" --manifest "$MANIFIESTO" --out "$SALIDA" --repo-root "$RAIZ"
