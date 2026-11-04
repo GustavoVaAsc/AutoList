@@ -2,7 +2,9 @@
 // omision, el rechazo de los documentos invalidos y el mapeo a ServiceConfig.
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 #include "minitest.hpp"
@@ -28,7 +30,8 @@ const char* kConfigCompleta = R"({
               "http_timeout_ms": 1500, "max_body_bytes": 1048576},
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN",
               "timeout_ms": 4000},
-  "umbrales": {"min_sharpness": 12.5, "min_recognized_score": 0.7, "min_dudoso_score": 0.5},
+  "umbrales": {"min_sharpness": 12.5, "min_recognized_score": 0.7, "min_dudoso_score": 0.5,
+               "min_similitud_pose": 0.55},
   "servicio": {"poll_ms": 50, "max_inbox_events": 32, "modelo": "w600k_mbf-uint8-v1",
                "acepta_png": true},
   "http": {"allow_invalid_certificates": true}
@@ -55,6 +58,7 @@ TEST(config_documento_vacio_usa_omisiones) {
   CHECK_NEAR(config.thresholds.min_sharpness, 0.0, 1e-9);
   CHECK_NEAR(config.thresholds.min_recognized_score, 0.6, 1e-6);
   CHECK_NEAR(config.thresholds.min_dudoso_score, 0.45, 1e-6);
+  CHECK_NEAR(config.thresholds.min_similitud_pose, 0.50, 1e-6);
   CHECK_EQ(config.service.poll_ms, 20);
   CHECK_EQ(config.service.max_inbox_events, std::size_t{16});
   CHECK_EQ(config.service.model_name, std::string("w600k_mbf-uint8-v1"));
@@ -82,6 +86,7 @@ TEST(config_completa) {
   CHECK_NEAR(config.thresholds.min_sharpness, 12.5, 1e-9);
   CHECK_NEAR(config.thresholds.min_recognized_score, 0.7, 1e-6);
   CHECK_NEAR(config.thresholds.min_dudoso_score, 0.5, 1e-6);
+  CHECK_NEAR(config.thresholds.min_similitud_pose, 0.55, 1e-6);
   CHECK_EQ(config.service.poll_ms, 50);
   CHECK_EQ(config.service.max_inbox_events, std::size_t{32});
   CHECK_EQ(config.service.model_name, std::string("w600k_mbf-uint8-v1"));
@@ -131,6 +136,31 @@ TEST(config_rechaza_json_invalido) {
   CHECK(!parse_process_config("{no es json", config, error));
 }
 
+// El umbral de similitud de las poses del registro (descarte de outliers, plan 5.4).
+TEST(config_carga_el_umbral_de_similitud_de_las_poses) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"umbrales": {"min_similitud_pose": 0.75}})", config, error));
+  CHECK_NEAR(config.thresholds.min_similitud_pose, 0.75, 1e-6);
+  CHECK_NEAR(config.to_service_config().min_pose_similarity, 0.75, 1e-6);
+}
+
+TEST(config_rechaza_el_umbral_de_similitud_de_las_poses_fuera_de_rango) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"umbrales": {"min_similitud_pose": 1.5}})", config, error));
+  CHECK(error.find("min_similitud_pose") != std::string::npos);
+  CHECK(!parse_process_config(R"({"umbrales": {"min_similitud_pose": -0.1}})", config, error));
+  CHECK(error.find("min_similitud_pose") != std::string::npos);
+}
+
+TEST(config_rechaza_una_clave_desconocida_en_los_umbrales) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"umbrales": {"min_similitud_pose_": 0.6}})", config, error));
+  CHECK(error.find("min_similitud_pose_") != std::string::npos);
+}
+
 TEST(config_mapeo_a_service_config) {
   ProcessConfig config;
   std::string error;
@@ -142,6 +172,7 @@ TEST(config_mapeo_a_service_config) {
   CHECK_EQ(servicio.min_sharpness, 12.5);
   CHECK_NEAR(servicio.min_recognized_score, 0.7, 1e-6);
   CHECK_NEAR(servicio.min_dudoso_score, 0.5, 1e-6);
+  CHECK_NEAR(servicio.min_pose_similarity, 0.55, 1e-6);
   CHECK_EQ(servicio.http_timeout.count(), 1500);
   CHECK_EQ(servicio.max_body_bytes, std::size_t{1048576});
   CHECK_EQ(servicio.max_inbox_events, std::size_t{32});
@@ -217,6 +248,42 @@ TEST(config_acepta_una_galeria_https_o_en_localhost) {
       config, error));
 }
 
+// El nombre del modelo se convierte en una ruta: un "../" en el nombre ejecutaria un
+// .nb de donde quiera en el driver del kernel.
+TEST(config_rechaza_un_nombre_de_modelo_con_una_ruta) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"servicio": {"modelo": "../otro"}})", config, error));
+  CHECK(error.find("modelo") != std::string::npos);
+  CHECK(!parse_process_config(R"({"servicio": {"modelo": "a/b"}})", config, error));
+  CHECK(!parse_process_config(R"({"servicio": {"modelo": "modelo con espacios.nb"}})", config,
+                               error));
+  CHECK(!parse_process_config(R"({"servicio": {"modelo": ".."}})", config, error));
+  CHECK(parse_process_config(R"({"servicio": {"modelo": "w600k_mbf-uint8-v1"}})", config,
+                             error));
+  CHECK_EQ(config.service.model_name, std::string("w600k_mbf-uint8-v1"));
+}
+
+TEST(el_nombre_del_modelo_solo_admite_un_patron_seguro) {
+  CHECK(vision::nombre_modelo_valido("w600k_mbf-uint8-v1"));
+  CHECK(vision::nombre_modelo_valido("modelo.2"));
+  CHECK(!vision::nombre_modelo_valido(""));
+  CHECK(!vision::nombre_modelo_valido("."));
+  CHECK(!vision::nombre_modelo_valido(".."));
+  CHECK(!vision::nombre_modelo_valido("../otro"));
+  CHECK(!vision::nombre_modelo_valido("con espacio"));
+  CHECK(!vision::nombre_modelo_valido(std::string(65, 'a')));
+}
+
+TEST(la_ruta_del_modelo_no_sale_del_directorio_de_modelos) {
+  const std::filesystem::path raiz = "/opt/autolist/models";
+  CHECK_EQ(vision::ruta_modelo("detector", raiz).string(), std::string("/opt/autolist/models/detector.nb"));
+  CHECK_EQ(vision::ruta_modelo("w600k_mbf-uint8-v1", raiz).string(),
+           std::string("/opt/autolist/models/w600k_mbf-uint8-v1.nb"));
+  CHECK_THROWS(vision::ruta_modelo("../otro", raiz), std::invalid_argument);
+  CHECK_THROWS(vision::ruta_modelo("", raiz), std::invalid_argument);
+}
+
 TEST(url_admite_token_solo_con_https_o_localhost) {
   CHECK(url_admite_token("https://nodered.local:1880/api/galeria"));
   CHECK(url_admite_token("http://127.0.0.1:1880/api/galeria"));
@@ -224,4 +291,108 @@ TEST(url_admite_token_solo_con_https_o_localhost) {
   CHECK(!url_admite_token("http://192.168.1.50:1880/api/galeria"));
   CHECK(!url_admite_token("ftp://192.168.1.50/api/galeria"));
   CHECK(!url_admite_token("esto-no-es-una-url"));
+}
+
+// --- Tercera ronda: el bloque "npu" ----------------------------------------------
+//
+// Los parametros de los adaptadores sobre la NPU (color, modo de escala y tamano de
+// entrada del detector) estaban codificados en el codigo. Ahora estan en el bloque
+// "npu" de la configuracion, que es opcional: si no esta, el comportamiento es el de
+// siempre.
+TEST(config_carga_el_bloque_npu) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"npu": {"color": "bgr", "escala": "arcface", "ancho": 320, "alto": 320}})",
+      config, error));
+  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Bgr));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::ArcFace));
+  CHECK_EQ(config.npu.detector_width, 320);
+  CHECK_EQ(config.npu.detector_height, 320);
+}
+
+TEST(config_sin_bloque_npu_deja_los_valores_por_omision) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"servicio": {"poll_ms": 50}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Rgb));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::Auto));
+  // 0 = "el tamano que tenga el .nb": es lo que hace que el detector y el embedder
+  // funcionen con cualquier modelo sin tocar la configuracion.
+  CHECK_EQ(config.npu.detector_width, 0);
+  CHECK_EQ(config.npu.detector_height, 0);
+  CHECK_EQ(config.npu.embed_width, 0);
+  CHECK_EQ(config.npu.embed_height, 0);
+  // El embedder hereda el color y la escala del detector.
+  CHECK_EQ(static_cast<int>(config.npu.embed_color_order), static_cast<int>(ColorOrder::Rgb));
+  CHECK_EQ(static_cast<int>(config.npu.embed_scale_mode), static_cast<int>(ScaleMode::Auto));
+}
+
+TEST(config_el_bloque_npu_admite_los_parametros_del_embedder) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"npu": {"color": "bgr", "escala": "arcface", "embed_color": "rgb",
+                 "embed_escala": "unidad", "embed_ancho": 224, "embed_alto": 224}})",
+      config, error));
+  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Bgr));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::ArcFace));
+  CHECK_EQ(static_cast<int>(config.npu.embed_color_order), static_cast<int>(ColorOrder::Rgb));
+  CHECK_EQ(static_cast<int>(config.npu.embed_scale_mode), static_cast<int>(ScaleMode::Unit));
+  CHECK_EQ(config.npu.embed_width, 224);
+  CHECK_EQ(config.npu.embed_height, 224);
+  // Una clave desconocida del bloque sigue rechazando el archivo.
+  CHECK(!parse_process_config(R"({"npu": {"embed_tamanio": 224}})", config, error));
+  CHECK(error.find("npu") != std::string::npos);
+}
+
+TEST(config_rechaza_un_color_o_una_escala_desconocidos) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"npu": {"color": "rgbx"}})", config, error));
+  CHECK(error.find("npu.color") != std::string::npos);
+  CHECK(!parse_process_config(R"({"npu": {"escala": "centrada"}})", config, error));
+  CHECK(error.find("npu.escala") != std::string::npos);
+  // Una clave desconocida dentro del bloque, tambien.
+  CHECK(!parse_process_config(R"({"npu": {"color": "rgb", "colores": 1}})", config, error));
+  CHECK(error.find("colores") != std::string::npos);
+  // Un tamano negativo no tiene sentido.
+  CHECK(!parse_process_config(R"({"npu": {"ancho": -1}})", config, error));
+  CHECK(error.find("npu.ancho") != std::string::npos);
+}
+
+// Los cuatro valores validos de la escala.
+TEST(config_acepta_las_cuatro_escalas) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"npu": {"escala": "auto"}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::Auto));
+  CHECK(parse_process_config(R"({"npu": {"escala": "ninguna"}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::None));
+  CHECK(parse_process_config(R"({"npu": {"escala": "unidad"}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::Unit));
+  CHECK(parse_process_config(R"({"npu": {"escala": "arcface"}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::ArcFace));
+}
+
+// Un tamano de 0 significa "el que tenga el .nb".
+TEST(config_acepta_un_tamano_de_entrada_en_cero) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"npu": {"ancho": 0, "alto": 0}})", config, error));
+  CHECK_EQ(config.npu.detector_width, 0);
+  CHECK_EQ(config.npu.detector_height, 0);
+}
+
+// ruta_modelo y nombre_modelo_valido no se contradicen: un nombre que empieza por ".."
+// pero no es un ".." (como "..modelo") es valido para los dos.
+TEST(la_ruta_del_modelo_acepta_un_nombre_que_empieza_por_dos_puntos) {
+  const std::filesystem::path raiz = "/opt/autolist/models";
+  CHECK(vision::nombre_modelo_valido("..modelo"));
+  CHECK_EQ(vision::ruta_modelo("..modelo", raiz).string(),
+           std::string("/opt/autolist/models/..modelo.nb"));
+  // Un ".." de verdad (un directorio) sigue sin valer.
+  CHECK(!vision::nombre_modelo_valido(".."));
+  CHECK_THROWS(vision::ruta_modelo("..", raiz), std::invalid_argument);
+  CHECK_THROWS(vision::ruta_modelo("../otro", raiz), std::invalid_argument);
 }

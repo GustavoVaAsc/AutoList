@@ -12,8 +12,10 @@
 // arrancar con omisiones a medias seria peor que no arrancar.
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 
+#include "vision/npu_preprocess.hpp"
 #include "vision/vision_service.hpp"
 
 namespace vision {
@@ -50,6 +52,12 @@ struct ThresholdSettings {
   double min_sharpness = 0.0;
   float min_recognized_score = 0.60f;
   float min_dudoso_score = 0.45f;
+  // Similitud (coseno) minima entre una pose y la media de las candidatas para que la pose
+  // sobreviva al descarte de outliers del registro (plan 5.4, paso 5; el descarte es
+  // iterativo: solo se descarta la peor mientras su coseno con la media quede por debajo
+  // del umbral). PROVISIONAL: se recalibra con LFW (hito del 18 de noviembre, plan,
+  // secciones 9 y 12.1).
+  float min_similitud_pose = 0.50f;
 };
 
 // Bloque "servicio": el ritmo del bucle y lo que el servicio publica.
@@ -71,6 +79,34 @@ struct HttpSettings {
   std::string ca_file;
 };
 
+// Bloque "npu": los parametros de los adaptadores sobre la NPU.
+//
+// Son los que hasta ahora estaban codificados en el codigo. Dependen del .nb real,
+// que todavia no existe: por eso estan en el archivo de configuracion y no hace falta
+// recompilar cuando llegue.
+//
+// El bloque entero es opcional: si no esta, el comportamiento es el de siempre (RGB,
+// escala deducida del tensor y el tamano de entrada que tenga cada .nb).
+struct NpuSettings {
+  // "color": "rgb" (por omision) o "bgr".
+  ColorOrder color_order = ColorOrder::Rgb;
+  // "escala": "auto" (por omision, se deduce del tensor), "ninguna" (el byte crudo),
+  // "unidad" (x/255) o "arcface" ((x-127.5)/127.5).
+  ScaleMode scale_mode = ScaleMode::Auto;
+  // "ancho" y "alto": tamano de entrada del detector. 0 significa "el que tenga el .nb",
+  // que es lo que se usa por omision: las anclas se escalan al tamano de la entrada, asi
+  // que el detector funciona con cualquier tamano sin tocar la configuracion.
+  int detector_width = 0;
+  int detector_height = 0;
+  // El embedder es otro modelo, con su propia cuantizacion y su propio tamano de
+  // entrada. "embed_color" y "embed_escala" si no estan, heredan los del detector.
+  ColorOrder embed_color_order = ColorOrder::Rgb;
+  ScaleMode embed_scale_mode = ScaleMode::Auto;
+  // "embed_ancho" y "embed_alto": tamano de entrada del embedder; 0 = el del .nb.
+  int embed_width = 0;
+  int embed_height = 0;
+};
+
 // La configuracion completa del proceso.
 struct ProcessConfig {
   MqttSettings mqtt;
@@ -79,6 +115,7 @@ struct ProcessConfig {
   ThresholdSettings thresholds;
   ServiceSettings service;
   HttpSettings http;
+  NpuSettings npu;
 
   // El mapeo a la configuracion de la maquina de estados.
   ServiceConfig to_service_config() const;
@@ -98,5 +135,16 @@ bool url_admite_token(const std::string& url);
 // archivo existe pero no se puede leer o no es valido.
 bool load_process_config(const std::string& path, ProcessConfig& out, bool& found,
                          std::string& error);
+
+// El nombre del modelo ("servicio.modelo") solo puede llevar letras, digitos, punto,
+// guion y guion bajo, hasta 64 caracteres. Asi el nombre no puede construir una ruta
+// fuera del directorio de modelos (un "../" en el nombre ejecutaria un .nb de donde
+// quiera en el driver del kernel).
+bool nombre_modelo_valido(const std::string& nombre);
+
+// Ruta del modelo .nb dentro del directorio de modelos. Falla cerrado (lanza
+// std::invalid_argument) si el nombre no es valido o si la ruta sale del directorio.
+std::filesystem::path ruta_modelo(const std::string& nombre,
+                                  const std::filesystem::path& directorio);
 
 }  // namespace vision

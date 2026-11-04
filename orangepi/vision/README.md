@@ -1,6 +1,6 @@
 # Servicio de visión (C++, nativo)
 
-Servicio de visión del plan (`docs/HIGH-LEVEL-PLAN.md`, secciones 5.1, 5.4, 6.2 y 7.1). Sigue siendo agnóstico a dos decisiones: el detector y el reconocedor (y la dimensión de su embedding), que viven detrás de interfaces y solo tienen dobles en memoria. Las librerías de MQTT y HTTP ya no son una de esas decisiones: hay adaptadores reales (libmosquitto y cpp-httplib) detrás de las mismas interfaces. El contrato MQTT (`docs/contrato-mqtt.md`) está codificado en los payloads tipados y en la capa JSON.
+Servicio de visión del plan (`docs/HIGH-LEVEL-PLAN.md`, secciones 5.1, 5.4, 6.2 y 7.1). Sigue siendo agnóstico a una decisión: el modelo concreto (el detector y el reconocedor, y la dimensión de su embedding), que vive detrás de interfaces y detrás de la NPU. Las librerías de MQTT y HTTP ya no son una de esas decisiones: hay adaptadores reales (libmosquitto y cpp-httplib) detrás de las mismas interfaces, y los adaptadores del detector y el embedder sobre la NPU también existen (`NpuFaceDetector` y `NpuFaceEmbedder`), aunque los `.nb` todavía no. El contrato MQTT (`docs/contrato-mqtt.md`) está codificado en los payloads tipados y en la capa JSON.
 
 ## Estructura
 
@@ -18,6 +18,10 @@ include/vision/
   process_config.hpp  la configuración del proceso (archivo JSON) y su mapeo a ServiceConfig
   face_detector.hpp   interfaz FaceDetector (imagen -> bbox, score, 5 landmarks)
   face_embedder.hpp   interfaz FaceEmbedder (recorte 112x112 -> vector<float>)
+  npu_face_detector.hpp  FaceDetector real sobre la NPU (preproceso + decodificacion)
+  npu_face_embedder.hpp  FaceEmbedder real sobre la NPU (preproceso + desquantizacion)
+  npu_preprocess.hpp  preproceso de imagen hacia el tensor de entrada ([w, h, c, n])
+  retinaface_decode.hpp  decodificador de RetinaFace en CPU: anclas, cajas, landmarks y NMS
   clock.hpp           Clock inyectable (now / sleep_for)
   alignment.hpp       alineación por similitud a 112x112 (Umeyama, referencia ArcFace)
   image_header.hpp    formato y dimensiones de un JPEG (solo baseline) o PNG leídas de la cabecera, sin decodificar
@@ -35,6 +39,10 @@ src/
   httplib_client.cpp  implementación del cliente HTTP
   gallery_store.cpp   implementación del store de la galería
   main.cpp            el proceso de producción (binario `vision_service`)
+  npu_face_detector.cpp  el detector sobre la NPU
+  npu_face_embedder.cpp  el embedder sobre la NPU
+  npu_preprocess.cpp  el preproceso de imagen (resize, color, escala, cuantizacion)
+  retinaface_decode.cpp  el decodificador de RetinaFace (anclas, cajas, landmarks, NMS)
   dry_run.cpp         recorrido en seco con los dobles (binario `vision_dry_run`)
 apps/
   camara_falsa.cpp    servidor de prueba: una JPEG sintética en GET /capture
@@ -54,15 +62,18 @@ vision.conf.example  ejemplo del archivo de configuración (sin secretos)
 vision.env.example   ejemplo del archivo de credenciales (con placeholders)
 ```
 
-### Las tres bibliotecas
+### Las cuatro bibliotecas
 
 | Biblioteca | Qué lleva | Dependencias |
 |---|---|---|
 | `vision_core` | La lógica pura: máquina de estados, galería, alineación, cabecera de imagen, nitidez, tensores, capa JSON y `WallClock`. Sin red. | OpenCV, nlohmann/json |
 | `vision_npu` | El wrapper RAII de VIPLite (`npu::Driver`, `npu::Network`). | `vision_core`, runtime del fabricante |
+| `vision_models` | Los adaptadores reales sobre la NPU: `NpuFaceDetector` y `NpuFaceEmbedder`. | `vision_npu` |
 | `vision_transport` | Los tres adaptadores reales: `MosquittoBus`, `HttplibClient` y `GalleryStore`. | `vision_core`, libmosquitto, cpp-httplib, nlohmann/json, pthread |
 
 `vision_transport` está aparte a propósito: `vision_core` se queda sin dependencias de red, para que las pruebas del núcleo sigan siendo rápidas y no dependan de que haya un broker o un servidor HTTP en la máquina. Los adaptadores implementan las interfaces (`MessageBus`, `HttpClient`) que el núcleo consume, así que el servicio no sabe si detrás hay un bus real o un doble en memoria.
+
+`vision_models` va aparte por lo mismo: los adaptadores de la NPU necesitan `vision_npu`, que ya depende de `vision_core`; meterlos en `vision_core` crearía una dependencia circular. Lo que sí vive en `vision_core` es el preproceso de imagen y el decodificador de RetinaFace, porque son funciones puras y se prueban sin NPU.
 
 ## Compilar
 
@@ -123,7 +134,7 @@ Al terminar, el contenedor se borra con:
 docker rm -f vision-mosquitto-test
 ```
 
-Las pruebas `npu` y `npu_smoke_vendor_model` necesitan `/dev/vipcore` (y los archivos de `/opt/vpm_run`): solo se registran si existe, llevan la etiqueta `board` y se pueden elegir o excluir con `ctest -L board` y `ctest -LE board`. Si el runtime VIPLite no está en `/usr`, se indica con `-DVIPLITE_ROOT=<prefijo>` (o la variable de entorno del mismo nombre). La configuración exige OpenCV 4.6.x.
+Las pruebas `npu`, `npu_adapters` y `npu_smoke_vendor_model` necesitan `/dev/vipcore` (y los archivos de `/opt/vpm_run`): solo se registran si existe, llevan la etiqueta `board` y se pueden elegir o excluir con `ctest -L board` y `ctest -LE board`. `npu_adapters` comprueba el cableado de punta a punta de los adaptadores (preproceso, `set_input`, ejecución y lectura de la salida) con el modelo de ejemplo del fabricante. Si el runtime VIPLite no está en `/usr`, se indica con `-DVIPLITE_ROOT=<prefijo>` (o la variable de entorno del mismo nombre). La configuración exige OpenCV 4.6.x.
 
 ## Probar la NPU
 
@@ -133,6 +144,78 @@ build/npu_smoke /opt/vpm_run/network_binary.nb /opt/vpm_run/input_0.dat 200
 ```
 
 Imprime los tensores (forma `w x h x c x n`, formato, cuantización) y el tiempo promedio de copia de entrada, ejecución y lectura de salida. El archivo de entrada debe medir exactamente lo que ocupa el tensor. Los `.nb` no se versionan (plan, sección 11).
+
+## Congelar los paquetes del kernel
+
+El `.nb` (Acuity v2.0.10.2), el driver `vipcore` 1.13.0 y las librerías VIPLite tienen que ser compatibles entre sí. Si el kernel cambia, la NPU deja de funcionar y hay que rehacer la conversión del modelo (plan, sección 13, riesgos).
+
+**Estado en la placa (3 de noviembre de 2026).** `apt-mark showhold` solo retiene `libawispapi-isp-602-arm64` y `wiringpi`. **Los paquetes del kernel no están retenidos.**
+
+El kernel que corre es el del fabricante, `6.6.98-sun60iw2`, del paquete `linux-image-current-sun60iw2` (1.0.0). Ese paquete no viene de ningún repositorio configurado en `apt` (su origen es `/var/lib/dpkg/status`), así que `apt upgrade` no lo actualiza por sí solo. El riesgo real es que una actualización de Debian instale otro kernel y lo deje por delante en el orden de arranque, con otro driver `vipcore` o sin él.
+
+**Retenerlos.** Hace falta `sudo` y el agente no lo usa: lo aplica una persona a mano.
+
+```bash
+sudo apt-mark hold linux-image-current-sun60iw2
+# Si llega a instalarse el paquete de cabeceras del fabricante:
+sudo apt-mark hold linux-headers-current-sun60iw2
+```
+
+**Comprobación.** `apt-mark showhold` tiene que listarlos:
+
+```bash
+apt-mark showhold
+```
+
+**Después de cualquier cambio de kernel**, hay que volver a verificar la NPU antes de dar por bueno el servicio. El modelo de ejemplo del fabricante es la prueba rápida:
+
+```bash
+cd /opt/vpm_run && ./vpm_run -s sample.txt -l 2 -d 0
+```
+
+El índice de dispositivo es `0`: con `-d 1` el programa falla con `value is more than device count=1`. Si termina con `vpm run ret=0`, la NPU sigue viva.
+
+## Los adaptadores sobre la NPU
+
+`NpuFaceDetector` y `NpuFaceEmbedder` (biblioteca `vision_models`) son los adaptadores reales detrás de las interfaces `FaceDetector` y `FaceEmbedder`: preprocesan la imagen, la echan al tensor de entrada, corren la red y leen la salida. Con `--dry-run` siguen sin usarse (mandan los dobles en memoria).
+
+**El modo de escala se deduce del tensor, no se elige a mano.** Por omisión es `ScaleMode::Auto`, que deduce el dominio real de la entrada a partir de su cuantización:
+
+| Tensor de entrada | Modo deducido |
+|---|---|
+| 8 bits con cuantización afín, `scale ≈ 1/255` y `zero_point = 0` | `Unit` (x/255): el dominio real es [0,1] |
+| 8 bits sin cuantización | `None`: el valor real es el byte de la imagen |
+| 8 bits con otra cuantización afín | **falla cerrado**: hay que confirmar la convención |
+| punto flotante, o punto fijo dinámico | **falla cerrado**: hay que elegir el modo a mano |
+
+El motivo de que esto sea automático: con el modo equivocado, `quantize` satura la entrada a 255 en silencio y la red ve una imagen casi blanca. Con la galería poblada, los embeddings salen casi idénticos y la primera entrada de la galería gana todos los empates: cualquier cara se reconoce como el alumno registrado primero.
+
+**El rango se comprueba contra el tensor, no contra la imagen.** Además de deducir el modo, al arrancar se comprueba que el dominio que ese modo implica (`[0,1]` en `Unit`, `[0,255]` en `None`, `[-1,1]` en `ArcFace`) quepa en el rango que el tensor representa (`[(min−zp)·scale, (max−zp)·scale]`). Un `int8` con escala 1/255 representa `[-0.502, 0.498]`, que **no** cubre el `[0,1]` de `Unit`: ese modelo se rechaza al arrancar, con los dos rangos en el mensaje. La comprobación es estática (el rango del tensor es un dato del `.nb`), así que no depende de la luz de la sala: con la comprobación dependiente de la imagen, un tensor mal cuantizado pasaba inadvertido con poca luz y tumbaba el servicio con luz. El porcentaje de valores recortados queda como red secundaria para valores sueltos fuera de rango, no como la barrera principal.
+
+**Todo se valida al arrancar, no en pleno registro.** Los constructores comprueban: el número de entradas (debe ser 1), el formato del tensor de **entrada** (tiene que estar soportado), sus canales (3), su lote (1), los techos de tamaño (4096 px por lado, 4 M de elementos, 32 MB de preproceso), el rango representable frente al dominio del modo de escala, el formato de la **salida** (que tiene que estar soportado por `dequantize`), el número de elementos de la salida frente a lo que espera el layout y los índices de salida del layout. Todo eso **antes** de reservar memoria y antes del primer fotograma. Si algo no cuadra, el proceso avisa del motivo y sale con error: es preferible no arrancar a fallar con el alumno posando y la luz encendida.
+
+**Los parámetros que dependen del modelo están en la configuración**, en el bloque `npu`, para no tener que recompilar cuando llegue el `.nb`:
+
+```json
+"npu": {"color": "rgb", "escala": "auto", "ancho": 0, "alto": 0}
+```
+
+- `color`: `rgb` o `bgr` (por omisión `rgb`).
+- `escala`: `auto` (deducir del tensor), `ninguna` (el byte crudo), `unidad` (x/255) o `arcface` ((x−127.5)/127.5). Por omisión `auto`.
+- `ancho` y `alto`: tamaño de entrada del detector; `0` (por omisión) significa "el que tenga el `.nb`". Las anclas se escalan al tamaño de la entrada, así que el detector funciona con cualquier tamaño sin tocar la configuración.
+
+El embedder es otro modelo, con su propia cuantización y su propio tamaño de entrada, así que tiene sus propias claves: `embed_color`, `embed_escala`, `embed_ancho` y `embed_alto`. **Si no están, heredan el color y la escala del detector.** Por omisión, `embed_ancho` y `embed_alto` también son `0` (el tamaño del `.nb`).
+
+El bloque es opcional: si no está, el comportamiento es el de siempre. Un color o una escala desconocidos hacen fallar la carga de la configuración, como las demás claves.
+
+**El decodificador de RetinaFace** (funciones puras, sin NPU, probadas con tensores sintéticos) genera las anclas de tres strides (8, 16, 32) con dos anclas por posición, decodifica cajas y landmarks, y aplica NMS. Dos decisiones de rendimiento, porque el servicio tiene un solo hilo de trabajo con `poll_ms = 20`:
+
+- Las anclas se **cachean** en el detector: dependen solo del tamaño de entrada, no de la imagen.
+- El NMS recibe solo las **500 cajas de mejor score** (como el RetinaFace de referencia con "nms top 500"), en vez de comparar entre sí las 16 800 anclas.
+
+Medido en la placa: decodificar las 16 800 anclas bajó de **487 ms a 2,2 ms**, y un fotograma completo (preproceso 15 ms + inferencia 4-8 ms + decode 2 ms) queda por debajo de los 30 ms.
+
+**Lo que sigue siendo PROVISIONAL**, porque el `.nb` todavía no existe: la disposición de la salida del detector (15 valores por ancla) y la convención de decodificación (varianzas 0.1/0.2/0.3/0.3 aplicadas al valor predicho **sin** factor de stride, al estilo de InsightFace; el stride solo fija la rejilla y el tamaño del ancla). El color, la escala y los tamaños de entrada ya se pueden ajustar con el bloque `npu`. El código falla cerrado si el `.nb` no encaja con lo pedido; hay que contrastar estos supuestos con el modelo real en cuanto exista.
 
 ## El proceso de producción
 
@@ -148,9 +231,14 @@ El proceso (plan 6.2, un solo hilo de trabajo):
 - **Bucle**: `VisionService::poll()` cada `poll_ms` (20 ms por omisión) y una espera corta entre llamadas. Todo el trabajo ocurre en el hilo que llama a `poll()`; el hilo de red de libmosquitto solo encola mensajes.
 - **Señales**: `SIGINT` y `SIGTERM` paran el bucle. El manejador solo pone una bandera (`volatile std::sig_atomic_t`): no hace trabajo bloqueante ni lanza.
 - **Salida ordenada**: al parar, el proceso (1) cancela el registro en curso y publica su estado `cancelado`, apaga la luz y deja el modo del servicio en `inactivo` (`VisionService::shutdown()`); (2) publica `aula/vision/estado` con `en_linea: false` y el esquema completo (retenido); (3) vacía la cola de salida del bus (`MosquittoBus::flush()`) y solo entonces cierra el bus. Sin el paso (1), un `SIGTERM` en mitad de un registro dejaba la luz encendida y el enrolamiento a medias. Así el frontend no se queda con el servicio "en línea" y no queda retenido un "en línea" fantasma (ver "El bus MQTT"). El Will no hace falta en la salida ordenada: sigue puesto para la caída sin cerrar limpio.
-- **Detector y embedder**: hoy son los dobles en memoria de `fakes.hpp`, así que el proceso solo arranca en `--dry-run` (ver "Probar sin modelos"). Cuando existan los modelos `.nb`, se enchufan en `src/main.cpp`, donde ya está el punto de extensión.
+- **Detector y embedder**: con `--dry-run` son los dobles en memoria de `fakes.hpp`. Sin `--dry-run`, si existen los `.nb`, el proceso construye los adaptadores reales sobre la NPU (`NpuFaceDetector` y `NpuFaceEmbedder`, biblioteca `vision_models`) y los enchufa en el servicio. Si los `.nb` no están, o no encajan con el código (otra disposicion de salidas, otra entrada, otro formato), o el driver los rechaza (archivo truncado o corrupto), el proceso avisa del motivo y sale con el **78**; el 1 queda para los fallos transitorios (arrancar el bus MQTT, inicializar el driver). En producción nunca se arranca con los dobles. El driver de la NPU se crea antes que las redes para que viva más que ellas, y la NPU se usa solo desde el hilo de trabajo (el que llama a `poll()`): `npu::Network` no es seguro entre hilos.
 
-**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error** (código 1): es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código 78 (`EX_CONFIG`) es el de "faltan los modelos `.nb`".
+**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error**: es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código de salida distingue los dos tipos de fallo:
+
+| Código | Qué es | Qué hace systemd |
+|---|---|---|
+| **78** (`EX_CONFIG`) | Error de configuración: el archivo de configuración no existe o no es válido, falta una variable de entorno, faltan los modelos `.nb`, el `.nb` no encaja con el código o el driver lo rechaza | No reinicia (está en `RestartPreventExitStatus=78`): el fallo queda a la vista en el journal en vez de quedar enterrado en un bucle de reinicios |
+| **1** | Fallo transitorio: no se pudo arrancar el bus MQTT o inicializar el driver de la NPU | Reinicia en 5 s |
 
 ```bash
 build/vision_service --config /etc/pase-lista/vision.conf
@@ -174,8 +262,9 @@ El archivo de configuración es JSON, con las claves en español como el resto d
   "mqtt": {"host": "127.0.0.1", "port": 1883, "usuario": "vision", "clave_env": "MQTT_PASSWORD", "client_id": "vision"},
   "captura": {"url": "http://192.168.1.50/capture", "rafaga": 4, "espera_luz_ms": 300, "http_timeout_ms": 2000, "max_body_bytes": 2097152},
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN", "timeout_ms": 5000},
-  "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45},
+  "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45, "min_similitud_pose": 0.5},
   "servicio": {"poll_ms": 20, "max_inbox_events": 16, "modelo": "w600k_mbf-uint8-v1", "acepta_png": false},
+  "npu": {"color": "rgb", "escala": "auto", "ancho": 0, "alto": 0},
   "http": {"allow_invalid_certificates": false, "ca_file": ""}
 }
 ```
@@ -197,10 +286,19 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | `umbrales` | `min_sharpness` | varianza mínima del Laplaciano | `0.0` |
 | | `min_recognized_score` | umbral de "reconocido" | `0.6` |
 | | `min_dudoso_score` | umbral de "dudoso" | `0.45` |
+| | `min_similitud_pose` | similitud mínima (coseno) de la peor pose con la media de las candidatas; por debajo se descarta esa pose y se recalcula la media. Con `0` el descarte queda desactivado | `0.5` |
 | `servicio` | `poll_ms` | periodo del bucle | `20` |
 | | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
 | | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
 | | `acepta_png` | aceptar PNG además de JPEG (pruebas) | `false` |
+| `npu` | `color` | orden de color de la entrada del detector (`rgb` o `bgr`) | `rgb` |
+| | `escala` | modo de escala del detector (`auto`, `ninguna`, `unidad` o `arcface`) | `auto` |
+| | `ancho` | ancho de la entrada del detector (`0` = el del `.nb`) | `0` |
+| | `alto` | alto de la entrada del detector (`0` = el del `.nb`) | `0` |
+| | `embed_color` | orden de color de la entrada del embedder (si no está, el del detector) | el de `color` |
+| | `embed_escala` | modo de escala del embedder (si no está, el del detector) | el de `escala` |
+| | `embed_ancho` | ancho de la entrada del embedder (`0` = el del `.nb`) | `0` |
+| | `embed_alto` | alto de la entrada del embedder (`0` = el del `.nb`) | `0` |
 | `http` | `allow_invalid_certificates` | aceptar cualquier certificado (modo inseguro) | `false` |
 | | `ca_file` | ruta al CA (o al certificado de Node-RED) con el que se valida el servidor | `""` (los CA del sistema) |
 
@@ -241,7 +339,7 @@ El modo inseguro es un riesgo conocido y aceptado (ver "Limitaciones conocidas")
 
 ## Recorrido en seco
 
-`build/vision_dry_run` es un arnés de recorrido en seco sobre los dobles: cablea la máquina de estados real con los dobles en memoria y reproduce un pase de lista y un registro. No hay broker, cámara ni modelos. Los adaptadores reales ya existen (`MosquittoBus`, `HttplibClient`, `GalleryStore`) y el proceso de producción los usa; lo que sigue sin existir es el detector y el embedder sobre la NPU.
+`build/vision_dry_run` es un arnés de recorrido en seco sobre los dobles: cablea la máquina de estados real con los dobles en memoria y reproduce un pase de lista y un registro. No hay broker, cámara ni modelos. Los adaptadores reales ya existen (`MosquittoBus`, `HttplibClient`, `GalleryStore`, `NpuFaceDetector` y `NpuFaceEmbedder`) y el proceso de producción los usa; lo que sigue sin existir son los modelos `.nb`.
 
 ## La unidad systemd
 
@@ -278,7 +376,7 @@ Notas:
 - `EnvironmentFile=/etc/pase-lista/vision.env` tiene que existir: si falta, systemd no arranca la unidad. Para probarlo sin credenciales, se puede dejar el archivo con los placeholders.
 - `Restart=on-failure` y `RestartSec=5`: el servicio vuelve a levantarse solo si se cae. La salida por `SIGTERM` (código 0) no lo rearranca.
 - `TimeoutStopSec=30`: la salida ordenada necesita margen (el bucle puede estar en una recarga de la galería o en una captura), y 30 s lo dan.
-- `RestartPreventExitStatus=78`: el código 78 (`EX_CONFIG`) es el de "faltan los modelos `.nb`". Es una configuración que falta, no un fallo del proceso: sin esta línea systemd lo relanzaría cada 5 s para siempre y llenaría el journal.
+- `RestartPreventExitStatus=78`: el código 78 (`EX_CONFIG`) es el de los errores de configuración (faltan los modelos `.nb`, el `.nb` no encaja con el código, el archivo de configuración no es válido, falta una variable de entorno). Son fallos de configuración, no del proceso: sin esta línea systemd lo relanzaría cada 5 s para siempre y llenaría el journal.
 - Endurecimiento del núcleo (`LimitCORE=0` para no dejar volcados de core y `UMask=0077` para que los archivos que cree el servicio solo los vea su usuario): está decidido, pero todavía no está en la unidad. Queda pendiente.
 - Sin los modelos `.nb`, el proceso no arranca: avisa por stderr y sale con el código 78. Es lo esperado hasta que existan (ver "Lo que falta"). Con `--dry-run` en el `ExecStart` se puede verificar el cableado sin modelos.
 
@@ -340,6 +438,38 @@ Además del resultado, comprueba tres cosas:
 - que la luz se enciende y se apaga: tiene que verse el encendido (`luz: 1`) antes que el apagado (`luz: 0`).
 
 No toca los contenedores del proyecto `pase-lista`: el broker real corre en el 1883 y ahí no se entra. Sale con código 0 si llegó el resultado y con código distinto de cero si no.
+
+### `herramientas/alinear_lfw.sh`: alinear un dataset a 112x112
+
+```bash
+herramientas/alinear_lfw.sh --manifest RUTA --out DIR
+```
+
+Alinea las imagenes de un manifiesto a 112x112 con **el mismo warp de 5 puntos que usa el servicio**: la transformada de similitud (Umeyama) de los 5 landmarks a `kArcFaceReference` y el `warpAffine` de `vision::align_face`. La herramienta llama a esa funcion, no la reimplementa, asi que el recorte es identico al de produccion (se comprobo pixel a pixel).
+
+Sirve para dos cosas: el set de calibracion del `.nb` (Acuity/Pegasus) y el ajuste de los umbrales con LFW (18 de noviembre).
+
+El manifiesto tiene una linea por imagen, con la ruta y los 5 landmarks en pixeles de la imagen. Acepta tres formatos:
+
+```
+ruta_de_imagen<TAB>x1 y1 x2 y2 x3 y3 x4 y4 x5 y5
+ruta_de_imagen<TAB>x1<TAB>y1<TAB>...
+ruta_de_imagen x1 y1 x2 y2 x3 y3 x4 y4 x5 y5
+```
+
+Los puntos van en el orden de `FaceDetection::landmarks`: ojo izquierdo, ojo derecho, nariz, boca izquierda, boca derecha. El formato con TAB es el que permite una ruta con espacios. Las lineas vacias y las que empiezan por `#` se ignoran; **una linea mal formada (un campo de mas o de menos, o una coordenada no finita) es un error del manifiesto y aborta todo el lote** (codigo de salida 1), porque un manifiesto a medias no sirve. Lo que se omite con un aviso y el script sigue es la imagen: la que no se puede leer, la de mas de 4000 px por lado y la que tiene los landmarks degenerados (puntos coincidentes). Los avisos dicen el numero de linea del manifiesto, no la ruta: la ruta suele llevar el nombre de la persona y eso es informacion biometrica que no tiene que salir en un log. La salida es un PNG de 112x112 por imagen, con el nombre base de la original.
+
+El script compila el programa en un directorio temporal: no toca el repositorio, solo escribe en el directorio de salida.
+
+**La salida no puede estar dentro del repositorio.** Los recortes de rostros son datos biometricos irreversibles: un `git add .` los meteria en el historial de forma permanente. Si el directorio de salida cae dentro de la raiz del repo, la herramienta lo rechaza antes de escribir nada (codigo de salida 1). Usa un directorio de fuera (`/tmp/salida` o un volumen externo). El `.gitignore` de la raiz ignora ademas `/dataset/`, `/datos/`, `/lfw/` y `/herramientas/salida*/`, por si se.worktree el dataset en otra parte del arbol.
+
+`herramientas/pruebas_alinear_lfw.sh` comprueba los tres formatos, la ruta con espacios, los caminos de error y la barrera del repositorio:
+
+```bash
+herramientas/pruebas_alinear_lfw.sh
+```
+
+**De donde salen los landmarks importa.** Para calibrar el `.nb` el recorte tiene que ser **el mismo que vera la placa**, o sea el que produce el detector con sus landmarks. Los landmarks que trae LFW sirven para el ajuste de umbrales, pero no para la cuantizacion del modelo: hay que regenerar el manifiesto con el detector cuando exista.
 
 ### Probar el servicio sin modelos
 
@@ -465,11 +595,11 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 
 ## Lo que falta
 
-- Los modelos `.nb` (RetinaFace y `w600k_mbf`) y el detector y el embedder concretos sobre la NPU (decodificación de salidas, preproceso). Se construyen sobre `npu::Network`; el punto de extensión está en `src/main.cpp`, donde hoy van los dobles en memoria. Sin ellos, el proceso de producción no arranca: solo arranca en `--dry-run`.
+- Los modelos `.nb` (RetinaFace y `w600k_mbf`). Los adaptadores sobre la NPU ya existen (`NpuFaceDetector` y `NpuFaceEmbedder`, con el preproceso de imagen y el decodificador de RetinaFace en CPU), pero los supuestos sobre el `.nb` (disposición de la salida del detector, convenciones de decodificación, color y normalización de la entrada) están **PROVISIONALES** en los comentarios: hay que confirmarlos contra el modelo real en cuanto exista. Sin los modelos, el proceso de producción no arranca: solo arranca en `--dry-run`.
 - Scripts de prueba en la placa (broker de pruebas propio, arranque y parada del servicio) más allá de `tools/humo.sh` y `mqtt_probe`.
 - Miniaturas en el progreso del registro.
-- Chequeo antifraude y descarte de outliers.
+- Chequeo antifraude.
 - Validaciones por pose del registro (rostro único, tamaño, giro).
 - Mejora de imagen (CLAHE y gamma).
-- Umbrales calibrados: `min_sharpness`, `min_recognized_score` y `min_dudoso_score` de `ServiceConfig` son valores provisionales (la calibración con LFW es el hito del 18 de noviembre).
+- Umbrales calibrados: `min_sharpness`, `min_recognized_score`, `min_dudoso_score` y `min_pose_similarity` de `ServiceConfig` son valores provisionales (la calibración con LFW es el hito del 18 de noviembre).
 - Endurecimiento del núcleo en la unidad systemd: `LimitCORE=0` y `UMask=0077` (decididos, pendientes de aplicarlos a `orangepi/systemd/orangepi-vision.service`).

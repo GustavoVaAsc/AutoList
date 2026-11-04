@@ -1,9 +1,12 @@
+#include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <iostream>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -449,12 +452,13 @@ TEST(test_command_runs_the_attendance_pipeline) {
 
 TEST(enrollment_runs_five_poses_and_publishes_normalized_mean_embedding) {
   Harness h;
-  // Normas distintas a proposito: cada pose se normaliza antes de promediar.
-  h.embedder.outputs = {{4.0f, 0.0f, 0.0f, 0.0f},
-                        {0.0f, 0.5f, 0.0f, 0.0f},
-                        {4.0f, 0.0f, 0.0f, 0.0f},
-                        {0.0f, 0.5f, 0.0f, 0.0f},
-                        {4.0f, 0.0f, 0.0f, 0.0f}};
+  // Normas distintas a proposito: cada pose se normaliza antes de promediar. Las cinco
+  // direcciones se parecen entre si (ninguna se descarta como anomala).
+  h.embedder.outputs = {{5.0f, 0.0f, 0.0f, 0.0f},
+                        {4.0f, 3.0f, 0.0f, 0.0f},
+                        {3.0f, 4.0f, 0.0f, 0.0f},
+                        {4.0f, 3.0f, 0.0f, 0.0f},
+                        {10.0f, 0.0f, 0.0f, 0.0f}};
   h.queue_frames(5);
 
   h.command(VisionAction::Enroll, "999000111");
@@ -492,12 +496,240 @@ TEST(enrollment_runs_five_poses_and_publishes_normalized_mean_embedding) {
   CHECK_EQ(embeddings.size(), std::size_t{1});
   CHECK_EQ(embeddings[0].account, std::string("999000111"));
   CHECK_EQ(embeddings[0].embedding.size(), std::size_t{4});
-  // Promedio de unitarios = (3, 2, 0, 0) / 5, normalizado.
-  const double norm = std::sqrt(13.0);
-  CHECK_NEAR(embeddings[0].embedding[0], 3.0 / norm, 1e-6);
-  CHECK_NEAR(embeddings[0].embedding[1], 2.0 / norm, 1e-6);
+  // Promedio de los unitarios de las cinco poses, normalizado.
+  const std::vector<std::vector<float>> unidades = {{1.0f, 0.0f}, {0.8f, 0.6f}, {0.6f, 0.8f},
+                                                     {0.8f, 0.6f}, {1.0f, 0.0f}};
+  double media0 = 0.0;
+  double media1 = 0.0;
+  for (const std::vector<float>& u : unidades) {
+    media0 += u[0];
+    media1 += u[1];
+  }
+  media0 /= static_cast<double>(unidades.size());
+  media1 /= static_cast<double>(unidades.size());
+  const double norma = std::sqrt(media0 * media0 + media1 * media1);
+  CHECK_NEAR(embeddings[0].embedding[0], media0 / norma, 1e-5);
+  CHECK_NEAR(embeddings[0].embedding[1], media1 / norma, 1e-5);
   CHECK_NEAR(embeddings[0].embedding[2], 0.0, 1e-6);
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+}
+
+// --- Descarte de outliers del registro (plan 5.4, paso 5) -------------------------------
+
+// Las cinco poses del registro, en el embedder falso, y el embedding publicado.
+namespace {
+
+struct RegistroFinal {
+  std::vector<EnrollmentProgress> progress;
+  std::vector<EmbeddingMessage> embeddings;
+  bool completo = false;
+};
+
+// Corre un registro completo de cinco poses con los embeddings dados.
+RegistroFinal correr_registro(Harness& h, const std::string& cuenta,
+                               const std::vector<std::vector<float>>& poses) {
+  h.embedder.outputs = poses;
+  h.queue_frames(5);
+  h.command(VisionAction::Enroll, cuenta);
+  h.service->poll();
+  for (int i = 0; i < 5; ++i) h.enrollment_step();
+
+  RegistroFinal resultado;
+  resultado.progress = h.progress();
+  resultado.embeddings = h.embeddings();
+  for (const EnrollmentProgress& p : resultado.progress) {
+    if (p.status == EnrollmentStatus::Completed) resultado.completo = true;
+  }
+  return resultado;
+}
+
+// Cinco poses con similitud baja entre pares (rho = 0.1): las caras de un mismo alumno
+// son deliberadamente distintas (frente, izquierda, derecha, arriba, frente_2), asi que
+// un alumno legitimo puede tenerlas poco parecidas.
+//
+// Se construyen como un simplex regular en R^5 (coseno -1/4 entre las u_i) con un
+// componente comun: v_i = (a * u_i, b) con a^2 = 0.72 y b^2 = 0.28, de modo que el coseno
+// entre dos v_i es 0.72 * (-1/4) + 0.28 = 0.1. La media de las cinco es (0, 0, 0, 0, 0, b).
+std::vector<std::vector<float>> poses_poco_parecidas() {
+  constexpr double kComponente = 0.2;  // 1/5: el centro del simplex
+  const double a = std::sqrt(0.72);
+  const double b = std::sqrt(0.28);
+  std::vector<std::vector<float>> poses;
+  for (int i = 0; i < 5; ++i) {
+    std::vector<float> pose(6, static_cast<float>(b));
+    for (int j = 0; j < 5; ++j) {
+      const double s = (j == i ? 1.0 : 0.0) - kComponente;
+      pose[j] = static_cast<float>(a * s / std::sqrt(0.8));
+    }
+    poses.push_back(pose);
+  }
+  return poses;
+}
+
+}  // namespace
+
+TEST(el_registro_descarta_la_pose_anomala_y_pro_media_el_resto) {
+  Harness h;
+  CapturedStderr log;
+  // Cuatro poses iguales y una ortogonal: la rara se descarta y no entra en la media.
+  const RegistroFinal registro = correr_registro(
+      h, "100000001", {{1.0f, 0.0f, 0.0f, 0.0f},
+                       {1.0f, 0.0f, 0.0f, 0.0f},
+                       {1.0f, 0.0f, 0.0f, 0.0f},
+                       {1.0f, 0.0f, 0.0f, 0.0f},
+                       {0.0f, 1.0f, 0.0f, 0.0f}});
+
+  CHECK_EQ(log.count("pose descartada"), std::size_t{1});
+  CHECK(log.count("similitud") >= 1);
+  // El aviso dice QUE pose se descarto (la quinta, frente_2).
+  CHECK_EQ(log.count("pose descartada: frente_2"), std::size_t{1});
+  CHECK(registro.completo);
+  CHECK_EQ(registro.embeddings.size(), std::size_t{1});
+  // La media de las cuatro buenas es (1,0,0,0), ya normalizada.
+  CHECK_NEAR(registro.embeddings[0].embedding[0], 1.0, 1e-6);
+  CHECK_NEAR(registro.embeddings[0].embedding[1], 0.0, 1e-6);
+  CHECK_NEAR(registro.embeddings[0].embedding[2], 0.0, 1e-6);
+  CHECK(h.service->state() == ServiceState::Idle);
+}
+
+TEST(el_registro_falla_como_inconsistente_si_solo_concuerdan_dos_poses) {
+  Harness h;
+  CapturedStderr log;
+  // Solo las dos primeras poses concuerdan entre si: ninguna llega al umbral.
+  const RegistroFinal registro = correr_registro(
+      h, "100000001", {{1.0f, 0.0f, 0.0f, 0.0f},
+                       {1.0f, 0.0f, 0.0f, 0.0f},
+                       {0.0f, 1.0f, 0.0f, 0.0f},
+                       {0.0f, 0.0f, 1.0f, 0.0f},
+                       {0.0f, 0.0f, 0.0f, 1.0f}});
+
+  CHECK_EQ(log.count("pose descartada"), std::size_t{3});
+  CHECK_EQ(log.count("pose descartada: derecha"), std::size_t{1});
+  CHECK_EQ(log.count("pose descartada: arriba"), std::size_t{1});
+  CHECK_EQ(log.count("pose descartada: frente_2"), std::size_t{1});
+  CHECK(registro.embeddings.empty());    // no se publica el embedding
+  CHECK(!registro.completo);             // ni el estado "completado"
+  CHECK(registro.progress.back().status == EnrollmentStatus::Error);
+  CHECK_EQ(registro.progress.back().reason.value(),
+           std::string(enrollment_reasons::kInconsistent));
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+}
+
+TEST(el_registro_con_poses_coherentes_promedia_las_cinco) {
+  Harness h;
+  CapturedStderr log;
+  const RegistroFinal registro = correr_registro(
+      h, "100000001", {{5.0f, 0.0f, 0.0f, 0.0f},
+                       {4.0f, 3.0f, 0.0f, 0.0f},
+                       {3.0f, 4.0f, 0.0f, 0.0f},
+                       {4.0f, 3.0f, 0.0f, 0.0f},
+                       {10.0f, 0.0f, 0.0f, 0.0f}});
+
+  CHECK_EQ(log.count("pose descartada"), std::size_t{0});
+  CHECK(registro.completo);
+  CHECK_EQ(registro.embeddings.size(), std::size_t{1});
+  const std::vector<std::vector<float>> unidades = {{1.0f, 0.0f}, {0.8f, 0.6f}, {0.6f, 0.8f},
+                                                     {0.8f, 0.6f}, {1.0f, 0.0f}};
+  double media0 = 0.0;
+  double media1 = 0.0;
+  for (const std::vector<float>& u : unidades) {
+    media0 += u[0];
+    media1 += u[1];
+  }
+  media0 /= static_cast<double>(unidades.size());
+  media1 /= static_cast<double>(unidades.size());
+  const double norma = std::sqrt(media0 * media0 + media1 * media1);
+  CHECK_NEAR(registro.embeddings[0].embedding[0], media0 / norma, 1e-5);
+  CHECK_NEAR(registro.embeddings[0].embedding[1], media1 / norma, 1e-5);
+}
+
+// --- Regla iterativa del descarte (regresion del hallazgo del codigo) -------------------
+
+// Un alumno legitimo puede tener las cinco caras poco parecidas entre si (rho bajo):
+// las poses del registro son deliberadamente distintas. Con la regla anterior (comparar
+// cada pose con la media de las OTRAS cuatro, media que arrastra a los outliers) y el
+// umbral antiguo (0.60) las cinco se descartaban y el registro moria como inconsistente:
+// el alumno no se podia registrar. Con la regla iterativa y el umbral 0.50 sobreviven
+// las cinco.
+TEST(el_registro_con_poses_poco_parecidas_entre_si_no_descarta_ninguna) {
+  Harness h;
+  CapturedStderr log;
+  const RegistroFinal registro = correr_registro(h, "100000001", poses_poco_parecidas());
+
+  CHECK_EQ(log.count("pose descartada"), std::size_t{0});
+  CHECK(registro.completo);
+  CHECK_EQ(registro.embeddings.size(), std::size_t{1});
+  CHECK_EQ(registro.embeddings[0].embedding.size(), std::size_t{6});
+  // El embedding publicado es la media de las cinco (normalizada): la media de las cinco
+  // poses queda en el eje del componente comun.
+  for (std::size_t i = 0; i < 5; ++i) CHECK_NEAR(registro.embeddings[0].embedding[i], 0.0, 1e-6);
+  CHECK_NEAR(registro.embeddings[0].embedding[5], 1.0, 1e-6);
+}
+
+// La regla, comprobada directamente: cinco poses con similitud 0.1 entre pares sobreviven
+// todas con el umbral por omision (0.50).
+TEST(el_descarte_conserva_las_poses_poco_parecidas_entre_si) {
+  const std::vector<std::size_t> supervivientes = keep_consistent_poses(poses_poco_parecidas(),
+                                                                        0.50f);
+  CHECK_EQ(supervivientes.size(), std::size_t{5});
+}
+
+// Una pose con un valor no finito (NaN) no se puede comparar: se descarta (fallo
+// cerrado), en vez de conservarse como pasaba antes (la comparacion con NaN era falsa).
+TEST(el_descarte_descarta_la_pose_con_valores_no_finitos) {
+  CapturedStderr log;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const std::vector<std::vector<float>> poses = {{1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {nan, 1.0f, 0.0f, 0.0f}};
+  const std::vector<std::size_t> supervivientes = keep_consistent_poses(poses, 0.50f);
+
+  CHECK_EQ(supervivientes.size(), std::size_t{4});
+  CHECK(std::find(supervivientes.begin(), supervivientes.end(), std::size_t{4}) ==
+        supervivientes.end());
+  CHECK_EQ(log.count("pose descartada: frente_2"), std::size_t{1});
+}
+
+// Si solo concuerdan dos poses, el descarte deja menos de tres: el registro se cierra
+// como inconsistente (sin embedding), con el motivo de siempre.
+TEST(el_descarte_deja_menos_de_tres_candidatas_si_solo_concuerdan_dos) {
+  const std::vector<std::vector<float>> poses = {{1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {0.0f, 1.0f, 0.0f, 0.0f},
+                                                 {0.0f, 0.0f, 1.0f, 0.0f},
+                                                 {0.0f, 0.0f, 0.0f, 1.0f}};
+  CHECK(keep_consistent_poses(poses, 0.50f).size() < 3);
+}
+
+// Una media sin muestras no es un embedding: lanza.
+TEST(el_promedio_sin_muestras_lanza_error) {
+  CHECK_THROWS(mean_embedding({{1.0f, 0.0f}}, {}), std::invalid_argument);
+}
+
+// Un promedio de embeddings de distintas dimensiones leeria fuera de rango: lanza.
+TEST(el_promedio_con_dimensiones_distintas_lanza_error) {
+  const std::vector<std::vector<float>> poses = {{1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}};
+  CHECK_THROWS(mean_embedding(poses, {0, 1}), std::invalid_argument);
+}
+
+// Un grupo coherente de tres poses basta: las dos anomalas se descartan y el registro
+// sale con las tres (el descarte se detiene al llegar a tres, porque bajar de tres a dos
+// no puede producir un registro valido).
+TEST(el_descarte_conserva_un_grupo_coherente_de_tres) {
+  const std::vector<std::vector<float>> poses = {{1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {0.0f, 1.0f, 0.0f, 0.0f},
+                                                 {0.0f, 0.0f, 1.0f, 0.0f}};
+  const std::vector<std::size_t> supervivientes = keep_consistent_poses(poses, 0.50f);
+  CHECK_EQ(supervivientes.size(), std::size_t{3});
+  CHECK(std::find(supervivientes.begin(), supervivientes.end(), std::size_t{3}) ==
+        supervivientes.end());
+  CHECK(std::find(supervivientes.begin(), supervivientes.end(), std::size_t{4}) ==
+        supervivientes.end());
 }
 
 TEST(enrollment_pose_names_follow_the_plan) {

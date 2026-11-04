@@ -34,6 +34,9 @@
 #include "vision/httplib_client.hpp"
 #include "vision/mqtt_bus.hpp"
 #include "vision/mqtt_contract.hpp"
+#include "vision/npu.hpp"
+#include "vision/npu_face_detector.hpp"
+#include "vision/npu_face_embedder.hpp"
 #include "vision/process_config.hpp"
 #include "vision/vision_service.hpp"
 #include "vision/wall_clock.hpp"
@@ -73,19 +76,29 @@ void uso(const char* programa) {
       << "  --help           Muestra esta ayuda y sale\n";
 }
 
-// Los modelos .nb no se versionan (plan, seccion 11). Estas son las rutas donde se
-// espera encontrarlos; el nombre del modelo de reconocimiento sale de la
-// configuracion ("servicio.modelo").
-constexpr const char* kRutaDetector = "/opt/autolist/models/detector.nb";
+// Los modelos .nb no se versionan (plan, seccion 11). Estos son el directorio donde se
+// espera encontrarlos y el nombre del detector; el nombre del modelo de reconocimiento
+// sale de la configuracion ("servicio.modelo"). Las rutas se construyen con
+// vision::ruta_modelo, que no deja que el nombre se salga del directorio.
+constexpr const char* kDirectorioModelos = "/opt/autolist/models";
+constexpr const char* kNombreDetector = "detector";
 
-// Codigo de salida propio para "faltan los modelos" (EX_CONFIG de sysexits.h). Es
-// un problema de configuracion de la maquina, no un fallo del proceso: con
-// Restart=on-failure, systemd lo reiniciaria cada 5 s para siempre (y llenaria el
-// journal). La unidad lleva RestartPreventExitStatus=78.
-constexpr int kSalidaFaltanModelos = 78;
+// Codigo de salida propio para los errores de CONFIGURACION (EX_CONFIG de sysexits.h):
+// "faltan los modelos .nb" y "el .nb no encaja con el codigo". No es un fallo del
+// proceso, es una configuracion que falta o que no vale: con Restart=on-failure,
+// systemd lo reiniciaria cada 5 s para siempre (y llenaria el journal). La unidad lleva
+// RestartPreventExitStatus=78.
+//
+// El 1 se sigue usando para los demas fallos (el bus no arranca, el servicio no se
+// puede construir, el driver de la NPU no responde).
+constexpr int kSalidaConfig = 78;
 
-std::string ruta_embedding(const ProcessConfig& config) {
-  return "/opt/autolist/models/" + config.service.model_name + ".nb";
+std::filesystem::path ruta_detector() {
+  return ruta_modelo(kNombreDetector, kDirectorioModelos);
+}
+
+std::filesystem::path ruta_embedding(const ProcessConfig& config) {
+  return ruta_modelo(config.service.model_name, kDirectorioModelos);
 }
 
 bool leer_entorno(const std::string& nombre, std::string& valor) {
@@ -233,7 +246,7 @@ int main(int argc, char** argv) {
   if (!load_process_config(ruta_config, config, encontrado, error)) {
     std::cerr << "[vision] la configuracion " << ruta_config << " no es valida: " << error
               << '\n';
-    return 1;
+    return kSalidaConfig;
   }
   if (!encontrado) {
     if (!dry_run) {
@@ -241,7 +254,7 @@ int main(int argc, char** argv) {
       // sale con error en vez de usar los valores por omision.
       std::cerr << "[vision] no existe " << ruta_config
                 << ": en produccion el servicio no arranca con los valores por omision\n";
-      return 1;
+      return kSalidaConfig;
     }
     std::cerr << "[vision] no existe " << ruta_config
               << ": se usan los valores por omision (--dry-run)\n";
@@ -273,7 +286,7 @@ int main(int argc, char** argv) {
     if (!dry_run) {
       std::cerr << "[vision] no esta la variable de entorno " << config.mqtt.password_env
                 << ": el broker exige usuario y contrasena\n";
-      return 1;
+      return kSalidaConfig;
     }
     if (!permitir_anonimo) {
       std::cerr << "[vision] AVISO: no esta la variable de entorno "
@@ -293,7 +306,7 @@ int main(int argc, char** argv) {
     if (!dry_run) {
       std::cerr << "[vision] no esta la variable de entorno " << config.gallery.token_env
                 << ": la galeria se pediria sin token\n";
-      return 1;
+      return kSalidaConfig;
     }
     std::cerr << "[vision] AVISO: no esta la variable de entorno " << config.gallery.token_env
               << ": la galeria se pide sin token (--dry-run)\n";
@@ -302,20 +315,33 @@ int main(int argc, char** argv) {
 
   // --- Modelos -----------------------------------------------------------------
   // Sin los modelos .nb no hay detector ni embedder: el proceso solo arranca en
-  // --dry-run. Cuando existan, aqui se enchufran (include/vision/npu.hpp).
+  // --dry-run. Cuando existan, se enchufan los adaptadores reales sobre la NPU
+  // (include/vision/npu_face_detector.hpp y include/vision/npu_face_embedder.hpp).
+  //
+  // Las rutas se construyen aqui, dentro de un try: ruta_modelo falla cerrado si el
+  // nombre no es valido, y una excepcion fuera de un try terminaria el proceso con
+  // std::terminate en vez de un mensaje claro.
+  std::filesystem::path detector_nb;
+  std::filesystem::path embedding_nb;
   if (!dry_run) {
-    const std::string detector = kRutaDetector;
-    const std::string embedding = ruta_embedding(config);
-    if (!std::filesystem::exists(detector) || !std::filesystem::exists(embedding)) {
-      std::cerr << "[vision] faltan los modelos .nb (" << detector << ", " << embedding
-                << "); usa --dry-run para verificar el cableado\n";
+    try {
+      detector_nb = ruta_detector();
+      embedding_nb = ruta_embedding(config);
+    } catch (const std::exception& error) {
+      std::cerr << "[vision] no se pudo construir la ruta de los modelos .nb: "
+                << error.what() << '\n';
+      return kSalidaConfig;
+    }
+    if (!std::filesystem::exists(detector_nb) || !std::filesystem::exists(embedding_nb)) {
+      // Solo se registran los NOMBRES de los modelos: las rutas absolutas no se
+      // imprimen (el arranque va al journal).
+      std::cerr << "[vision] faltan los modelos .nb (" << kNombreDetector << ".nb, "
+                << config.service.model_name << ".nb); usa --dry-run para verificar el "
+                "cableado\n";
       // Codigo propio: es una configuracion que falta, no un fallo del proceso. Con
       // Restart=on-failure, systemd lo relanzaria cada 5 s sin parar.
-      return kSalidaFaltanModelos;
+      return kSalidaConfig;
     }
-    std::cerr << "[vision] el detector y el embedder sobre la NPU todavia no estan "
-                 "implementados\n";
-    return 1;
   }
 
   // --- Adaptadores -------------------------------------------------------------
@@ -378,18 +404,78 @@ int main(int argc, char** argv) {
   // red del bus.
   bus.set_connect_listener([&recarga_pendiente] { recarga_pendiente.store(true); });
 
-  // El detector y el embedder: en --dry-run son los dobles en memoria. Cuando haya
-  // modelos, aqui se enchufan los reales sobre la NPU.
-  fakes::FakeFaceDetector detector;
-  fakes::FakeFaceEmbedder embedder;
-  {
+  // El detector y el embedder: en --dry-run son los dobles en memoria; en produccion,
+  // los adaptadores reales sobre la NPU.
+  //
+  // El driver de la NPU se declara ANTES que las redes: se destruyen en orden inverso y
+  // el driver tiene que vivir mas que ellas. La NPU se usa desde el hilo de trabajo (el
+  // mismo que llama a poll()), nunca desde otro hilo: las redes no son seguras entre
+  // hilos.
+  fakes::FakeFaceDetector detector_falso;
+  fakes::FakeFaceEmbedder embedder_falso;
+  std::unique_ptr<npu::Driver> driver_npu;
+  std::unique_ptr<NpuFaceDetector> detector_npu;
+  std::unique_ptr<NpuFaceEmbedder> embedder_npu;
+  FaceDetector* detector = &detector_falso;
+  FaceEmbedder* embedder = &embedder_falso;
+
+  if (dry_run) {
     FaceDetection cara;
     cara.score = 0.99f;
     for (std::size_t i = 0; i < cara.landmarks.size(); ++i) {
       cara.landmarks[i] = kArcFaceReference[i] * 2.0f + cv::Point2f(200.0f, 100.0f);
     }
-    detector.detections = {cara};
-    embedder.outputs = {{0.9f, 0.1f, 0.2f, 0.3f}};
+    detector_falso.detections = {cara};
+    embedder_falso.outputs = {{0.9f, 0.1f, 0.2f, 0.3f}};
+  } else {
+    // Los modelos .nb existen (ya se comprobo arriba). Si no se pueden cargar, el
+    // proceso avisa y termina: en produccion no se arranca a ciegas.
+    try {
+      driver_npu = std::make_unique<npu::Driver>();
+      // Los parametros vienen del bloque "npu" de la configuracion (por omision, los de
+      // siempre): el orden de color, el modo de escala y el tamano de entrada del
+      // detector (0 = el que tenga el .nb).
+      NpuDetectorOptions opciones_detector;
+      opciones_detector.input_width = config.npu.detector_width;
+      opciones_detector.input_height = config.npu.detector_height;
+      opciones_detector.color_order = config.npu.color_order;
+      opciones_detector.scale_mode = config.npu.scale_mode;
+      detector_npu =
+          std::make_unique<NpuFaceDetector>(*driver_npu, detector_nb, opciones_detector);
+      // El embedder es otro modelo: su color y su escala se pueden aparte (heredan los
+      // del detector si no se configuran) y su tamano de entrada (0 = el del .nb) ya no
+      // esta codificado.
+      NpuEmbedderOptions opciones_embedder;
+      opciones_embedder.input_width = config.npu.embed_width;
+      opciones_embedder.input_height = config.npu.embed_height;
+      opciones_embedder.color_order = config.npu.embed_color_order;
+      opciones_embedder.scale_mode = config.npu.embed_scale_mode;
+      embedder_npu = std::make_unique<NpuFaceEmbedder>(*driver_npu, embedding_nb,
+                                                       opciones_embedder);
+      detector = detector_npu.get();
+      embedder = embedder_npu.get();
+    } catch (const std::invalid_argument& error) {
+      // El .nb no encaja con el codigo: su disposicion de salidas, su tamano de entrada
+      // o el formato de su tensor de entrada no son los que el codigo espera. Es un
+      // error de configuracion, igual que "faltan los modelos": con el 78, systemd no
+      // reinicia el servicio cada 5 s para siempre.
+      std::cerr << "[vision] el .nb no encaja con el codigo: " << error.what() << '\n';
+      return kSalidaConfig;
+    } catch (const std::exception& error) {
+      // Un .nb que el driver rechaza (truncado, corrupto, de otra version) es un
+      // archivo malo, no un fallo transitorio del driver: con el 78, systemd no lo
+      // reinicia cada 5 s para siempre.
+      std::cerr << "[vision] no se pudieron cargar los modelos .nb en la NPU: "
+                << error.what() << '\n';
+      return kSalidaConfig;
+    } catch (...) {
+      std::cerr << "[vision] no se pudieron cargar los modelos .nb en la NPU: excepcion "
+                   "desconocida\n";
+      return kSalidaConfig;
+    }
+    // Solo el nombre del modelo, no la ruta completa.
+    std::cerr << "[vision] detector y embedder sobre la NPU cargados (" << kNombreDetector
+              << ".nb, " << config.service.model_name << ".nb)\n";
   }
 
   SystemClock reloj;
@@ -399,7 +485,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<VisionService> servicio;
   try {
     servicio = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, detector, embedder, galeria, reloj, reloj_pared},
+        ServiceDeps{bus, http, *detector, *embedder, galeria, reloj, reloj_pared},
         config.to_service_config());
   } catch (const std::exception& error) {
     std::cerr << "[vision] no se pudo construir el servicio: " << error.what() << '\n';

@@ -21,7 +21,8 @@
   "umbrales": {
     "min_sharpness": 0.0,
     "min_recognized_score": 0.6,
-    "min_dudoso_score": 0.45
+    "min_dudoso_score": 0.45,
+    "min_similitud_pose": 0.5
   },
   "servicio": {
     "poll_ms": 20,
@@ -31,5 +32,15 @@
   },
   "http": {
     "allow_invalid_certificates": false
+  },
+  "npu": {
+    "color": "rgb",
+    "escala": "auto",
+    "ancho": 0,
+    "alto": 0,
+    "embed_color": "rgb",
+    "embed_escala": "auto",
+    "embed_ancho": 0,
+    "embed_alto": 0
   }
 }

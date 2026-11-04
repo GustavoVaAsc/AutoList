@@ -44,7 +44,9 @@ add_library(vision_core STATIC
   src/gallery.cpp
   src/image_header.cpp
   src/json_payload.cpp
+  src/npu_preprocess.cpp
   src/process_config.cpp
+  src/retinaface_decode.cpp
   src/sharpness.cpp
   src/tensor.cpp
   src/vision_service.cpp
@@ -57,6 +59,15 @@ target_link_options(vision_core PUBLIC -Wl,--as-needed)
 add_library(vision_npu STATIC src/npu.cpp)
 target_include_directories(vision_npu SYSTEM PRIVATE ${VIPLITE_INCLUDE_DIR})
 target_link_libraries(vision_npu PUBLIC vision_core ${VIPLITE_LIBRARY} ${VIPHAL_LIBRARY})
+
+# --- Adaptadores del detector y el embedder sobre la NPU --------------------
+# El detector (RetinaFace) y el embedder (ArcFace) sobre npu::Network. La decodificacion
+# de RetinaFace y el preproceso de imagen viven en vision_core: son codigo puro y se
+# prueban sin la NPU.
+add_library(vision_models STATIC
+  src/npu_face_detector.cpp
+  src/npu_face_embedder.cpp)
+target_link_libraries(vision_models PUBLIC vision_npu vision_core)
 
 # --- Adaptadores reales (MQTT y HTTP) ---------------------------------------
 # Biblioteca aparte: vision_core se queda sin dependencias de red, para que las
@@ -78,7 +89,7 @@ target_link_libraries(vision_transport PUBLIC
 # vision_transport (los adaptadores reales); el recorrido en seco se queda en
 # vision_core (los dobles en memoria no necesitan red).
 add_executable(vision_service src/main.cpp)
-target_link_libraries(vision_service PRIVATE vision_transport)
+target_link_libraries(vision_service PRIVATE vision_transport vision_models)
 
 # Recorrido en seco: la maquina de estados real con los dobles en memoria.
 add_executable(vision_dry_run src/dry_run.cpp)
@@ -104,7 +115,9 @@ add_executable(test_core
   tests/test_gallery.cpp
   tests/test_image_header.cpp
   tests/test_json_payload.cpp
+  tests/test_npu_preprocess.cpp
   tests/test_process_config.cpp
+  tests/test_retinaface_decode.cpp
   tests/test_sharpness.cpp
   tests/test_tensor.cpp
   tests/test_wall_clock.cpp)
@@ -141,10 +154,17 @@ endif()
 add_executable(test_npu tests/test_npu.cpp)
 target_link_libraries(test_npu PRIVATE vision_npu minitest_main)
 
+# Los adaptadores del detector y el embedder sobre la NPU, con la red de ejemplo del
+# fabricante. Requiere /dev/vipcore: solo existe en la placa.
+add_executable(test_npu_adapters tests/test_npu_adapters.cpp)
+target_link_libraries(test_npu_adapters PRIVATE vision_models minitest_main)
+
 set(VPM_RUN_DIR /opt/vpm_run)
 if(EXISTS /dev/vipcore)
   add_test(NAME npu COMMAND test_npu)
   set_tests_properties(npu PROPERTIES LABELS board)
+  add_test(NAME npu_adapters COMMAND test_npu_adapters)
+  set_tests_properties(npu_adapters PROPERTIES LABELS board)
   # Humo con la red de ejemplo del fabricante, si esta instalada.
   if(EXISTS ${VPM_RUN_DIR}/network_binary.nb AND EXISTS ${VPM_RUN_DIR}/input_0.dat)
     add_test(NAME npu_smoke_vendor_model

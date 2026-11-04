@@ -14,6 +14,16 @@ docs/PODA.md
 *.onnx
 *.tflite
 
+# Datasets de imagenes (recortes de rostros, datos biometricos): fuera de git.
+# Reglas estrechas, solo para los directorios de dataset previstos: las imagenes
+# legitimas que ya estan versionadas (docs/diagramas/img/) siguen rastreandose.
+# NO se ignora *.png ni *.jpg en general.
+/dataset/
+/datos/
+/lfw/
+/herramientas/salida*/
+/herramientas/salida-*
+
 # Dependencias y builds
 node_modules/
 web/dist/

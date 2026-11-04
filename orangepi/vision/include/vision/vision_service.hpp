@@ -33,6 +33,13 @@ struct ServiceConfig {
   // ambar); por debajo de min_dudoso_score es "desconocido".
   float min_recognized_score = 0.60f;
   float min_dudoso_score = 0.45f;
+  // Similitud (coseno) minima entre una pose y la media de las candidatas para que la pose
+  // sobreviva al descarte de outliers del registro (plan 5.4, paso 5). El descarte es
+  // iterativo: se descarta solo la peor mientras su coseno con la media quede por debajo
+  // del umbral, se recalcula la media y se repite; si sobreviven menos de tres, el
+  // registro es inconsistente.
+  // PROVISIONAL: se recalibra con LFW (hito del 18 de noviembre, plan, secciones 9 y 12.1).
+  float min_pose_similarity = 0.50f;
   // Nombre y version del modelo de reconocimiento; lo publica el servicio en el
   // embedding y en el estado. Provisional hasta que exista el .nb (plan 6.2).
   std::string model_name = "w600k_mbf-uint8-v1";
@@ -179,5 +186,22 @@ class VisionService {
   Subscription pir_subscription_;
   Subscription command_subscription_;
 };
+
+// --- Descarte de outliers del registro (plan 5.4, paso 5) ---------------------------
+//
+// Estas dos funciones viven en la biblioteca (y no en el anonimo del .cpp) para que las
+// pruebas puedan comprobar la regla sin montar un registro entero.
+
+// Promedio de los embeddings indicados (misma dimension). Lanza std::invalid_argument si
+// la lista de indices esta vacia.
+std::vector<float> mean_embedding(const std::vector<std::vector<float>>& embeddings,
+                                  const std::vector<std::size_t>& indices);
+
+// Indices de las poses que sobreviven al descarte de outliers (regla iterativa: se
+// descarta solo la peor mientras su coseno con la media de las candidatas este por debajo
+// del umbral; se recalcula la media y se repite). Devuelve menos de tres indices si el
+// registro es inconsistente.
+std::vector<std::size_t> keep_consistent_poses(const std::vector<std::vector<float>>& embeddings,
+                                                float min_pose_similarity);
 
 }  // namespace vision

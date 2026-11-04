@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp>
 
@@ -138,6 +139,44 @@ bool exigir(const bool condicion, const char* seccion, const char* clave, const 
   return false;
 }
 
+// Mapea la cadena del orden de color del bloque "npu" al enumerado. Un color
+// desconocido hace fallar la carga de la configuracion, como las demas claves.
+bool leer_color(const std::string& valor, ColorOrder& color, std::string& error) {
+  if (valor == "rgb") {
+    color = ColorOrder::Rgb;
+    return true;
+  }
+  if (valor == "bgr") {
+    color = ColorOrder::Bgr;
+    return true;
+  }
+  error = "npu.color: se esperaba \"rgb\" o \"bgr\"";
+  return false;
+}
+
+// Mapea la cadena del modo de escala del bloque "npu" al enumerado. Una escala
+// desconocida hace fallar la carga de la configuracion, como las demas claves.
+bool leer_escala(const std::string& valor, ScaleMode& modo, std::string& error) {
+  if (valor == "auto") {
+    modo = ScaleMode::Auto;
+    return true;
+  }
+  if (valor == "ninguna") {
+    modo = ScaleMode::None;
+    return true;
+  }
+  if (valor == "unidad") {
+    modo = ScaleMode::Unit;
+    return true;
+  }
+  if (valor == "arcface") {
+    modo = ScaleMode::ArcFace;
+    return true;
+  }
+  error = "npu.escala: se esperaba \"auto\", \"ninguna\", \"unidad\" o \"arcface\"";
+  return false;
+}
+
 // La URL de la galeria, partida en esquema y host.
 struct UrlPartes {
   std::string esquema;
@@ -170,6 +209,7 @@ ServiceConfig ProcessConfig::to_service_config() const {
   config.min_sharpness = thresholds.min_sharpness;
   config.min_recognized_score = thresholds.min_recognized_score;
   config.min_dudoso_score = thresholds.min_dudoso_score;
+  config.min_pose_similarity = thresholds.min_similitud_pose;
   config.http_timeout = Millis(capture.http_timeout_ms);
   config.max_body_bytes = capture.max_body_bytes;
   config.max_inbox_events = service.max_inbox_events;
@@ -194,7 +234,8 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   ProcessConfig config;
   error.clear();
 
-  if (!solo_claves(parsed, {"mqtt", "captura", "galeria", "umbrales", "servicio", "http"},
+  if (!solo_claves(parsed, {"mqtt", "captura", "galeria", "umbrales", "servicio", "http",
+                            "npu"},
                    nullptr, error)) {
     return false;
   }
@@ -278,7 +319,8 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   }
 
   if (!seccion(parsed, "umbrales", bloque, error)) return false;
-  if (!solo_claves(bloque, {"min_sharpness", "min_recognized_score", "min_dudoso_score"},
+  if (!solo_claves(bloque, {"min_sharpness", "min_recognized_score", "min_dudoso_score",
+                            "min_similitud_pose"},
                    "umbrales", error)) {
     return false;
   }
@@ -291,6 +333,9 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   if (!leer_real(bloque, "umbrales", "min_dudoso_score", dudoso, error)) return false;
   config.thresholds.min_recognized_score = static_cast<float>(reconocido);
   config.thresholds.min_dudoso_score = static_cast<float>(dudoso);
+  double similitud_pose = config.thresholds.min_similitud_pose;
+  if (!leer_real(bloque, "umbrales", "min_similitud_pose", similitud_pose, error)) return false;
+  config.thresholds.min_similitud_pose = static_cast<float>(similitud_pose);
   if (!exigir(config.thresholds.min_sharpness >= 0.0, "umbrales", "min_sharpness",
               "no puede ser negativo", error)) {
     return false;
@@ -299,6 +344,10 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
               "min_recognized_score",
               "los umbrales deben cumplir 0 <= min_dudoso_score <= min_recognized_score <= 1",
               error)) {
+    return false;
+  }
+  if (!exigir(similitud_pose >= 0.0 && similitud_pose <= 1.0, "umbrales",
+              "min_similitud_pose", "debe estar entre 0 y 1", error)) {
     return false;
   }
 
@@ -327,6 +376,14 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
               error)) {
     return false;
   }
+  // El nombre del modelo se convierte en una ruta: solo puede llevar letras, digitos,
+  // punto, guion y guion bajo (un "../" ejecutaria un .nb de donde quiera).
+  if (!exigir(nombre_modelo_valido(config.service.model_name), "servicio", "modelo",
+              "solo puede llevar letras, digitos, punto, guion y guion bajo (hasta 64 "
+              "caracteres)",
+              error)) {
+    return false;
+  }
 
   if (!seccion(parsed, "http", bloque, error)) return false;
   if (!solo_claves(bloque, {"allow_invalid_certificates", "ca_file"}, "http", error)) {
@@ -337,6 +394,57 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
     return false;
   }
   if (!leer_string(bloque, "http", "ca_file", config.http.ca_file, error)) return false;
+
+  // Bloque "npu": los parametros de los adaptadores sobre la NPU. Es opcional: si no
+  // esta, se quedan los valores por omision (los de siempre).
+  if (!seccion(parsed, "npu", bloque, error)) return false;
+  if (!solo_claves(bloque,
+                   {"color", "escala", "ancho", "alto", "embed_color", "embed_escala",
+                    "embed_ancho", "embed_alto"},
+                   "npu", error)) {
+    return false;
+  }
+  std::string color = "rgb";
+  if (!leer_string(bloque, "npu", "color", color, error)) return false;
+  if (!leer_color(color, config.npu.color_order, error)) return false;
+  std::string escala = "auto";
+  if (!leer_string(bloque, "npu", "escala", escala, error)) return false;
+  if (!leer_escala(escala, config.npu.scale_mode, error)) return false;
+  if (!leer_entero(bloque, "npu", "ancho", config.npu.detector_width, error)) return false;
+  if (!leer_entero(bloque, "npu", "alto", config.npu.detector_height, error)) return false;
+  // El embedder hereda el color y la escala del detector si no se le dan los suyos: son
+  // dos modelos distintos y pueden tener cuantizaciones de entrada distintas.
+  config.npu.embed_color_order = config.npu.color_order;
+  config.npu.embed_scale_mode = config.npu.scale_mode;
+  if (bloque.contains("embed_color")) {
+    std::string valor;
+    if (!leer_string(bloque, "npu", "embed_color", valor, error)) return false;
+    if (!leer_color(valor, config.npu.embed_color_order, error)) return false;
+  }
+  if (bloque.contains("embed_escala")) {
+    std::string valor;
+    if (!leer_string(bloque, "npu", "embed_escala", valor, error)) return false;
+    if (!leer_escala(valor, config.npu.embed_scale_mode, error)) return false;
+  }
+  if (!leer_entero(bloque, "npu", "embed_ancho", config.npu.embed_width, error)) return false;
+  if (!leer_entero(bloque, "npu", "embed_alto", config.npu.embed_height, error)) return false;
+  // 0 significa "el tamano que tenga el .nb"; un negativo no tiene sentido.
+  if (!exigir(config.npu.detector_width >= 0, "npu", "ancho", "no puede ser negativo",
+              error)) {
+    return false;
+  }
+  if (!exigir(config.npu.detector_height >= 0, "npu", "alto", "no puede ser negativo",
+              error)) {
+    return false;
+  }
+  if (!exigir(config.npu.embed_width >= 0, "npu", "embed_ancho", "no puede ser negativo",
+              error)) {
+    return false;
+  }
+  if (!exigir(config.npu.embed_height >= 0, "npu", "embed_alto", "no puede ser negativo",
+              error)) {
+    return false;
+  }
 
   out = std::move(config);
   return true;
@@ -374,6 +482,63 @@ bool load_process_config(const std::string& path, ProcessConfig& out, bool& foun
     return false;
   }
   return parse_process_config(buffer.str(), out, error);
+}
+
+bool nombre_modelo_valido(const std::string& nombre) {
+  if (nombre.empty() || nombre.size() > 64) return false;
+  // "." y ".." son nombres de directorio, no de archivo.
+  if (nombre == "." || nombre == "..") return false;
+  for (const char caracter : nombre) {
+    const bool valido = (caracter >= 'A' && caracter <= 'Z') ||
+                        (caracter >= 'a' && caracter <= 'z') ||
+                        (caracter >= '0' && caracter <= '9') || caracter == '.' ||
+                        caracter == '_' || caracter == '-';
+    if (!valido) return false;
+  }
+  return true;
+}
+
+std::filesystem::path ruta_modelo(const std::string& nombre,
+                                  const std::filesystem::path& directorio) {
+  if (!nombre_modelo_valido(nombre)) {
+    throw std::invalid_argument("ruta_modelo: el nombre del modelo no es valido");
+  }
+  const std::filesystem::path ruta = directorio / (nombre + ".nb");
+  // Un enlace simbolico en el directorio de modelos apuntaria a otro fichero: el
+  // directorio es donde aterriza un .nb descargado, asi que se rechaza.
+  std::error_code ec;
+  if (std::filesystem::is_symlink(ruta, ec)) {
+    throw std::invalid_argument("ruta_modelo: el modelo es un enlace simbolico");
+  }
+  // La ruta tiene que seguir dentro del directorio de modelos. Se compara COMPONENTE A
+  // COMPONENTE (no por el prefijo): un nombre valido como "..modelo" no es un "..", y
+  // los dos validadores (nombre_modelo_valido y ruta_modelo) tienen que decir lo mismo.
+  const std::filesystem::path relativa = ruta.lexically_relative(directorio);
+  if (relativa.empty()) {
+    throw std::invalid_argument("ruta_modelo: la ruta del modelo sale del directorio de modelos");
+  }
+  for (const std::filesystem::path& componente : relativa) {
+    if (componente == "..") {
+      throw std::invalid_argument("ruta_modelo: la ruta del modelo sale del directorio de modelos");
+    }
+  }
+  // Y con los enlaces resueltos: la ruta canonica tiene que seguir dentro del
+  // directorio canonico.
+  const std::filesystem::path canonica_dir = std::filesystem::weakly_canonical(directorio, ec);
+  const std::filesystem::path canonica = std::filesystem::weakly_canonical(ruta, ec);
+  if (!ec && !canonica.empty()) {
+    const std::filesystem::path relativa_canonica = canonica.lexically_relative(canonica_dir);
+    if (relativa_canonica.empty()) {
+      throw std::invalid_argument("ruta_modelo: la ruta del modelo sale del directorio de modelos");
+    }
+    for (const std::filesystem::path& componente : relativa_canonica) {
+      if (componente == "..") {
+        throw std::invalid_argument(
+            "ruta_modelo: la ruta del modelo sale del directorio de modelos");
+      }
+    }
+  }
+  return ruta;
 }
 
 }  // namespace vision
