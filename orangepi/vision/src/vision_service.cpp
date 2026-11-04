@@ -74,9 +74,10 @@ std::string nombre_pose(std::size_t indice) {
 }
 
 // Aviso de una pose descartada (por stderr; el contrato MQTT no cambia). Dice QUE pose se
-// descarto y con que similitud, para que un registro rechazado se pueda diagnosticar.
-void avisar_pose_descartada(std::size_t indice, const std::string& similitud) {
-  std::cerr << "[vision] pose descartada: " << nombre_pose(indice) << " (similitud " << similitud
+// descarto y por que, para que un registro rechazado se pueda diagnosticar. El motivo
+// va como etiqueta propia: lo no finito suele ser el embedding, no la similitud.
+void avisar_pose_descartada(std::size_t indice, const std::string& motivo) {
+  std::cerr << "[vision] pose descartada: " << nombre_pose(indice) << " (motivo: " << motivo
             << ")\n";
 }
 
@@ -169,7 +170,7 @@ std::vector<std::size_t> keep_consistent_poses(const std::vector<std::vector<flo
     if (peor_similitud >= min_pose_similarity) break;
 
     std::ostringstream texto;
-    texto << std::fixed << std::setprecision(2) << peor_similitud;
+    texto << "similitud " << std::fixed << std::setprecision(2) << peor_similitud;
     avisar_pose_descartada(peor, texto.str());
     candidatas.erase(std::find(candidatas.begin(), candidatas.end(), peor));
   }

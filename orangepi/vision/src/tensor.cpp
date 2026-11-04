@@ -229,26 +229,61 @@ std::vector<std::uint8_t> quantize(const TensorInfo& info, std::span<const float
       const int maximo = con_signo ? 127 : 255;
       std::vector<std::uint8_t> out(values.size());
       std::size_t recortados = 0;
+      // Rango real que representa el tensor, con la MISMA tolerancia que la comprobacion
+      // estatica de al arrancar (kToleranciaRango): lo que cae dentro del rango
+      // tolerado se recorta por redondeo sin que eso sea una saturacion. Asi las dos
+      // barreras no se contradicen (la estatica acepta el tensor y la dinamica no
+      // aborta el fotograma por el mismo extremo).
+      float rango_min = 0.0f;
+      float rango_max = 0.0f;
+      switch (info.quant) {
+        case QuantFormat::Affine:
+          rango_min = (static_cast<float>(minimo) - static_cast<float>(info.zero_point)) *
+                      info.scale;
+          rango_max = (static_cast<float>(maximo) - static_cast<float>(info.zero_point)) *
+                      info.scale;
+          break;
+        case QuantFormat::DynamicFixedPoint: {
+          const float factor = std::ldexp(1.0f, -info.fixed_point_pos);
+          rango_min = static_cast<float>(minimo) * factor;
+          rango_max = static_cast<float>(maximo) * factor;
+          break;
+        }
+        case QuantFormat::None:
+          rango_min = static_cast<float>(minimo);
+          rango_max = static_cast<float>(maximo);
+          break;
+      }
+      const float margen = kToleranciaRango * (rango_max - rango_min);
+      rango_min -= margen;
+      rango_max += margen;
       for (std::size_t i = 0; i < values.size(); ++i) {
+        float real = values[i];
+        if (real < rango_min) {
+          real = rango_min;
+          ++recortados;
+        } else if (real > rango_max) {
+          real = rango_max;
+          ++recortados;
+        }
         float cuantizado = 0.0f;
         switch (info.quant) {
           case QuantFormat::Affine:
             // q = round(real / scale) + zero_point
-            cuantizado = std::round(values[i] / info.scale) +
+            cuantizado = std::round(real / info.scale) +
                          static_cast<float>(info.zero_point);
             break;
           case QuantFormat::DynamicFixedPoint:
             // q = round(real * 2^pos)
-            cuantizado = std::round(values[i] * std::ldexp(1.0f, info.fixed_point_pos));
+            cuantizado = std::round(real * std::ldexp(1.0f, info.fixed_point_pos));
             break;
           case QuantFormat::None:
             // q = round(real)
-            cuantizado = std::round(values[i]);
+            cuantizado = std::round(real);
             break;
         }
         bool recortado = false;
         const int valor = round_and_clip(cuantizado, minimo, maximo, recortado);
-        if (recortado) ++recortados;
         out[i] = con_signo ? static_cast<std::uint8_t>(static_cast<std::int8_t>(valor))
                             : static_cast<std::uint8_t>(valor);
       }

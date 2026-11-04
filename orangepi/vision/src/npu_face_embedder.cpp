@@ -26,6 +26,19 @@ NpuFaceEmbedder::NpuFaceEmbedder(const npu::Driver& driver, const std::filesyste
   if (salida.element_count == 0) {
     throw std::invalid_argument("NpuFaceEmbedder: la salida del modelo no declara elementos");
   }
+  // Techo de la dimension del embedding: todos los modelos de reconocimiento habituales
+  // (ArcFace, MobileFaceNet, Facenet) dan entre 128 y 512 valores. Sin este techo, un
+  // .nb equivocado (por ejemplo, el del detector, con miles de valores por ancla) se
+  // aceptaria y el servicio publicaria un "embedding" enorme por MQTT.
+  if (salida.element_count < options_.min_output_elements ||
+      salida.element_count > options_.max_output_elements) {
+    throw std::invalid_argument(
+        "NpuFaceEmbedder: la salida del modelo trae " +
+        std::to_string(salida.element_count) + " valores, y un embedding deberia tener " +
+        "entre " + std::to_string(options_.min_output_elements) + " y " +
+        std::to_string(options_.max_output_elements) +
+        " (¿es el modelo de reconocimiento?): revisa \"servicio.modelo\" en la configuracion");
+  }
   input_info_ = network_.input_info(0);
   // El tensor de ENTRADA se valida al arrancar: formato, dimensiones, modo de escala y
   // rango representable. Un .nb con otra disposicion tiene que hacer fallar el proceso

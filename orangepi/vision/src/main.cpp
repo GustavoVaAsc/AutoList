@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
   if (!load_process_config(ruta_config, config, encontrado, error)) {
     std::cerr << "[vision] la configuracion " << ruta_config << " no es valida: " << error
               << '\n';
-    return 1;
+    return kSalidaConfig;
   }
   if (!encontrado) {
     if (!dry_run) {
@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
       // sale con error en vez de usar los valores por omision.
       std::cerr << "[vision] no existe " << ruta_config
                 << ": en produccion el servicio no arranca con los valores por omision\n";
-      return 1;
+      return kSalidaConfig;
     }
     std::cerr << "[vision] no existe " << ruta_config
               << ": se usan los valores por omision (--dry-run)\n";
@@ -286,7 +286,7 @@ int main(int argc, char** argv) {
     if (!dry_run) {
       std::cerr << "[vision] no esta la variable de entorno " << config.mqtt.password_env
                 << ": el broker exige usuario y contrasena\n";
-      return 1;
+      return kSalidaConfig;
     }
     if (!permitir_anonimo) {
       std::cerr << "[vision] AVISO: no esta la variable de entorno "
@@ -306,7 +306,7 @@ int main(int argc, char** argv) {
     if (!dry_run) {
       std::cerr << "[vision] no esta la variable de entorno " << config.gallery.token_env
                 << ": la galeria se pediria sin token\n";
-      return 1;
+      return kSalidaConfig;
     }
     std::cerr << "[vision] AVISO: no esta la variable de entorno " << config.gallery.token_env
               << ": la galeria se pide sin token (--dry-run)\n";
@@ -330,7 +330,7 @@ int main(int argc, char** argv) {
     } catch (const std::exception& error) {
       std::cerr << "[vision] no se pudo construir la ruta de los modelos .nb: "
                 << error.what() << '\n';
-      return 1;
+      return kSalidaConfig;
     }
     if (!std::filesystem::exists(detector_nb) || !std::filesystem::exists(embedding_nb)) {
       // Solo se registran los NOMBRES de los modelos: las rutas absolutas no se
@@ -442,11 +442,14 @@ int main(int argc, char** argv) {
       opciones_detector.scale_mode = config.npu.scale_mode;
       detector_npu =
           std::make_unique<NpuFaceDetector>(*driver_npu, detector_nb, opciones_detector);
-      // El embedder comparte el color y el modo de escala; su tamano de entrada (112)
-      // lo fija el .nb de reconocimiento.
+      // El embedder es otro modelo: su color y su escala se pueden aparte (heredan los
+      // del detector si no se configuran) y su tamano de entrada (0 = el del .nb) ya no
+      // esta codificado.
       NpuEmbedderOptions opciones_embedder;
-      opciones_embedder.color_order = config.npu.color_order;
-      opciones_embedder.scale_mode = config.npu.scale_mode;
+      opciones_embedder.input_width = config.npu.embed_width;
+      opciones_embedder.input_height = config.npu.embed_height;
+      opciones_embedder.color_order = config.npu.embed_color_order;
+      opciones_embedder.scale_mode = config.npu.embed_scale_mode;
       embedder_npu = std::make_unique<NpuFaceEmbedder>(*driver_npu, embedding_nb,
                                                        opciones_embedder);
       detector = detector_npu.get();
@@ -459,13 +462,16 @@ int main(int argc, char** argv) {
       std::cerr << "[vision] el .nb no encaja con el codigo: " << error.what() << '\n';
       return kSalidaConfig;
     } catch (const std::exception& error) {
+      // Un .nb que el driver rechaza (truncado, corrupto, de otra version) es un
+      // archivo malo, no un fallo transitorio del driver: con el 78, systemd no lo
+      // reinicia cada 5 s para siempre.
       std::cerr << "[vision] no se pudieron cargar los modelos .nb en la NPU: "
                 << error.what() << '\n';
-      return 1;
+      return kSalidaConfig;
     } catch (...) {
       std::cerr << "[vision] no se pudieron cargar los modelos .nb en la NPU: excepcion "
                    "desconocida\n";
-      return 1;
+      return kSalidaConfig;
     }
     // Solo el nombre del modelo, no la ruta completa.
     std::cerr << "[vision] detector y embedder sobre la NPU cargados (" << kNombreDetector

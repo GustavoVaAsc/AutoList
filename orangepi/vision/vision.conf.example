@@ -36,7 +36,11 @@
   "npu": {
     "color": "rgb",
     "escala": "auto",
-    "ancho": 640,
-    "alto": 640
+    "ancho": 0,
+    "alto": 0,
+    "embed_color": "rgb",
+    "embed_escala": "auto",
+    "embed_ancho": 0,
+    "embed_alto": 0
   }
 }

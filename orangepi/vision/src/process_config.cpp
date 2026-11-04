@@ -398,7 +398,10 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   // Bloque "npu": los parametros de los adaptadores sobre la NPU. Es opcional: si no
   // esta, se quedan los valores por omision (los de siempre).
   if (!seccion(parsed, "npu", bloque, error)) return false;
-  if (!solo_claves(bloque, {"color", "escala", "ancho", "alto"}, "npu", error)) {
+  if (!solo_claves(bloque,
+                   {"color", "escala", "ancho", "alto", "embed_color", "embed_escala",
+                    "embed_ancho", "embed_alto"},
+                   "npu", error)) {
     return false;
   }
   std::string color = "rgb";
@@ -409,12 +412,36 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   if (!leer_escala(escala, config.npu.scale_mode, error)) return false;
   if (!leer_entero(bloque, "npu", "ancho", config.npu.detector_width, error)) return false;
   if (!leer_entero(bloque, "npu", "alto", config.npu.detector_height, error)) return false;
+  // El embedder hereda el color y la escala del detector si no se le dan los suyos: son
+  // dos modelos distintos y pueden tener cuantizaciones de entrada distintas.
+  config.npu.embed_color_order = config.npu.color_order;
+  config.npu.embed_scale_mode = config.npu.scale_mode;
+  if (bloque.contains("embed_color")) {
+    std::string valor;
+    if (!leer_string(bloque, "npu", "embed_color", valor, error)) return false;
+    if (!leer_color(valor, config.npu.embed_color_order, error)) return false;
+  }
+  if (bloque.contains("embed_escala")) {
+    std::string valor;
+    if (!leer_string(bloque, "npu", "embed_escala", valor, error)) return false;
+    if (!leer_escala(valor, config.npu.embed_scale_mode, error)) return false;
+  }
+  if (!leer_entero(bloque, "npu", "embed_ancho", config.npu.embed_width, error)) return false;
+  if (!leer_entero(bloque, "npu", "embed_alto", config.npu.embed_height, error)) return false;
   // 0 significa "el tamano que tenga el .nb"; un negativo no tiene sentido.
   if (!exigir(config.npu.detector_width >= 0, "npu", "ancho", "no puede ser negativo",
               error)) {
     return false;
   }
   if (!exigir(config.npu.detector_height >= 0, "npu", "alto", "no puede ser negativo",
+              error)) {
+    return false;
+  }
+  if (!exigir(config.npu.embed_width >= 0, "npu", "embed_ancho", "no puede ser negativo",
+              error)) {
+    return false;
+  }
+  if (!exigir(config.npu.embed_height >= 0, "npu", "embed_alto", "no puede ser negativo",
               error)) {
     return false;
   }
@@ -477,6 +504,12 @@ std::filesystem::path ruta_modelo(const std::string& nombre,
     throw std::invalid_argument("ruta_modelo: el nombre del modelo no es valido");
   }
   const std::filesystem::path ruta = directorio / (nombre + ".nb");
+  // Un enlace simbolico en el directorio de modelos apuntaria a otro fichero: el
+  // directorio es donde aterriza un .nb descargado, asi que se rechaza.
+  std::error_code ec;
+  if (std::filesystem::is_symlink(ruta, ec)) {
+    throw std::invalid_argument("ruta_modelo: el modelo es un enlace simbolico");
+  }
   // La ruta tiene que seguir dentro del directorio de modelos. Se compara COMPONENTE A
   // COMPONENTE (no por el prefijo): un nombre valido como "..modelo" no es un "..", y
   // los dos validadores (nombre_modelo_valido y ruta_modelo) tienen que decir lo mismo.
@@ -487,6 +520,22 @@ std::filesystem::path ruta_modelo(const std::string& nombre,
   for (const std::filesystem::path& componente : relativa) {
     if (componente == "..") {
       throw std::invalid_argument("ruta_modelo: la ruta del modelo sale del directorio de modelos");
+    }
+  }
+  // Y con los enlaces resueltos: la ruta canonica tiene que seguir dentro del
+  // directorio canonico.
+  const std::filesystem::path canonica_dir = std::filesystem::weakly_canonical(directorio, ec);
+  const std::filesystem::path canonica = std::filesystem::weakly_canonical(ruta, ec);
+  if (!ec && !canonica.empty()) {
+    const std::filesystem::path relativa_canonica = canonica.lexically_relative(canonica_dir);
+    if (relativa_canonica.empty()) {
+      throw std::invalid_argument("ruta_modelo: la ruta del modelo sale del directorio de modelos");
+    }
+    for (const std::filesystem::path& componente : relativa_canonica) {
+      if (componente == "..") {
+        throw std::invalid_argument(
+            "ruta_modelo: la ruta del modelo sale del directorio de modelos");
+      }
     }
   }
   return ruta;

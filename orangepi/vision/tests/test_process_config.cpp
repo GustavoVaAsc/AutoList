@@ -317,8 +317,33 @@ TEST(config_sin_bloque_npu_deja_los_valores_por_omision) {
   CHECK(parse_process_config(R"({"servicio": {"poll_ms": 50}})", config, error));
   CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Rgb));
   CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::Auto));
-  CHECK_EQ(config.npu.detector_width, 640);
-  CHECK_EQ(config.npu.detector_height, 640);
+  // 0 = "el tamano que tenga el .nb": es lo que hace que el detector y el embedder
+  // funcionen con cualquier modelo sin tocar la configuracion.
+  CHECK_EQ(config.npu.detector_width, 0);
+  CHECK_EQ(config.npu.detector_height, 0);
+  CHECK_EQ(config.npu.embed_width, 0);
+  CHECK_EQ(config.npu.embed_height, 0);
+  // El embedder hereda el color y la escala del detector.
+  CHECK_EQ(static_cast<int>(config.npu.embed_color_order), static_cast<int>(ColorOrder::Rgb));
+  CHECK_EQ(static_cast<int>(config.npu.embed_scale_mode), static_cast<int>(ScaleMode::Auto));
+}
+
+TEST(config_el_bloque_npu_admite_los_parametros_del_embedder) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"npu": {"color": "bgr", "escala": "arcface", "embed_color": "rgb",
+                 "embed_escala": "unidad", "embed_ancho": 224, "embed_alto": 224}})",
+      config, error));
+  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Bgr));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::ArcFace));
+  CHECK_EQ(static_cast<int>(config.npu.embed_color_order), static_cast<int>(ColorOrder::Rgb));
+  CHECK_EQ(static_cast<int>(config.npu.embed_scale_mode), static_cast<int>(ScaleMode::Unit));
+  CHECK_EQ(config.npu.embed_width, 224);
+  CHECK_EQ(config.npu.embed_height, 224);
+  // Una clave desconocida del bloque sigue rechazando el archivo.
+  CHECK(!parse_process_config(R"({"npu": {"embed_tamanio": 224}})", config, error));
+  CHECK(error.find("npu") != std::string::npos);
 }
 
 TEST(config_rechaza_un_color_o_una_escala_desconocidos) {

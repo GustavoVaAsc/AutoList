@@ -25,6 +25,14 @@ struct TensorInfo {
   std::size_t size_bytes = 0;     // bytes que reserva el driver; pueden ser mas que los logicos
 };
 
+// Tolerancia con la que se acepta que el rango real de un tensor no cubra del todo el
+// dominio de un modo de escala: es el margen del redondeo de las cuantificaciones
+// habituales (un uint8 con escala 1/127,5 y zero_point 128 representa [-1,0039;
+// 0,9961] y su extremo superior se pierde por redondeo). La MISMA tolerancia se usa en
+// la comprobacion estatica (al arrancar) y en la de saturacion (por fotograma), para
+// que las dos no se contradigan.
+inline constexpr float kToleranciaRango = 0.01f;
+
 std::string_view to_string(DataFormat format);
 std::string_view to_string(QuantFormat quant);
 

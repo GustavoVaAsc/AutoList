@@ -86,16 +86,25 @@ struct HttpSettings {
 // recompilar cuando llegue.
 //
 // El bloque entero es opcional: si no esta, el comportamiento es el de siempre (RGB,
-// escala deducida del tensor y entrada de 640x640 en el detector).
+// escala deducida del tensor y el tamano de entrada que tenga cada .nb).
 struct NpuSettings {
   // "color": "rgb" (por omision) o "bgr".
   ColorOrder color_order = ColorOrder::Rgb;
   // "escala": "auto" (por omision, se deduce del tensor), "ninguna" (el byte crudo),
   // "unidad" (x/255) o "arcface" ((x-127.5)/127.5).
   ScaleMode scale_mode = ScaleMode::Auto;
-  // "ancho" y "alto": tamano de entrada del detector. 0 significa "el que tenga el .nb".
-  int detector_width = 640;
-  int detector_height = 640;
+  // "ancho" y "alto": tamano de entrada del detector. 0 significa "el que tenga el .nb",
+  // que es lo que se usa por omision: las anclas se escalan al tamano de la entrada, asi
+  // que el detector funciona con cualquier tamano sin tocar la configuracion.
+  int detector_width = 0;
+  int detector_height = 0;
+  // El embedder es otro modelo, con su propia cuantizacion y su propio tamano de
+  // entrada. "embed_color" y "embed_escala" si no estan, heredan los del detector.
+  ColorOrder embed_color_order = ColorOrder::Rgb;
+  ScaleMode embed_scale_mode = ScaleMode::Auto;
+  // "embed_ancho" y "embed_alto": tamano de entrada del embedder; 0 = el del .nb.
+  int embed_width = 0;
+  int embed_height = 0;
 };
 
 // La configuracion completa del proceso.

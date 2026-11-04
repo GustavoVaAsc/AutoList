@@ -30,8 +30,8 @@ struct NpuDetectorOptions {
   // Tamano de la entrada del modelo. Por omision 640x640 (el RetinaFace clasico).
   // Si se deja en 0 (o en negativo), se toma el del tensor del .nb. Se puede fijar en el
   // archivo de configuracion (bloque "npu", claves "ancho" y "alto").
-  int input_width = 640;
-  int input_height = 640;
+  int input_width = 0;
+  int input_height = 0;
   // Orden de color del tensor de entrada (archivo de configuracion, bloque "npu",
   // clave "color"). Por omision RGB.
   ColorOrder color_order = ColorOrder::Rgb;

@@ -68,7 +68,10 @@ QuantFormat to_quant_format(vip_enum quant) {
   }
 }
 
-constexpr std::size_t kMaxTensorElements = std::size_t{1} << 32;
+constexpr std::size_t kMaxTensorElements = std::size_t{64} << 20;
+// Techo del buffer que reserva el driver (64 MB): el .nb manda en las dimensiones, asi
+// que sin este techo un .nb manipulado podria pedir gigabytes en la placa.
+constexpr std::size_t kMaxTensorBytes = std::size_t{64} << 20;
 
 // vip_query_input y vip_query_output comparten firma.
 using QueryTensorFn = vip_status_e (*)(vip_network, vip_uint32_t, vip_enum, void*);
@@ -98,6 +101,9 @@ Tensor query_tensor(QueryTensorFn query, vip_network network, vip_uint32_t index
   check(query(network, index, VIP_BUFFER_PROP_NAME, name), "query name");
 
   // Elementos logicos del tensor; las dimensiones vienen del .nb, asi que se acotan.
+  // El techo es el del buffer: 64 M de elementos son 256 MB en float, de sobra para un
+  // modelo de rostro y mas que suficiente para que un .nb manipulado no pida gigabytes
+  // en una placa de 4 GB.
   std::size_t element_count = 1;
   for (vip_uint32_t d = 0; d < num_dims; ++d) {
     element_count *= sizes[d];
@@ -137,9 +143,16 @@ Tensor query_tensor(QueryTensorFn query, vip_network network, vip_uint32_t index
 }
 
 void create_buffer(Tensor& t) {
+  // Techo del buffer que reserva el driver: las dimensiones del .nb mandan, asi que un
+  // .nb manipulado podria pedir gigabytes en una placa de 4 GB. Se comprueba ANTES de
+  // reservar, que es cuando todavia se puede fallar con un mensaje claro.
+  const std::size_t logical_bytes = t.info.element_count * element_size(t.info.format);
+  if (logical_bytes > kMaxTensorBytes) {
+    throw NpuError("el tensor necesita " + std::to_string(logical_bytes) +
+                   " bytes y el techo es " + std::to_string(kMaxTensorBytes));
+  }
   check(vip_create_buffer(&t.params, sizeof(t.params), &t.buffer), "vip_create_buffer");
   t.info.size_bytes = vip_get_buffer_size(t.buffer);
-  const std::size_t logical_bytes = t.info.element_count * element_size(t.info.format);
   if (t.info.size_bytes < logical_bytes) {
     throw NpuError("el driver reservo " + std::to_string(t.info.size_bytes) + " bytes para un tensor de " +
                    std::to_string(logical_bytes) + " bytes logicos");

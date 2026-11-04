@@ -37,7 +37,7 @@ constexpr float kToleranciaEscala = 1e-6f;
 // uint8 representa [-1.0039, 0.9961] y el dominio [-1,1] no llega al extremo) sin
 // dejar pasar un tensor que de verdad no cubre el dominio (un int8 con escala 1/255
 // representa [-0.502, 0.498] y no cubre ni de lejos el [0,1]).
-constexpr float kToleranciaRango = 0.01f;
+// La tolerancia vive en vision::kToleranciaRango (vision/tensor.hpp).
 
 bool es_ocho_bits(DataFormat formato) {
   return formato == DataFormat::Uint8 || formato == DataFormat::Int8;
@@ -310,6 +310,28 @@ void validar_tensor_entrada(const TensorInfo& info, const PreprocessOptions& opt
     throw std::invalid_argument(prefijo + "el preproceso reservaria " +
                                 std::to_string(bytes) + " bytes y el techo es " +
                                 std::to_string(kMaxBytesPreproceso));
+  }
+  // 3.bis El numero de elementos tiene que ser EXACTAMENTE el de la forma [w, h, c, n].
+  //     Si el .nb declara dimensiones extra, el driver reserva un buffer mucho mayor
+  //     que el que usa el preproceso (un .nb manipulado con [112,112,3,1,65535,1]
+  //     pediria 2,4 GB en una placa de 4 GB).
+  const std::size_t elementos = static_cast<std::size_t>(shape.width) *
+                                static_cast<std::size_t>(shape.height) *
+                                static_cast<std::size_t>(shape.channels) *
+                                static_cast<std::size_t>(shape.batch);
+  if (info.element_count != 0 && info.element_count != elementos) {
+    throw std::invalid_argument(prefijo + "el tensor de entrada declara " +
+                                std::to_string(info.element_count) +
+                                " elementos y su forma [w, h, c, n] son " +
+                                std::to_string(elementos) +
+                                ": el buffer del driver seria mayor que el que usa el "
+                                "preproceso");
+  }
+  if (info.size_bytes > kMaxBytesTensor) {
+    throw std::invalid_argument(prefijo + "el driver reserva " +
+                                std::to_string(info.size_bytes) +
+                                " bytes para el tensor de entrada y el techo es " +
+                                std::to_string(kMaxBytesTensor));
   }
   // 4. El buffer del driver tiene que alcanzar para el tensor.
   comprobar_tamano(info, quien);

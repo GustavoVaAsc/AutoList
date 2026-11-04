@@ -281,6 +281,14 @@ std::vector<FaceDetection> decode_detector_outputs(const std::vector<DetectorTen
     // Los offsets de landmarks tambien tienen que ser finitos: si no, el punto sale
     // NaN y align_face lanza en cada fotograma.
     if (!landmarks_finitos(offsets)) continue;
+    // Y los cuatro valores de la caja: un NaN en la caja abortaria el fotograma
+    // entero, cuando el resto de las cajas del fotograma son validas. Se descarta el
+    // ancla, igual que con el score y los landmarks.
+    bool caja_finita = true;
+    for (int i = 0; i < 4; ++i) {
+      if (!std::isfinite(base[i])) caja_finita = false;
+    }
+    if (!caja_finita) continue;
 
     const cv::Rect2f bbox = decode_box(anchors[i], base);
     cajas_decodificadas.push_back(bbox);

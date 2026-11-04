@@ -96,6 +96,10 @@ constexpr std::size_t kMaxElementosEntrada = 4u * 1024u * 1024u;
 // tensor, la imagen redimensionada y el buffer de bytes del tensor. Se comprueba
 // ANTES de reservar y antes del cv::resize.
 constexpr std::size_t kMaxBytesPreproceso = 32u * 1024u * 1024u;
+// Techo del buffer que reserva el driver para el tensor de entrada. Las dimensiones
+// vienen del .nb: sin este tope, un .nb con dimensiones extra (por ejemplo
+// [112,112,3,1,65535,1]) haria que el driver pidiera 2,4 GB en una placa de 4 GB.
+constexpr std::size_t kMaxBytesTensor = 32u * 1024u * 1024u;
 
 struct PreprocessOptions {
   // Orden de los canales del tensor de entrada. Por omision RGB (la convencion de los
@@ -140,6 +144,14 @@ struct RangoReal {
   float minimo = 0.0f;
   float maximo = 0.0f;
 };
+
+// Tolerancia con la que se acepta que el rango del tensor no cubra del todo el
+// dominio del modo de escala: es el margen del redondeo de las cuantizaciones
+// habituales (un uint8 con escala 1/127,5 y zero_point 128 representa [-1,0039;
+// 0,9961] y su extremo superior se pierde por redondeo). La MISMA tolerancia se usa en
+// la comprobacion estatica (al arrancar, en vision::rango_contiene) y en la de
+// saturacion (por fotograma, en vision::quantize), para que las dos no se contradigan.
+// Vive en vision/tensor.hpp (vision::kToleranciaRango), que este header incluye.
 
 // Rango real que puede representar el tensor de entrada.
 //

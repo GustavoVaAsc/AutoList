@@ -78,6 +78,10 @@ TEST(el_embedder_sobre_la_npu_corre_de_punta_a_punta) {
   vision::NpuEmbedderOptions options;
   options.input_width = 224;
   options.input_height = 224;
+  // El modelo de ejemplo del fabricante da 2 valores: no es un modelo de
+  // reconocimiento, asi que el minimo del rango se baja para poder ejercitar el
+  // cableado (el techo de produccion sigue en pie).
+  options.min_output_elements = 1;
   vision::NpuFaceEmbedder embedder(driver, kModelo, options);
 
   const cv::Mat imagen(224, 224, CV_8UC3, cv::Scalar(10, 20, 30));
@@ -94,17 +98,34 @@ TEST(el_embedder_sobre_la_npu_corre_de_punta_a_punta) {
 TEST(el_embedder_rechaza_un_tamano_de_entrada_que_no_cuadra_con_el_modelo) {
   if (!hay_modelo()) return;
   vision::npu::Driver driver;
-  // Por omision el embedder pide 112x112 y el modelo del fabricante es de 224x224.
+  // Por omision el embedder toma el tamano del .nb; un tamano pedido que no cuadra con
+  // el tensor se rechaza (el modelo del fabricante es de 224x224).
   vision::NpuEmbedderOptions options;
+  options.input_width = 112;
+  options.input_height = 112;
   CHECK_THROWS(vision::NpuFaceEmbedder(driver, kModelo, options), std::invalid_argument);
 }
 
 TEST(el_detector_rechaza_un_tamano_de_entrada_que_no_cuadra_con_el_modelo) {
   if (!hay_modelo()) return;
   vision::npu::Driver driver;
-  // El detector pide 640x640 por omision y el modelo del fabricante es de 224x224.
+  // Igual que el embedder: por omision se toma el tamano del .nb; un tamano pedido que
+  // no cuadra se rechaza (el modelo del fabricante es de 224x224).
   vision::NpuDetectorOptions options;
+  options.input_width = 640;
+  options.input_height = 640;
   CHECK_THROWS(vision::NpuFaceDetector(driver, kModelo, options), std::invalid_argument);
+}
+
+TEST(el_embedder_rechaza_una_salida_que_no_puede_ser_un_embedding) {
+  if (!hay_modelo()) return;
+  vision::npu::Driver driver;
+  // El modelo de ejemplo del fabricante da 2 valores: con el rango de produccion (64 a
+  // 8192) se rechaza, porque un embedding de 2 valores no es un embedding.
+  vision::NpuEmbedderOptions options;
+  options.input_width = 224;
+  options.input_height = 224;
+  CHECK_THROWS(vision::NpuFaceEmbedder(driver, kModelo, options), std::invalid_argument);
 }
 
 // --- Tercera ronda: el tensor de entrada se valida AL ARRANCAR ------------------
@@ -145,6 +166,7 @@ TEST(el_embedder_toma_el_tamano_de_entrada_del_modelo_cuando_se_pide_cero) {
   vision::NpuEmbedderOptions options;
   options.input_width = 0;
   options.input_height = 0;
+  options.min_output_elements = 1;
   vision::NpuFaceEmbedder embedder(driver, kModelo, options);
   const cv::Mat imagen(224, 224, CV_8UC3, cv::Scalar(10, 20, 30));
   const std::vector<float> embedding = embedder.embed(imagen);

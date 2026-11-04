@@ -22,9 +22,10 @@ KillSignal=SIGTERM
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
-# Codigo 78 (EX_CONFIG): "faltan los modelos .nb". Es una configuracion que falta, no
-# un fallo del proceso: sin esta linea, systemd lo relanzaria cada 5 s para siempre y
-# llenaria el journal.
+# Codigo 78 (EX_CONFIG): los errores de configuracion, que son "faltan los modelos .nb",
+# "el .nb no encaja con el codigo", "el archivo de configuracion no es valido" o "falta
+# una variable de entorno". Son fallos de configuracion, no del proceso: sin esta linea,
+# systemd lo relanzaria cada 5 s para siempre y llenaria el journal.
 RestartPreventExitStatus=78
 # Endurecimiento moderado: el servicio solo necesita leer su configuracion y abrir la
 # NPU (/dev/vipcore). No se usa ProtectSystem=strict ni reglas de dispositivo, para no

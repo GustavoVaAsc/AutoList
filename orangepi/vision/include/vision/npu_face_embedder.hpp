@@ -30,8 +30,8 @@ namespace vision {
 struct NpuEmbedderOptions {
   // Tamano de la entrada del modelo. Por omision 112x112 (el recorte de ArcFace).
   // Si se deja en 0 (o en negativo), se toma el del tensor del .nb.
-  int input_width = 112;
-  int input_height = 112;
+  int input_width = 0;
+  int input_height = 0;
   // Orden de color del tensor de entrada (archivo de configuracion, bloque "npu",
   // clave "color"). Por omision RGB.
   ColorOrder color_order = ColorOrder::Rgb;
@@ -40,6 +40,13 @@ struct NpuEmbedderOptions {
   ScaleMode scale_mode = ScaleMode::Auto;
   // Tensor de salida que se lee. Por omision el 0.
   std::size_t output_index = 0;
+  // Rango admisible para la dimension del embedding. Un modelo de reconocimiento
+  // habitual da entre 128 y 512 valores; el techo evita que un .nb equivocado (por
+  // ejemplo, el del detector) se acepte y el servicio publique un "embedding" enorme.
+  // Solo las pruebas con el modelo de ejemplo del fabricante (que da 2 valores) Bajan
+  // el minimo.
+  std::size_t min_output_elements = 64;
+  std::size_t max_output_elements = 8192;
 };
 
 // Red de reconocimiento sobre la NPU.

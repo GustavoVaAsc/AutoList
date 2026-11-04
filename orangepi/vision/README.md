@@ -197,12 +197,14 @@ El motivo de que esto sea automático: con el modo equivocado, `quantize` satura
 **Los parámetros que dependen del modelo están en la configuración**, en el bloque `npu`, para no tener que recompilar cuando llegue el `.nb`:
 
 ```json
-"npu": {"color": "rgb", "escala": "auto", "ancho": 640, "alto": 640}
+"npu": {"color": "rgb", "escala": "auto", "ancho": 0, "alto": 0}
 ```
 
 - `color`: `rgb` o `bgr` (por omisión `rgb`).
 - `escala`: `auto` (deducir del tensor), `ninguna` (el byte crudo), `unidad` (x/255) o `arcface` ((x−127.5)/127.5). Por omisión `auto`.
-- `ancho` y `alto`: tamaño de entrada del detector; `0` significa "el que tenga el `.nb`". Por omisión 640.
+- `ancho` y `alto`: tamaño de entrada del detector; `0` (por omisión) significa "el que tenga el `.nb`". Las anclas se escalan al tamaño de la entrada, así que el detector funciona con cualquier tamaño sin tocar la configuración.
+
+El embedder es otro modelo, con su propia cuantización y su propio tamaño de entrada, así que tiene sus propias claves: `embed_color`, `embed_escala`, `embed_ancho` y `embed_alto`. **Si no están, heredan el color y la escala del detector.** Por omisión, `embed_ancho` y `embed_alto` también son `0` (el tamaño del `.nb`).
 
 El bloque es opcional: si no está, el comportamiento es el de siempre. Un color o una escala desconocidos hacen fallar la carga de la configuración, como las demás claves.
 
@@ -213,7 +215,7 @@ El bloque es opcional: si no está, el comportamiento es el de siempre. Un color
 
 Medido en la placa: decodificar las 16 800 anclas bajó de **487 ms a 2,2 ms**, y un fotograma completo (preproceso 15 ms + inferencia 4-8 ms + decode 2 ms) queda por debajo de los 30 ms.
 
-**Lo que sigue siendo PROVISIONAL**, porque el `.nb` todavía no existe: la disposición de la salida del detector (15 valores por ancla), la convención de decodificación (varianzas 0.1/0.2/0.3/0.3 aplicadas al valor predicho **sin** factor de stride, al estilo de InsightFace; el stride solo fija la rejilla y el tamaño del ancla) y el tamaño de entrada del embedder (112x112, que todavía no tiene palanca de configuración). El color y la escala del detector sí se pueden ajustar ya, con el bloque `npu`. El código falla cerrado si el `.nb` no encaja con lo pedido; hay que contrastar estos supuestos con el modelo real en cuanto exista.
+**Lo que sigue siendo PROVISIONAL**, porque el `.nb` todavía no existe: la disposición de la salida del detector (15 valores por ancla) y la convención de decodificación (varianzas 0.1/0.2/0.3/0.3 aplicadas al valor predicho **sin** factor de stride, al estilo de InsightFace; el stride solo fija la rejilla y el tamaño del ancla). El color, la escala y los tamaños de entrada ya se pueden ajustar con el bloque `npu`. El código falla cerrado si el `.nb` no encaja con lo pedido; hay que contrastar estos supuestos con el modelo real en cuanto exista.
 
 ## El proceso de producción
 
@@ -229,9 +231,14 @@ El proceso (plan 6.2, un solo hilo de trabajo):
 - **Bucle**: `VisionService::poll()` cada `poll_ms` (20 ms por omisión) y una espera corta entre llamadas. Todo el trabajo ocurre en el hilo que llama a `poll()`; el hilo de red de libmosquitto solo encola mensajes.
 - **Señales**: `SIGINT` y `SIGTERM` paran el bucle. El manejador solo pone una bandera (`volatile std::sig_atomic_t`): no hace trabajo bloqueante ni lanza.
 - **Salida ordenada**: al parar, el proceso (1) cancela el registro en curso y publica su estado `cancelado`, apaga la luz y deja el modo del servicio en `inactivo` (`VisionService::shutdown()`); (2) publica `aula/vision/estado` con `en_linea: false` y el esquema completo (retenido); (3) vacía la cola de salida del bus (`MosquittoBus::flush()`) y solo entonces cierra el bus. Sin el paso (1), un `SIGTERM` en mitad de un registro dejaba la luz encendida y el enrolamiento a medias. Así el frontend no se queda con el servicio "en línea" y no queda retenido un "en línea" fantasma (ver "El bus MQTT"). El Will no hace falta en la salida ordenada: sigue puesto para la caída sin cerrar limpio.
-- **Detector y embedder**: con `--dry-run` son los dobles en memoria de `fakes.hpp`. Sin `--dry-run`, si existen los `.nb`, el proceso construye los adaptadores reales sobre la NPU (`NpuFaceDetector` y `NpuFaceEmbedder`, biblioteca `vision_models`) y los enchufa en el servicio. Si los `.nb` no están, termina con el código 78; si existen pero no encajan con el código (otra disposicion de salidas, otra entrada, otro formato), avisa del motivo y sale con el 78 tambien; si no se pueden cargar, avisa y sale con el 1. En producción nunca se arranca con los dobles. El driver de la NPU se crea antes que las redes para que viva más que ellas, y la NPU se usa solo desde el hilo de trabajo (el que llama a `poll()`): `npu::Network` no es seguro entre hilos.
+- **Detector y embedder**: con `--dry-run` son los dobles en memoria de `fakes.hpp`. Sin `--dry-run`, si existen los `.nb`, el proceso construye los adaptadores reales sobre la NPU (`NpuFaceDetector` y `NpuFaceEmbedder`, biblioteca `vision_models`) y los enchufa en el servicio. Si los `.nb` no están, o no encajan con el código (otra disposicion de salidas, otra entrada, otro formato), o el driver los rechaza (archivo truncado o corrupto), el proceso avisa del motivo y sale con el **78**; el 1 queda para los fallos transitorios (arrancar el bus MQTT, inicializar el driver). En producción nunca se arranca con los dobles. El driver de la NPU se crea antes que las redes para que viva más que ellas, y la NPU se usa solo desde el hilo de trabajo (el que llama a `poll()`): `npu::Network` no es seguro entre hilos.
 
-**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error** (código 1): es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código 78 (`EX_CONFIG`) es el de los errores de configuración: "faltan los modelos `.nb`" y "el `.nb` no encaja con el código".
+**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error**: es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código de salida distingue los dos tipos de fallo:
+
+| Código | Qué es | Qué hace systemd |
+|---|---|---|
+| **78** (`EX_CONFIG`) | Error de configuración: el archivo de configuración no existe o no es válido, falta una variable de entorno, faltan los modelos `.nb`, el `.nb` no encaja con el código o el driver lo rechaza | No reinicia (está en `RestartPreventExitStatus=78`): el fallo queda a la vista en el journal en vez de quedar enterrado en un bucle de reinicios |
+| **1** | Fallo transitorio: no se pudo arrancar el bus MQTT o inicializar el driver de la NPU | Reinicia en 5 s |
 
 ```bash
 build/vision_service --config /etc/pase-lista/vision.conf
@@ -257,7 +264,7 @@ El archivo de configuración es JSON, con las claves en español como el resto d
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN", "timeout_ms": 5000},
   "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45, "min_similitud_pose": 0.5},
   "servicio": {"poll_ms": 20, "max_inbox_events": 16, "modelo": "w600k_mbf-uint8-v1", "acepta_png": false},
-  "npu": {"color": "rgb", "escala": "auto", "ancho": 640, "alto": 640},
+  "npu": {"color": "rgb", "escala": "auto", "ancho": 0, "alto": 0},
   "http": {"allow_invalid_certificates": false, "ca_file": ""}
 }
 ```
@@ -284,10 +291,14 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
 | | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
 | | `acepta_png` | aceptar PNG además de JPEG (pruebas) | `false` |
-| `npu` | `color` | orden de color de la entrada (`rgb` o `bgr`) | `rgb` |
-| | `escala` | modo de escala (`auto`, `ninguna`, `unidad` o `arcface`) | `auto` |
-| | `ancho` | ancho de la entrada del detector (`0` = el del `.nb`) | `640` |
-| | `alto` | alto de la entrada del detector (`0` = el del `.nb`) | `640` |
+| `npu` | `color` | orden de color de la entrada del detector (`rgb` o `bgr`) | `rgb` |
+| | `escala` | modo de escala del detector (`auto`, `ninguna`, `unidad` o `arcface`) | `auto` |
+| | `ancho` | ancho de la entrada del detector (`0` = el del `.nb`) | `0` |
+| | `alto` | alto de la entrada del detector (`0` = el del `.nb`) | `0` |
+| | `embed_color` | orden de color de la entrada del embedder (si no está, el del detector) | el de `color` |
+| | `embed_escala` | modo de escala del embedder (si no está, el del detector) | el de `escala` |
+| | `embed_ancho` | ancho de la entrada del embedder (`0` = el del `.nb`) | `0` |
+| | `embed_alto` | alto de la entrada del embedder (`0` = el del `.nb`) | `0` |
 | `http` | `allow_invalid_certificates` | aceptar cualquier certificado (modo inseguro) | `false` |
 | | `ca_file` | ruta al CA (o al certificado de Node-RED) con el que se valida el servidor | `""` (los CA del sistema) |
 
@@ -365,7 +376,7 @@ Notas:
 - `EnvironmentFile=/etc/pase-lista/vision.env` tiene que existir: si falta, systemd no arranca la unidad. Para probarlo sin credenciales, se puede dejar el archivo con los placeholders.
 - `Restart=on-failure` y `RestartSec=5`: el servicio vuelve a levantarse solo si se cae. La salida por `SIGTERM` (código 0) no lo rearranca.
 - `TimeoutStopSec=30`: la salida ordenada necesita margen (el bucle puede estar en una recarga de la galería o en una captura), y 30 s lo dan.
-- `RestartPreventExitStatus=78`: el código 78 (`EX_CONFIG`) es el de los errores de configuración ("faltan los modelos `.nb`" y "el `.nb` no encaja con el código"). Es una configuración que falta o que no encaja, no un fallo del proceso: sin esta línea systemd lo relanzaría cada 5 s para siempre y llenaría el journal.
+- `RestartPreventExitStatus=78`: el código 78 (`EX_CONFIG`) es el de los errores de configuración (faltan los modelos `.nb`, el `.nb` no encaja con el código, el archivo de configuración no es válido, falta una variable de entorno). Son fallos de configuración, no del proceso: sin esta línea systemd lo relanzaría cada 5 s para siempre y llenaría el journal.
 - Endurecimiento del núcleo (`LimitCORE=0` para no dejar volcados de core y `UMask=0077` para que los archivos que cree el servicio solo los vea su usuario): está decidido, pero todavía no está en la unidad. Queda pendiente.
 - Sin los modelos `.nb`, el proceso no arranca: avisa por stderr y sale con el código 78. Es lo esperado hasta que existan (ver "Lo que falta"). Con `--dry-run` en el `ExecStart` se puede verificar el cableado sin modelos.
 
