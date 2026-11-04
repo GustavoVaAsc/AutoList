@@ -27,4 +27,13 @@ class SystemWallClock final : public WallClock {
 // opcionales, seguido de la zona "+HH:MM" o "-HH:MM".
 bool is_iso8601_with_zone(std::string_view text);
 
+// Primer ano que se acepta como hora real. Una placa sin NTP ni RTC arranca en 1970 y
+// Node-RED descarta (o revierte el consentimiento de) lo que lleve una hora anterior.
+inline constexpr int kMinPlausibleYear = 2000;
+
+// Hora usable para estampar un embedding: formato valido (is_iso8601_with_zone) y ano
+// de kMinPlausibleYear en adelante. Falso para "", para la hora de reserva de 1970 y
+// para cualquier texto mal formado.
+bool is_plausible_timestamp(std::string_view text);
+
 }  // namespace vision

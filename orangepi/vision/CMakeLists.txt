@@ -106,7 +106,8 @@ add_executable(test_core
   tests/test_json_payload.cpp
   tests/test_process_config.cpp
   tests/test_sharpness.cpp
-  tests/test_tensor.cpp)
+  tests/test_tensor.cpp
+  tests/test_wall_clock.cpp)
 target_link_libraries(test_core PRIVATE vision_core minitest_main)
 add_test(NAME core COMMAND test_core)
 

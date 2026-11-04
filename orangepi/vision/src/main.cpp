@@ -36,6 +36,7 @@
 #include "vision/mqtt_contract.hpp"
 #include "vision/process_config.hpp"
 #include "vision/vision_service.hpp"
+#include "vision/wall_clock.hpp"
 
 namespace {
 
@@ -244,6 +245,23 @@ int main(int argc, char** argv) {
     }
     std::cerr << "[vision] no existe " << ruta_config
               << ": se usan los valores por omision (--dry-run)\n";
+  }
+
+  // Una placa sin NTP ni RTC arranca en 1970. Solo se avisa: el pase de lista no
+  // depende de la hora, pero el registro (embedding) fallaria con el motivo npu.
+  {
+    std::string ahora;
+    try {
+      ahora = SystemWallClock().now_iso8601();
+    } catch (...) {
+      // Se trata como una hora ilegible, igual que una vacia.
+    }
+    if (!is_plausible_timestamp(ahora)) {
+      std::cerr << "[vision] AVISO: el reloj del sistema marca \"" << ahora
+                << "\" (anterior al ano " << kMinPlausibleYear
+                << " o ilegible): los registros fallaran con el motivo npu hasta que "
+                   "NTP o el RTC pongan la hora\n";
+    }
   }
 
   // Las credenciales no estan en el archivo de configuracion: se leen del entorno.
