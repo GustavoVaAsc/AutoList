@@ -50,10 +50,12 @@ struct ThresholdSettings {
   double min_sharpness = 0.0;
   float min_recognized_score = 0.60f;
   float min_dudoso_score = 0.45f;
-  // Similitud (coseno) minima entre una pose y la media de las demas para que la pose
-  // sobreviva al descarte de outliers del registro (plan 5.4, paso 5). PROVISIONAL: se
-  // recalibra con LFW (hito del 18 de noviembre, plan, secciones 9 y 12.1).
-  float min_similitud_pose = 0.60f;
+  // Similitud (coseno) minima entre una pose y la media de las candidatas para que la pose
+  // sobreviva al descarte de outliers del registro (plan 5.4, paso 5; el descarte es
+  // iterativo: solo se descarta la peor mientras su coseno con la media quede por debajo
+  // del umbral). PROVISIONAL: se recalibra con LFW (hito del 18 de noviembre, plan,
+  // secciones 9 y 12.1).
+  float min_similitud_pose = 0.50f;
 };
 
 // Bloque "servicio": el ritmo del bucle y lo que el servicio publica.

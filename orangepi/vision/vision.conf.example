@@ -22,7 +22,7 @@
     "min_sharpness": 0.0,
     "min_recognized_score": 0.6,
     "min_dudoso_score": 0.45,
-    "min_similitud_pose": 0.6
+    "min_similitud_pose": 0.5
   },
   "servicio": {
     "poll_ms": 20,

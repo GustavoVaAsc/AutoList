@@ -56,7 +56,7 @@ TEST(config_documento_vacio_usa_omisiones) {
   CHECK_NEAR(config.thresholds.min_sharpness, 0.0, 1e-9);
   CHECK_NEAR(config.thresholds.min_recognized_score, 0.6, 1e-6);
   CHECK_NEAR(config.thresholds.min_dudoso_score, 0.45, 1e-6);
-  CHECK_NEAR(config.thresholds.min_similitud_pose, 0.60, 1e-6);
+  CHECK_NEAR(config.thresholds.min_similitud_pose, 0.50, 1e-6);
   CHECK_EQ(config.service.poll_ms, 20);
   CHECK_EQ(config.service.max_inbox_events, std::size_t{16});
   CHECK_EQ(config.service.model_name, std::string("w600k_mbf-uint8-v1"));
