@@ -2,6 +2,7 @@
 // exactos de los campos, campos desconocidos ignorados y tipos erroneos rechazados
 // sin lanzar.
 
+#include <cmath>
 #include <optional>
 #include <string>
 #include <vector>
@@ -9,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "minitest.hpp"
+#include "vision/gallery.hpp"
 #include "vision/json_payload.hpp"
 
 namespace {
@@ -362,6 +364,30 @@ TEST(embedding_de_512_dimensiones) {
   CHECK_EQ(back->embedding.size(), std::size_t{512});
   CHECK_EQ(back->dim(), 512);
   CHECK_NEAR(back->embedding[100], 100.0f / 512.0f, 1e-4);
+}
+
+// Node-RED rechaza un embedding cuya norma L2 se aleja mas de 0.01 de 1. El redondeo
+// a 4 decimales de la serializacion no debe acercarse a ese limite.
+TEST(embedding_normalizado_conserva_la_norma_despues_de_serializar) {
+  std::vector<float> raw(512);
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    raw[i] = std::sin(static_cast<float>(i) * 0.37f) + 0.1f * static_cast<float>(i % 7);
+  }
+  EmbeddingMessage message;
+  message.timestamp = kTs;
+  message.account = "320068234";
+  message.model = "w600k_mbf-uint8-v1";
+  message.embedding = l2_normalized(raw);
+
+  const std::optional<std::string> text = json::serialize(message);
+  CHECK(text.has_value());
+  const nj::json doc = nj::json::parse(*text);
+  double sum = 0.0;
+  for (const nj::json& value : doc["embedding"]) {
+    const double x = value.get<double>();
+    sum += x * x;
+  }
+  CHECK_NEAR(std::sqrt(sum), 1.0, 2e-3);
 }
 
 TEST(embedding_rechaza_un_dim_que_no_cuadra_con_el_vector) {

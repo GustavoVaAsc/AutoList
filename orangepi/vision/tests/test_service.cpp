@@ -1077,6 +1077,124 @@ TEST(embedding_publish_failure_fails_the_enrollment_once) {
   CHECK(h.embeddings().empty());
 }
 
+// Un registro completo en el que el reloj se rompe DESPUES de aceptarse el enrolar (la
+// guarda del final): `break_clock` se aplica tras el primer poll.
+template <typename BreakClock>
+void run_enrollment_breaking_clock(Harness& h, const std::string& account, BreakClock break_clock) {
+  h.queue_frames(5);
+  h.command(VisionAction::Enroll, account);
+  h.service->poll();
+  CHECK(h.service->state() == ServiceState::Enrolling);
+  break_clock();
+  for (int i = 0; i < 5; ++i) h.enrollment_step();
+}
+
+bool has_status(const std::vector<EnrollmentProgress>& progress, EnrollmentStatus status) {
+  for (const EnrollmentProgress& p : progress) {
+    if (p.status == status) return true;
+  }
+  return false;
+}
+
+// Comprobaciones comunes de un registro cortado por el reloj al final.
+void check_clock_guard_failure(Harness& h, const CapturedStderr& log) {
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.embeddings().empty());
+  CHECK(!has_status(h.progress(), EnrollmentStatus::Completed));
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kNpu));
+  CHECK(log.count("reloj invalido") >= 1);
+  CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+}
+
+TEST(registro_con_reloj_vacio_al_final_no_publica_embedding_ni_completado) {
+  Harness h;
+  CapturedStderr log;
+  run_enrollment_breaking_clock(h, "100000002", [&] { h.wall_clock.value = ""; });
+  check_clock_guard_failure(h, log);
+}
+
+TEST(registro_con_hora_de_1970_al_final_no_publica_embedding_ni_completado) {
+  Harness h;
+  CapturedStderr log;
+  run_enrollment_breaking_clock(
+      h, "100000003", [&] { h.wall_clock.value = "1970-01-01T00:00:12.000+00:00"; });
+  check_clock_guard_failure(h, log);
+  CHECK(log.count("1970-01-01T00:00:12.000+00:00") >= 1);
+  CHECK_EQ(log.count("100000003"), std::size_t{0});  // sin datos del alumno en el log
+}
+
+TEST(registro_con_reloj_que_lanza_al_final_no_publica_embedding_ni_completado) {
+  Harness h;
+  CapturedStderr log;
+  run_enrollment_breaking_clock(h, "100000004", [&] {
+    h.wall_clock.on_now = [] { throw std::runtime_error("sin reloj"); };
+  });
+  check_clock_guard_failure(h, log);
+}
+
+TEST(registro_con_hora_mal_formada_al_final_no_publica_embedding_ni_completado) {
+  Harness h;
+  CapturedStderr log;
+  run_enrollment_breaking_clock(h, "100000005", [&] { h.wall_clock.value = "ayer por la tarde"; });
+  check_clock_guard_failure(h, log);
+}
+
+TEST(registro_con_hora_del_ultimo_instante_de_1999_falla) {
+  Harness h;
+  CapturedStderr log;
+  run_enrollment_breaking_clock(
+      h, "100000007", [&] { h.wall_clock.value = "1999-12-31T23:59:59.999+00:00"; });
+  check_clock_guard_failure(h, log);
+}
+
+TEST(registro_con_hora_del_primer_instante_de_2000_publica_el_embedding) {
+  Harness h;
+  run_enrollment_breaking_clock(
+      h, "100000008", [&] { h.wall_clock.value = "2000-01-01T00:00:00.000+00:00"; });
+  CHECK_EQ(h.embeddings().size(), std::size_t{1});
+  CHECK(has_status(h.progress(), EnrollmentStatus::Completed));
+}
+
+TEST(registro_con_hora_valida_sigue_publicando_el_embedding) {
+  Harness h;
+  run_enrollment_breaking_clock(h, "100000006", [] {});
+  CHECK_EQ(h.embeddings().size(), std::size_t{1});
+  CHECK(h.progress().back().status == EnrollmentStatus::Completed);
+}
+
+// El rechazo temprano: con el reloj ya invalido, el enrolar ni empieza.
+void check_enroll_rejected_by_clock(Harness& h, const CapturedStderr& log) {
+  h.command(VisionAction::Enroll, "100000009");
+  h.service->poll();
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(!ServiceTestAccess::has_enrollment(*h.service));
+  CHECK_EQ(h.progress().size(), std::size_t{1});
+  CHECK(h.progress()[0].status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress()[0].step, 0);
+  CHECK(h.progress()[0].pose.empty());
+  CHECK_EQ(h.progress()[0].reason.value(), std::string(enrollment_reasons::kNpu));
+  CHECK(h.light_commands().empty());
+  CHECK(h.embeddings().empty());
+  CHECK(h.http.requested_urls.empty());
+  CHECK(log.count("reloj invalido") >= 1);
+  CHECK_EQ(log.count("100000009"), std::size_t{0});
+}
+
+TEST(enrolar_con_reloj_de_1970_se_rechaza_sin_empezar_el_registro) {
+  Harness h;
+  h.wall_clock.value = "1970-01-01T00:00:05.000+00:00";
+  CapturedStderr log;
+  check_enroll_rejected_by_clock(h, log);
+}
+
+TEST(enrolar_con_reloj_vacio_se_rechaza_sin_empezar_el_registro) {
+  Harness h;
+  h.wall_clock.value = "";
+  CapturedStderr log;
+  check_enroll_rejected_by_clock(h, log);
+}
+
 TEST(finish_enrollment_frees_the_state_before_publishing_light_off) {
   Harness h;
   h.queue_frames(2);

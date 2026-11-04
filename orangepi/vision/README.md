@@ -46,6 +46,7 @@ tests/
   minitest.hpp             mini-runner propio
   test_json_payload.cpp    la capa JSON del contrato
   test_process_config.cpp  la configuración del proceso
+  test_wall_clock.cpp      la validación de la hora del reloj de pared
   test_httplib_client.cpp  el cliente HTTP (servidor httplib en el propio proceso)
   test_gallery_store.cpp   la galería en RAM
   test_mqtt_bus.cpp        el bus MQTT (integración contra un broker real)
@@ -360,6 +361,15 @@ Los payloads tipados de `include/vision/mqtt_contract.hpp` son el único lugar c
 
 El servicio estampa `ts` (ISO 8601 con zona) en los cuatro mensajes que publica: `resultado`, `enrolamiento`, `embedding` y `estado`. La hora la da el `WallClock` inyectado (`SystemWallClock` usa `system_clock` y `localtime_r`); el `Clock` de milisegundos no lleva fecha.
 
+**Contrato v0.7: el `ts` es obligatorio y tiene que salir de un reloj correcto.** Node-RED descarta los mensajes de `aula/vision/enrolamiento` y `aula/vision/embedding` cuyo `ts` falte, sea anterior al inicio del registro (con 2 s de margen) o posterior a la hora actual más 5 minutos. Un embedding con `ts` ilegible, vacío o anterior al año 2000 cierra el registro como `embedding_invalido` y **revierte el consentimiento**; además, rechaza el embedding si su norma L2 se aleja más de 0.01 de 1 (el servicio publica el promedio normalizado, y la serialización a 4 decimales lo deja a menos de 2e-3 de 1, comprobado en `tests/test_json_payload.cpp`). Por eso:
+
+- **Rechazo temprano.** Al recibir `enrolar`, el servicio comprueba el `ts` con `is_plausible_timestamp` (`wall_clock.hpp`: formato ISO 8601 con zona y año 2000 o posterior, el año escrito en la hora local). Si no es válido, rechaza la orden sin empezar el registro, como `ocupado` o `cuenta_invalida`: estado `error`, paso 0, sin pose y motivo `npu` (no se añade un motivo nuevo, para no cambiar el contrato). No enciende la luz ni hace posar al alumno. Deja en stderr una línea `reloj invalido` con el `ts` recibido, sin datos del alumno.
+- **Guarda del embedding.** Se repite la comprobación al aceptar la quinta pose, por si el reloj se rompe a mitad del registro. Con hora inválida no se publica `completado` ni el embedding: el registro termina con `error` y motivo `npu`, y el servicio vuelve a inactivo como en cualquier fin de registro.
+- **Con el reloj inválido, Node-RED también descarta el `error` de la visión**, porque lleva el mismo `ts` malo. El registro se cierra en Node-RED por vencimiento, a los 5 minutos sin progreso. Es un comportamiento aceptado.
+- **Aviso al arrancar.** `vision_service`, también con `--dry-run`, avisa por stderr si el reloj del sistema marca un año anterior a 2000 (una placa sin NTP ni RTC arranca en 1970). Solo avisa: el proceso no se detiene, porque el pase de lista no depende del registro. Mientras no haya hora correcta, los registros fallarán con `npu`.
+- **`completado` no cierra el registro en Node-RED.** Lo publica la visión antes que el embedding, por otro tópico y otra QoS, sin garantía de orden; el registro lo cierra el embedding guardado, `cancelado`, `error`, la cancelación del profesor o el vencimiento (5 minutos sin progreso).
+- **Cancelar.** `{"accion":"cancelar"}` sin cuenta cancela el registro en curso; con cuenta, solo si es la del registro en curso. Node-RED publica la forma con cuenta al vencer el registro.
+
 `aula/vision/estado` lo publica el servicio en cada cambio de modo (`inactivo`, `pase`, `enrolando`), con el número de embeddings en RAM y el nombre del modelo. El LWT `{"en_linea": false}` lo pone el adaptador MQTT, no el servicio.
 
 En `aula/vision/estado` hay **dos formas**: la que publica el servicio lleva el esquema completo (`ts`, `en_linea`, `modo`, `galeria` y `modelo`), y el Will que registra el broker lleva la forma **mínima**, `{"en_linea": false}`: no puede llevar `ts` ni el resto, porque el Will se registra al conectar. En el estado, `en_linea` es el único campo obligatorio y el resto se acepta ausente, así que un consumidor con esta capa no descarta el Will. El estado final de la salida ordenada lleva el esquema completo.
@@ -411,7 +421,7 @@ Lo que llega por MQTT y por HTTP se trata como no fiable (ver `ServiceConfig`):
 - **Límites de entrada.** El JSON que llega de la red tiene dos topes, comprobados antes de parsearlo: 64 KiB de tamaño y 32 niveles de anidamiento (`kMaxDocumentBytes` y `kMaxDocumentDepth` en `json_payload.hpp`). El parser de nlohmann es descendente y recursivo, así que un documento muy anidado podría agotar la pila; un documento que supera los topes se rechaza sin lanzar y sin tumbar el proceso. El cliente MQTT pone su propio tope de paquete, también de 64 KiB, por debajo del que permite el broker (256 KiB).
 
 - Cola de eventos acotada (`max_inbox_events`, 16, mínimo 4). Lo que llega con la cola llena se descarta sin responder y se deja una línea en stderr por poll, sin el contenido. Un PIR, un `enrolar` y un `probar` en cola cuentan uno cada uno; un `enrolar` con cuenta inválida se descarta antes de ocupar lugar (Node-RED valida al alumno antes de publicar, plan 5.4 paso 2); un lugar queda reservado para `cancelar`.
-- `no_cuenta` de exactamente 9 dígitos ASCII (`is_valid_account`); `enrolar` con otra cosa se rechaza con `cuenta_invalida`, y `Gallery::upsert` la rechaza con `std::invalid_argument`. Los rechazos de órdenes (`ocupado`, `cuenta_invalida`) salen con estado `error`, paso 0 y sin pose; un registro en curso que falla sale con estado `error` y motivo `npu` (o `inconsistente` si las poses dan embeddings de distinta dimensión).
+- `no_cuenta` de exactamente 9 dígitos ASCII (`is_valid_account`); `enrolar` con otra cosa se rechaza con `cuenta_invalida`, y `Gallery::upsert` la rechaza con `std::invalid_argument`. Los rechazos de órdenes (`ocupado`, `cuenta_invalida`) salen con estado `error`, paso 0 y sin pose; un registro en curso que falla sale con estado `error` y motivo `npu` (también si el reloj no da una hora válida para el embedding; o `inconsistente` si las poses dan embeddings de distinta dimensión).
 - Fotos: el adaptador HTTP debe cortar la transferencia al pasar `max_body_bytes` y respetar el plazo de toda la petición (`HttpClient::get`). El servicio vuelve a comprobar el tamaño y lee el formato y las dimensiones de la cabecera antes de decodificar; solo acepta JPEG baseline o secuencial extendido de 8 bits con un único scan entrelazado (nunca progresivo, aritmético ni de varios scans, que se pueden construir para gastar CPU al decodificar) y PNG solo con `accept_png` (pruebas).
 
 ## El cliente HTTP
@@ -430,21 +440,21 @@ La comunicación con Node-RED por HTTPS usa un certificado autofirmado. `HttpCli
 
 `GalleryStore` (`include/vision/gallery_store.hpp`, `src/gallery_store.cpp`) mantiene la galería en RAM alimentada por el borde.
 
-- **Cabecera `X-Galeria-Token`.** Desde el 11 de noviembre, `GET /api/galeria` exige `httpNodeAuth` y ese encabezado (`GALERIA_TOKEN`, plan, secciones 6.2 y 6.7). El token viene de la configuración del servicio, nunca del repo: no se versiona en ningún archivo de este checkout.
+- **Cabecera `X-Galeria-Token`.** `GET /api/galeria` exige solo ese encabezado (`GALERIA_TOKEN`, plan, secciones 6.2 y 6.7), sin HTTP Basic: el resto de `/api/*` sí exige Basic del profesor, y Node-RED lo resuelve con un `httpNodeMiddleware` propio (no con `httpNodeAuth`, que bloquearía a la visión). Sin token o con uno erróneo responde 401. Es de solo lectura (`GET`), así que la cabecera `X-Pase-Lista: 1` que el resto de la API exige al cambiar datos no afecta a la visión (contrato v0.6). El token viene de la configuración del servicio, nunca del repo: no se versiona en ningún archivo de este checkout.
 - **Alta.** `aula/vision/galeria/alta` solo trae la cuenta, no el embedding: así el embedding no viaja otra vez por MQTT y la galería siempre sale de la base. Por eso el alta recarga la galería entera con `GET /api/galeria`.
 - **Baja.** `aula/vision/galeria/baja` borra esa cuenta de la galería en RAM.
 - **Recarga completa.** `reload()` deja la galería en RAM igual que la que devuelve el servidor (quita las cuentas que ya no están). Si la petición falla o la respuesta no se entiende, devuelve `false` y la galería en RAM no se toca. Las recargas se serializan: la última que termina es la que se queda.
 - **Dimensión mayoritaria.** Al cargar, la dimensión no la fija la primera entrada, sino la que trae más entradas (la mayoritaria; en un empate se queda la menor). Las entradas cuya dimensión no cuadra con esa se descartan, y se avisa por stderr con cuántas son. Si la fijara la primera entrada, una entrada corrupta al principio dejaría la galería con una sola entrada y con la dimensión equivocada, y cada pase de lista acabaría en `decision: error`.
 
-### Formato provisional
+### Formato de la respuesta
 
-El contrato (`docs/contrato-mqtt.md`, sección 4) fija el endpoint y el encabezado, pero NO el formato de la respuesta de `GET /api/galeria`. El parser es tolerante a las formas que se listaron abajo; el formato es PROVISIONAL y queda pendiente de que el carril del borde lo confirme:
+Desde el contrato v0.6 (`docs/contrato-mqtt.md`, sección 4) el formato de `GET /api/galeria` es fijo:
 
 ```
 {"embeddings":[{"cuenta":"320068234","embedding":[...]}]}
-{"alumnos":[...]}
-[{"cuenta":"320068234","embedding":[...]}]
 ```
+
+El parser sigue aceptando también las formas antiguas (`{"alumnos":[...]}` y un arreglo plano), por tolerancia; el contrato solo garantiza la primera.
 
 Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite de la galería en RAM.
 

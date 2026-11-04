@@ -467,6 +467,15 @@ int VisionService::elapsed_ms(TimePoint since) const {
       std::chrono::duration_cast<Millis>(deps_.clock.now() - since).count());
 }
 
+namespace {
+
+void log_invalid_clock(const std::string& timestamp) {
+  std::cerr << "[vision] reloj invalido: no se puede registrar (ts recibido: \"" << timestamp
+            << "\"); revisa NTP o el RTC\n";
+}
+
+}  // namespace
+
 // --- Registro (plan 5.4) ----------------------------------------------------------
 
 void VisionService::start_enrollment(const std::string& account,
@@ -478,6 +487,14 @@ void VisionService::start_enrollment(const std::string& account,
   if (state_ != ServiceState::Idle) {
     // Ya hay un registro o un pase de lista en curso.
     publish_refusal(account, reasons::kBusy);
+    return;
+  }
+  // Sin hora valida el embedding final no se podria publicar: se rechaza la orden antes
+  // de encender la luz o de hacer posar al alumno (motivo npu, como el resto de fallos).
+  const std::string timestamp = stamp_now();
+  if (!is_plausible_timestamp(timestamp)) {
+    log_invalid_clock(timestamp);
+    publish_refusal(account, enrollment_reasons::kNpu);
     return;
   }
   // El registro se arma en un local y solo entonces se instala junto con el estado: si algo
@@ -555,6 +572,17 @@ void VisionService::advance_enrollment() {
     return;
   }
 
+  // Node-RED descarta el embedding sin hora valida y revierte el consentimiento. Si el
+  // reloj se rompio a mitad del registro (1970, vacio o mal formado), falla aqui con el
+  // motivo npu (sin motivos nuevos: el contrato no cambia), sin publicar "completado".
+  const std::string timestamp = stamp_now();
+  if (!is_plausible_timestamp(timestamp)) {
+    log_invalid_clock(timestamp);
+    publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kNpu);
+    finish_enrollment();
+    return;
+  }
+
   // Las 5 poses aceptadas: se avisa con "completado" y despues se publica el embedding.
   publish_progress(e, EnrollmentStatus::Completed);
   // Promedio de embeddings normalizados, normalizado de nuevo (el descarte de outliers
@@ -562,7 +590,7 @@ void VisionService::advance_enrollment() {
   std::optional<EmbeddingMessage> message;
   try {
     EmbeddingMessage embedding_message;
-    embedding_message.timestamp = stamp_now();
+    embedding_message.timestamp = timestamp;
     embedding_message.account = e.account;
     embedding_message.model = config_.model_name;
     embedding_message.embedding = l2_normalized(mean_embedding(e.embeddings));

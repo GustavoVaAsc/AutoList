@@ -76,4 +76,12 @@ bool is_iso8601_with_zone(std::string_view text) {
   return all_digits(text, pos + 4, 2);
 }
 
+bool is_plausible_timestamp(std::string_view text) {
+  if (!is_iso8601_with_zone(text)) return false;
+  // Los cuatro primeros caracteres son cifras (lo garantiza is_iso8601_with_zone).
+  const int year = (text[0] - '0') * 1000 + (text[1] - '0') * 100 + (text[2] - '0') * 10 +
+                   (text[3] - '0');
+  return year >= kMinPlausibleYear;
+}
+
 }  // namespace vision
