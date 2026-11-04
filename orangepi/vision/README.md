@@ -1,6 +1,6 @@
 # Servicio de visión (C++, nativo)
 
-Servicio de visión del plan (`docs/HIGH-LEVEL-PLAN.md`, secciones 5.1, 5.4, 6.2 y 7.1). Sigue siendo agnóstico a dos decisiones: el detector y el reconocedor (y la dimensión de su embedding), que viven detrás de interfaces y solo tienen dobles en memoria. Las librerías de MQTT y HTTP ya no son una de esas decisiones: hay adaptadores reales (libmosquitto y cpp-httplib) detrás de las mismas interfaces. El contrato MQTT (`docs/contrato-mqtt.md`) está codificado en los payloads tipados y en la capa JSON.
+Servicio de visión del plan (`docs/HIGH-LEVEL-PLAN.md`, secciones 5.1, 5.4, 6.2 y 7.1). Sigue siendo agnóstico a una decisión: el modelo concreto (el detector y el reconocedor, y la dimensión de su embedding), que vive detrás de interfaces y detrás de la NPU. Las librerías de MQTT y HTTP ya no son una de esas decisiones: hay adaptadores reales (libmosquitto y cpp-httplib) detrás de las mismas interfaces, y los adaptadores del detector y el embedder sobre la NPU también existen (`NpuFaceDetector` y `NpuFaceEmbedder`), aunque los `.nb` todavía no. El contrato MQTT (`docs/contrato-mqtt.md`) está codificado en los payloads tipados y en la capa JSON.
 
 ## Estructura
 
@@ -18,6 +18,10 @@ include/vision/
   process_config.hpp  la configuración del proceso (archivo JSON) y su mapeo a ServiceConfig
   face_detector.hpp   interfaz FaceDetector (imagen -> bbox, score, 5 landmarks)
   face_embedder.hpp   interfaz FaceEmbedder (recorte 112x112 -> vector<float>)
+  npu_face_detector.hpp  FaceDetector real sobre la NPU (preproceso + decodificacion)
+  npu_face_embedder.hpp  FaceEmbedder real sobre la NPU (preproceso + desquantizacion)
+  npu_preprocess.hpp  preproceso de imagen hacia el tensor de entrada ([w, h, c, n])
+  retinaface_decode.hpp  decodificador de RetinaFace en CPU: anclas, cajas, landmarks y NMS
   clock.hpp           Clock inyectable (now / sleep_for)
   alignment.hpp       alineación por similitud a 112x112 (Umeyama, referencia ArcFace)
   image_header.hpp    formato y dimensiones de un JPEG (solo baseline) o PNG leídas de la cabecera, sin decodificar
@@ -35,6 +39,10 @@ src/
   httplib_client.cpp  implementación del cliente HTTP
   gallery_store.cpp   implementación del store de la galería
   main.cpp            el proceso de producción (binario `vision_service`)
+  npu_face_detector.cpp  el detector sobre la NPU
+  npu_face_embedder.cpp  el embedder sobre la NPU
+  npu_preprocess.cpp  el preproceso de imagen (resize, color, escala, cuantizacion)
+  retinaface_decode.cpp  el decodificador de RetinaFace (anclas, cajas, landmarks, NMS)
   dry_run.cpp         recorrido en seco con los dobles (binario `vision_dry_run`)
 apps/
   camara_falsa.cpp    servidor de prueba: una JPEG sintética en GET /capture
@@ -54,15 +62,18 @@ vision.conf.example  ejemplo del archivo de configuración (sin secretos)
 vision.env.example   ejemplo del archivo de credenciales (con placeholders)
 ```
 
-### Las tres bibliotecas
+### Las cuatro bibliotecas
 
 | Biblioteca | Qué lleva | Dependencias |
 |---|---|---|
 | `vision_core` | La lógica pura: máquina de estados, galería, alineación, cabecera de imagen, nitidez, tensores, capa JSON y `WallClock`. Sin red. | OpenCV, nlohmann/json |
 | `vision_npu` | El wrapper RAII de VIPLite (`npu::Driver`, `npu::Network`). | `vision_core`, runtime del fabricante |
+| `vision_models` | Los adaptadores reales sobre la NPU: `NpuFaceDetector` y `NpuFaceEmbedder`. | `vision_npu` |
 | `vision_transport` | Los tres adaptadores reales: `MosquittoBus`, `HttplibClient` y `GalleryStore`. | `vision_core`, libmosquitto, cpp-httplib, nlohmann/json, pthread |
 
 `vision_transport` está aparte a propósito: `vision_core` se queda sin dependencias de red, para que las pruebas del núcleo sigan siendo rápidas y no dependan de que haya un broker o un servidor HTTP en la máquina. Los adaptadores implementan las interfaces (`MessageBus`, `HttpClient`) que el núcleo consume, así que el servicio no sabe si detrás hay un bus real o un doble en memoria.
+
+`vision_models` va aparte por lo mismo: los adaptadores de la NPU necesitan `vision_npu`, que ya depende de `vision_core`; meterlos en `vision_core` crearía una dependencia circular. Lo que sí vive en `vision_core` es el preproceso de imagen y el decodificador de RetinaFace, porque son funciones puras y se prueban sin NPU.
 
 ## Compilar
 
@@ -123,7 +134,7 @@ Al terminar, el contenedor se borra con:
 docker rm -f vision-mosquitto-test
 ```
 
-Las pruebas `npu` y `npu_smoke_vendor_model` necesitan `/dev/vipcore` (y los archivos de `/opt/vpm_run`): solo se registran si existe, llevan la etiqueta `board` y se pueden elegir o excluir con `ctest -L board` y `ctest -LE board`. Si el runtime VIPLite no está en `/usr`, se indica con `-DVIPLITE_ROOT=<prefijo>` (o la variable de entorno del mismo nombre). La configuración exige OpenCV 4.6.x.
+Las pruebas `npu`, `npu_adapters` y `npu_smoke_vendor_model` necesitan `/dev/vipcore` (y los archivos de `/opt/vpm_run`): solo se registran si existe, llevan la etiqueta `board` y se pueden elegir o excluir con `ctest -L board` y `ctest -LE board`. `npu_adapters` comprueba el cableado de punta a punta de los adaptadores (preproceso, `set_input`, ejecución y lectura de la salida) con el modelo de ejemplo del fabricante. Si el runtime VIPLite no está en `/usr`, se indica con `-DVIPLITE_ROOT=<prefijo>` (o la variable de entorno del mismo nombre). La configuración exige OpenCV 4.6.x.
 
 ## Probar la NPU
 
@@ -178,7 +189,7 @@ El proceso (plan 6.2, un solo hilo de trabajo):
 - **Bucle**: `VisionService::poll()` cada `poll_ms` (20 ms por omisión) y una espera corta entre llamadas. Todo el trabajo ocurre en el hilo que llama a `poll()`; el hilo de red de libmosquitto solo encola mensajes.
 - **Señales**: `SIGINT` y `SIGTERM` paran el bucle. El manejador solo pone una bandera (`volatile std::sig_atomic_t`): no hace trabajo bloqueante ni lanza.
 - **Salida ordenada**: al parar, el proceso (1) cancela el registro en curso y publica su estado `cancelado`, apaga la luz y deja el modo del servicio en `inactivo` (`VisionService::shutdown()`); (2) publica `aula/vision/estado` con `en_linea: false` y el esquema completo (retenido); (3) vacía la cola de salida del bus (`MosquittoBus::flush()`) y solo entonces cierra el bus. Sin el paso (1), un `SIGTERM` en mitad de un registro dejaba la luz encendida y el enrolamiento a medias. Así el frontend no se queda con el servicio "en línea" y no queda retenido un "en línea" fantasma (ver "El bus MQTT"). El Will no hace falta en la salida ordenada: sigue puesto para la caída sin cerrar limpio.
-- **Detector y embedder**: hoy son los dobles en memoria de `fakes.hpp`, así que el proceso solo arranca en `--dry-run` (ver "Probar sin modelos"). Cuando existan los modelos `.nb`, se enchufan en `src/main.cpp`, donde ya está el punto de extensión.
+- **Detector y embedder**: con `--dry-run` son los dobles en memoria de `fakes.hpp`. Sin `--dry-run`, si existen los `.nb`, el proceso construye los adaptadores reales sobre la NPU (`NpuFaceDetector` y `NpuFaceEmbedder`, biblioteca `vision_models`) y los enchufa en el servicio. Si los `.nb` no están, termina con el código 78; si están pero no se pueden cargar, avisa del motivo y termina con error: en producción nunca se arranca con los dobles. El driver de la NPU se crea antes que las redes para que viva más que ellas, y la NPU se usa solo desde el hilo de trabajo (el que llama a `poll()`): `npu::Network` no es seguro entre hilos.
 
 **Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error** (código 1): es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código 78 (`EX_CONFIG`) es el de "faltan los modelos `.nb`".
 
@@ -272,7 +283,7 @@ El modo inseguro es un riesgo conocido y aceptado (ver "Limitaciones conocidas")
 
 ## Recorrido en seco
 
-`build/vision_dry_run` es un arnés de recorrido en seco sobre los dobles: cablea la máquina de estados real con los dobles en memoria y reproduce un pase de lista y un registro. No hay broker, cámara ni modelos. Los adaptadores reales ya existen (`MosquittoBus`, `HttplibClient`, `GalleryStore`) y el proceso de producción los usa; lo que sigue sin existir es el detector y el embedder sobre la NPU.
+`build/vision_dry_run` es un arnés de recorrido en seco sobre los dobles: cablea la máquina de estados real con los dobles en memoria y reproduce un pase de lista y un registro. No hay broker, cámara ni modelos. Los adaptadores reales ya existen (`MosquittoBus`, `HttplibClient`, `GalleryStore`, `NpuFaceDetector` y `NpuFaceEmbedder`) y el proceso de producción los usa; lo que sigue sin existir son los modelos `.nb`.
 
 ## La unidad systemd
 
@@ -518,7 +529,7 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 
 ## Lo que falta
 
-- Los modelos `.nb` (RetinaFace y `w600k_mbf`) y el detector y el embedder concretos sobre la NPU (decodificación de salidas, preproceso). Se construyen sobre `npu::Network`; el punto de extensión está en `src/main.cpp`, donde hoy van los dobles en memoria. Sin ellos, el proceso de producción no arranca: solo arranca en `--dry-run`.
+- Los modelos `.nb` (RetinaFace y `w600k_mbf`). Los adaptadores sobre la NPU ya existen (`NpuFaceDetector` y `NpuFaceEmbedder`, con el preproceso de imagen y el decodificador de RetinaFace en CPU), pero los supuestos sobre el `.nb` (disposición de la salida del detector, convenciones de decodificación, color y normalización de la entrada) están **PROVISIONALES** en los comentarios: hay que confirmarlos contra el modelo real en cuanto exista. Sin los modelos, el proceso de producción no arranca: solo arranca en `--dry-run`.
 - Scripts de prueba en la placa (broker de pruebas propio, arranque y parada del servicio) más allá de `tools/humo.sh` y `mqtt_probe`.
 - Miniaturas en el progreso del registro.
 - Chequeo antifraude.
