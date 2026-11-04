@@ -175,6 +175,32 @@ cd /opt/vpm_run && ./vpm_run -s sample.txt -l 2 -d 0
 
 El índice de dispositivo es `0`: con `-d 1` el programa falla con `value is more than device count=1`. Si termina con `vpm run ret=0`, la NPU sigue viva.
 
+## Los adaptadores sobre la NPU
+
+`NpuFaceDetector` y `NpuFaceEmbedder` (biblioteca `vision_models`) son los adaptadores reales detrás de las interfaces `FaceDetector` y `FaceEmbedder`: preprocesan la imagen, la echan al tensor de entrada, corren la red y leen la salida. Con `--dry-run` siguen sin usarse (mandan los dobles en memoria).
+
+**El modo de escala se deduce del tensor, no se elige a mano.** Por omisión es `ScaleMode::Auto`, que deduce el dominio real de la entrada a partir de su cuantización:
+
+| Tensor de entrada | Modo deducido |
+|---|---|
+| 8 bits con cuantización afín, `scale ≈ 1/255` y `zero_point = 0` | `Unit` (x/255): el dominio real es [0,1] |
+| 8 bits sin cuantización | `None`: el valor real es el byte de la imagen |
+| 8 bits con otra cuantización afín | **falla cerrado**: hay que confirmar la convención |
+| punto flotante, o punto fijo dinámico | **falla cerrado**: hay que elegir el modo a mano |
+
+El motivo de que esto sea automático: con el modo equivocado, `quantize` satura la entrada a 255 en silencio y la red ve una imagen casi blanca. Con la galería poblada, los embeddings salen casi idénticos y la primera entrada de la galería gana todos los empates: cualquier cara se reconoce como el alumno registrado primero. Por eso `quantize` además cuenta los valores recortados y falla si saturan más del 1%: una imagen que satura es un error de configuración, no un dato de entrada.
+
+**Todo se valida al arrancar, no en pleno registro.** Los constructores comprueban el número de entradas (debe ser 1), el formato de la salida (que tiene que estar soportado por `dequantize`), el número de elementos de la salida frente a lo que espera el layout, los índices de salida del layout, el tamaño de la entrada (con un techo de 4096 px por lado y lote 1) y que los bytes necesarios quepan en el tensor **antes** de reservar memoria. Si algo no cuadra, el proceso avisa del motivo y sale con error: es preferible no arrancar a fallar con el alumno posando y la luz encendida.
+
+**El decodificador de RetinaFace** (funciones puras, sin NPU, probadas con tensores sintéticos) genera las anclas de tres strides (8, 16, 32) con dos anclas por posición, decodifica cajas y landmarks, y aplica NMS. Dos decisiones de rendimiento, porque el servicio tiene un solo hilo de trabajo con `poll_ms = 20`:
+
+- Las anclas se **cachean** en el detector: dependen solo del tamaño de entrada, no de la imagen.
+- El NMS recibe solo las **500 cajas de mejor score** (como el RetinaFace de referencia con "nms top 500"), en vez de comparar entre sí las 16 800 anclas.
+
+Medido en la placa: decodificar las 16 800 anclas bajó de **487 ms a 2,2 ms**, y un fotograma completo (preproceso 15 ms + inferencia 4-8 ms + decode 2 ms) queda en el orden de los 20 ms.
+
+**Lo que sigue siendo PROVISIONAL**, porque el `.nb` todavía no existe: la disposición de la salida del detector (15 valores por ancla), la convención de decodificación (varianzas 0.1/0.2/0.3/0.3 aplicadas al valor predicho **sin** factor de stride, al estilo de InsightFace; el stride solo fija la rejilla y el tamaño del ancla), el color por omisión (RGB) y el tamaño de entrada (640x640 el detector, 112x112 el embedder). El código falla cerrado si el `.nb` no encaja con lo pedido; hay que contrastar estos supuestos con el modelo real en cuanto exista.
+
 ## El proceso de producción
 
 `build/vision_service` es el binario de producción: el proceso que corre en la Orange Pi, el que lanza systemd y el que se comunica con el broker y con la cámara. `build/vision_dry_run` es el recorrido en seco (ver la sección siguiente).
