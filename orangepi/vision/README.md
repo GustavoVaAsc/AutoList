@@ -238,7 +238,7 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | `umbrales` | `min_sharpness` | varianza mínima del Laplaciano | `0.0` |
 | | `min_recognized_score` | umbral de "reconocido" | `0.6` |
 | | `min_dudoso_score` | umbral de "dudoso" | `0.45` |
-| | `min_similitud_pose` | similitud mínima (coseno) de una pose con la media de las otras cuatro; por debajo se descarta la pose | `0.6` |
+| | `min_similitud_pose` | similitud mínima (coseno) de la peor pose con la media de las candidatas; por debajo se descarta esa pose y se recalcula la media | `0.5` |
 | `servicio` | `poll_ms` | periodo del bucle | `20` |
 | | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
 | | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
