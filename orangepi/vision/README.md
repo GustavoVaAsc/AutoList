@@ -227,6 +227,7 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | `umbrales` | `min_sharpness` | varianza mínima del Laplaciano | `0.0` |
 | | `min_recognized_score` | umbral de "reconocido" | `0.6` |
 | | `min_dudoso_score` | umbral de "dudoso" | `0.45` |
+| | `min_similitud_pose` | similitud mínima (coseno) de una pose con la media de las otras cuatro; por debajo se descarta la pose | `0.6` |
 | `servicio` | `poll_ms` | periodo del bucle | `20` |
 | | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
 | | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
@@ -371,6 +372,28 @@ Además del resultado, comprueba tres cosas:
 
 No toca los contenedores del proyecto `pase-lista`: el broker real corre en el 1883 y ahí no se entra. Sale con código 0 si llegó el resultado y con código distinto de cero si no.
 
+### `herramientas/alinear_lfw.sh`: alinear un dataset a 112x112
+
+```bash
+herramientas/alinear_lfw.sh --manifest RUTA --out DIR
+```
+
+Alinea las imagenes de un manifiesto a 112x112 con **el mismo warp de 5 puntos que usa el servicio**: la transformada de similitud (Umeyama) de los 5 landmarks a `kArcFaceReference` y el `warpAffine` de `vision::align_face`. La herramienta llama a esa funcion, no la reimplementa, asi que el recorte es identico al de produccion (se comprobo pixel a pixel).
+
+Sirve para dos cosas: el set de calibracion del `.nb` (Acuity/Pegasus) y el ajuste de los umbrales con LFW (18 de noviembre).
+
+El manifiesto tiene una linea por imagen, con la ruta y los 5 landmarks en pixeles de la imagen:
+
+```
+ruta_de_imagen<TAB>x1 y1 x2 y2 x3 y3 x4 y4 x5 y5
+```
+
+Los puntos van en el orden de `FaceDetection::landmarks`: ojo izquierdo, ojo derecho, nariz, boca izquierda, boca derecha. Las lineas vacias y las que empiezan por `#` se ignoran; una linea mal formada es un error (codigo de salida 1). Las imagenes que no se pueden leer, o con landmarks degenerados, se omiten con un aviso y el script sigue. La salida es un PNG de 112x112 por imagen, con el nombre base de la original.
+
+El script compila el programa en un directorio temporal: no toca el repositorio, solo escribe en el directorio de salida.
+
+**De donde salen los landmarks importa.** Para calibrar el `.nb` el recorte tiene que ser **el mismo que vera la placa**, o sea el que produce el detector con sus landmarks. Los landmarks que trae LFW sirven para el ajuste de umbrales, pero no para la cuantizacion del modelo: hay que regenerar el manifiesto con el detector cuando exista.
+
 ### Probar el servicio sin modelos
 
 `--dry-run` usa el bus MQTT **real** y el cliente HTTP **real**, pero con el detector y el embedder falsos: verifica el cableado completo (broker, cámara, galería, contrato MQTT) sin los `.nb`.
@@ -498,8 +521,8 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 - Los modelos `.nb` (RetinaFace y `w600k_mbf`) y el detector y el embedder concretos sobre la NPU (decodificación de salidas, preproceso). Se construyen sobre `npu::Network`; el punto de extensión está en `src/main.cpp`, donde hoy van los dobles en memoria. Sin ellos, el proceso de producción no arranca: solo arranca en `--dry-run`.
 - Scripts de prueba en la placa (broker de pruebas propio, arranque y parada del servicio) más allá de `tools/humo.sh` y `mqtt_probe`.
 - Miniaturas en el progreso del registro.
-- Chequeo antifraude y descarte de outliers.
+- Chequeo antifraude.
 - Validaciones por pose del registro (rostro único, tamaño, giro).
 - Mejora de imagen (CLAHE y gamma).
-- Umbrales calibrados: `min_sharpness`, `min_recognized_score` y `min_dudoso_score` de `ServiceConfig` son valores provisionales (la calibración con LFW es el hito del 18 de noviembre).
+- Umbrales calibrados: `min_sharpness`, `min_recognized_score`, `min_dudoso_score` y `min_pose_similarity` de `ServiceConfig` son valores provisionales (la calibración con LFW es el hito del 18 de noviembre).
 - Endurecimiento del núcleo en la unidad systemd: `LimitCORE=0` y `UMask=0077` (decididos, pendientes de aplicarlos a `orangepi/systemd/orangepi-vision.service`).
