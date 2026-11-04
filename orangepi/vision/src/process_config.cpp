@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp>
 
@@ -336,6 +337,14 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
               error)) {
     return false;
   }
+  // El nombre del modelo se convierte en una ruta: solo puede llevar letras, digitos,
+  // punto, guion y guion bajo (un "../" ejecutaria un .nb de donde quiera).
+  if (!exigir(nombre_modelo_valido(config.service.model_name), "servicio", "modelo",
+              "solo puede llevar letras, digitos, punto, guion y guion bajo (hasta 64 "
+              "caracteres)",
+              error)) {
+    return false;
+  }
 
   if (!seccion(parsed, "http", bloque, error)) return false;
   if (!solo_claves(bloque, {"allow_invalid_certificates", "ca_file"}, "http", error)) {
@@ -383,6 +392,34 @@ bool load_process_config(const std::string& path, ProcessConfig& out, bool& foun
     return false;
   }
   return parse_process_config(buffer.str(), out, error);
+}
+
+bool nombre_modelo_valido(const std::string& nombre) {
+  if (nombre.empty() || nombre.size() > 64) return false;
+  // "." y ".." son nombres de directorio, no de archivo.
+  if (nombre == "." || nombre == "..") return false;
+  for (const char caracter : nombre) {
+    const bool valido = (caracter >= 'A' && caracter <= 'Z') ||
+                        (caracter >= 'a' && caracter <= 'z') ||
+                        (caracter >= '0' && caracter <= '9') || caracter == '.' ||
+                        caracter == '_' || caracter == '-';
+    if (!valido) return false;
+  }
+  return true;
+}
+
+std::filesystem::path ruta_modelo(const std::string& nombre,
+                                  const std::filesystem::path& directorio) {
+  if (!nombre_modelo_valido(nombre)) {
+    throw std::invalid_argument("ruta_modelo: el nombre del modelo no es valido");
+  }
+  const std::filesystem::path ruta = directorio / (nombre + ".nb");
+  // La ruta tiene que seguir dentro del directorio de modelos.
+  const std::filesystem::path relativa = ruta.lexically_relative(directorio);
+  if (relativa.empty() || relativa.native().rfind("..", 0) == 0) {
+    throw std::invalid_argument("ruta_modelo: la ruta del modelo sale del directorio de modelos");
+  }
+  return ruta;
 }
 
 }  // namespace vision

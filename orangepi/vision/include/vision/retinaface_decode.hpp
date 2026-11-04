@@ -11,7 +11,11 @@
 //  - La salida del detector trae, por ancla y en este orden: cx, cy, w, h, score y los
 //    10 offsets de los 5 landmarks (5 pares x, y). Los valores de caja y de landmark son
 //    "distancias" que se decodifican con las varianzas estandar de RetinaFace
-//    (0.1, 0.2, 0.3, 0.3) y la escala del stride.
+//    (0.1, 0.2, 0.3, 0.3). PROVISIONAL: la convencion es la clasica de RetinaFace
+//    (la de insightface): las varianzas se aplican al valor predicho, que ya esta en
+//    unidades de la imagen, y el stride NO multiplica (el stride solo fija la rejilla de
+//    posiciones y el tamano del ancla). Hay que contrastarlo con el .nb real cuando
+//    exista.
 //  - Las anclas del tensor salen en el mismo orden que generate_anchors(): por stride,
 //    luego por fila y columna, y dentro de cada posicion las anclas del stride.
 //  - El score es una probabilidad en [0, 1] (la sigmoid esta dentro del modelo).
@@ -54,6 +58,10 @@ struct DetectorLayout {
   float nms_iou_threshold = 0.4f;
   // Score minimo para considerar una deteccion.
   float score_threshold = 0.5f;
+  // Cuantas cajas pasan al NMS: solo las K de mayor score (el "nms top 500" del
+  // RetinaFace de referencia). Sin este tope, el NMS seria O(n^2) sobre las 16 800
+  // anclas de una entrada de 640 y bloquearia el hilo de trabajo del servicio.
+  std::size_t nms_top_k = 500;
 
   // Reparto de los tensores de salida del .nb. El tensor de las cajas es el 0; si el
   // .nb expone el score y los landmarks en tensores aparte, se apuntan aqui (y se
@@ -71,13 +79,19 @@ struct DetectorLayout {
 // de landmarks si van dentro del mismo tensor.
 int values_per_anchor(const DetectorLayout& layout);
 
+// Numero de posiciones del mapa de caracteristicas en una dimension: el techo de
+// tamano/stride, calculado sin sumar antes de dividir (para no desbordar con un
+// tamano cercano a INT_MAX).
+int posiciones_mapa(int tamano, int stride);
+
 // Genera las anclas del detector para una entrada de input_width x input_height.
 //
 // Por cada stride: el mapa de caracteristicas tiene ceil(ancho/stride) x
-// ceil(alto/stride) posiciones y el centro de cada ancla es ((x+0.5)*stride,
-// (y+0.5)*stride). El tamano base de cada stride se escala con la entrada sobre 640.
-// Hay dos anclas por posicion: la cuadrada y la de relacion 1.3 (la misma area, la
-// anchura 1.3 veces mayor y la altura 1.3 veces menor).
+// ceil(alto/stride) posiciones y el centro de cada ancla es (x*stride, y*stride): el
+// centro cae en la ESQUINA de la celda (la convencion clasica de RetinaFace). El
+// tamano base de cada stride se escala con la entrada sobre 640. Hay dos anclas por
+// posicion: la cuadrada y la de relacion 1.3 (la misma area, la anchura 1.3 veces
+// mayor y la altura 1.3 veces menor).
 //
 // Lanza std::invalid_argument si los tres vectores del layout no tienen el mismo
 // tamano, si un stride no es positivo o si la entrada no es valida.
@@ -86,8 +100,16 @@ std::vector<Anchor> generate_anchors(const DetectorLayout& layout, int input_wid
 
 // Decodifica los valores crudos (cx, cy, w, h) de una ancla a una caja en pixeles de la
 // imagen de entrada del modelo, con las varianzas estandar de RetinaFace (0.1, 0.2,
-// 0.3, 0.3) y la escala del stride.
-cv::Rect2f decode_box(const Anchor& anchor, const float* box, int stride);
+// 0.3, 0.3).
+//
+// PROVISIONAL: la convencion es la clasica (la de insightface): las varianzas se
+// aplican al valor predicho, que ya esta en unidades de la imagen, y NO se multiplica
+// por el stride (el stride solo fija la rejilla de posiciones y el tamano del ancla).
+// El centro de la caja es el centro del ancla mas el desplazamiento, y el tamano es el
+// del ancla escalado por exp(variancia * valor).
+//
+// Lanza std::invalid_argument si el valor predicho no es finito.
+cv::Rect2f decode_box(const Anchor& anchor, const float* box);
 
 // Decodifica los 10 offsets de landmarks (5 pares x, y) a 5 puntos en pixeles: cada
 // offset se multiplica por el tamano de la caja y se suma al centro de la caja.
@@ -100,6 +122,9 @@ float iou(const cv::Rect2f& a, const cv::Rect2f& b);
 
 // Supresion de no maximos por IoU. Devuelve los indices conservados, del score mas
 // alto al mas bajo.
+//
+// Lanza std::invalid_argument si no hay un score por caja o si el umbral de IoU esta
+// fuera de [0, 1].
 std::vector<int> nms(const std::vector<cv::Rect2f>& boxes, const std::vector<float>& scores,
                      float iou_threshold);
 
@@ -113,10 +138,20 @@ struct DetectorTensor {
 // detecciones en pixeles de la imagen de ENTRADA del modelo (el reescalado a la imagen
 // original lo hace el adaptador, que es quien conoce el tamano de la original).
 //
-// Lanza std::invalid_argument si falta el tensor de cajas, si el numero de valores no
-// cuadra con el numero de anclas o si un tensor apartado no trae un valor por ancla.
+// Las anclas se generan aqui (a partir del tamano de entrada). El adaptador usa la
+// variante de abajo, que las recibe ya generadas: dependen solo del tamano de entrada,
+// que es fijo, asi que no hay que regenerarlas en cada fotograma.
+//
+// Lanza std::invalid_argument si falta el tensor de cajas, si falta el tensor de scores
+// o el de landmarks que el layout pide aparte, si el numero de valores no cuadra con el
+// numero de anclas o si un tensor apartado no trae un valor por ancla.
 std::vector<FaceDetection> decode_detector_outputs(const std::vector<DetectorTensor>& tensors,
                                                     const DetectorLayout& layout,
                                                     int input_width, int input_height);
+
+// Lo mismo, pero con las anclas ya generadas (las cachea el adaptador).
+std::vector<FaceDetection> decode_detector_outputs(const std::vector<DetectorTensor>& tensors,
+                                                    const DetectorLayout& layout,
+                                                    const std::vector<Anchor>& anchors);
 
 }  // namespace vision

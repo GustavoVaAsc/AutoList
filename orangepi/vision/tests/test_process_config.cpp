@@ -2,7 +2,9 @@
 // omision, el rechazo de los documentos invalidos y el mapeo a ServiceConfig.
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 #include "minitest.hpp"
@@ -244,6 +246,42 @@ TEST(config_acepta_una_galeria_https_o_en_localhost) {
   CHECK(parse_process_config(
       R"({"galeria": {"url": "http://192.168.1.50:1880/api/galeria", "token_env": ""}})",
       config, error));
+}
+
+// El nombre del modelo se convierte en una ruta: un "../" en el nombre ejecutaria un
+// .nb de donde quiera en el driver del kernel.
+TEST(config_rechaza_un_nombre_de_modelo_con_una_ruta) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"servicio": {"modelo": "../otro"}})", config, error));
+  CHECK(error.find("modelo") != std::string::npos);
+  CHECK(!parse_process_config(R"({"servicio": {"modelo": "a/b"}})", config, error));
+  CHECK(!parse_process_config(R"({"servicio": {"modelo": "modelo con espacios.nb"}})", config,
+                               error));
+  CHECK(!parse_process_config(R"({"servicio": {"modelo": ".."}})", config, error));
+  CHECK(parse_process_config(R"({"servicio": {"modelo": "w600k_mbf-uint8-v1"}})", config,
+                             error));
+  CHECK_EQ(config.service.model_name, std::string("w600k_mbf-uint8-v1"));
+}
+
+TEST(el_nombre_del_modelo_solo_admite_un_patron_seguro) {
+  CHECK(vision::nombre_modelo_valido("w600k_mbf-uint8-v1"));
+  CHECK(vision::nombre_modelo_valido("modelo.2"));
+  CHECK(!vision::nombre_modelo_valido(""));
+  CHECK(!vision::nombre_modelo_valido("."));
+  CHECK(!vision::nombre_modelo_valido(".."));
+  CHECK(!vision::nombre_modelo_valido("../otro"));
+  CHECK(!vision::nombre_modelo_valido("con espacio"));
+  CHECK(!vision::nombre_modelo_valido(std::string(65, 'a')));
+}
+
+TEST(la_ruta_del_modelo_no_sale_del_directorio_de_modelos) {
+  const std::filesystem::path raiz = "/opt/autolist/models";
+  CHECK_EQ(vision::ruta_modelo("detector", raiz).string(), std::string("/opt/autolist/models/detector.nb"));
+  CHECK_EQ(vision::ruta_modelo("w600k_mbf-uint8-v1", raiz).string(),
+           std::string("/opt/autolist/models/w600k_mbf-uint8-v1.nb"));
+  CHECK_THROWS(vision::ruta_modelo("../otro", raiz), std::invalid_argument);
+  CHECK_THROWS(vision::ruta_modelo("", raiz), std::invalid_argument);
 }
 
 TEST(url_admite_token_solo_con_https_o_localhost) {

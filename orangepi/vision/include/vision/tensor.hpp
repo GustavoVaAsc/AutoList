@@ -31,6 +31,17 @@ std::string_view to_string(QuantFormat quant);
 // Bytes de un elemento; 0 si el formato es desconocido.
 std::size_t element_size(DataFormat format);
 
+// true si dequantize sabe leer un tensor con ese formato. El fp16 NO se soporta:
+// una salida del modelo en fp16 hay que ampliarla antes de usarla.
+bool formato_desquantizable(DataFormat format);
+
+// Exige que la salida de un modelo se pueda desquantizar, con un mensaje que diga que
+// hacer si no se puede (por ejemplo, "la salida del modelo es fp16: hay que ampliar
+// dequantize"). `quien` es el nombre del adaptador, para el mensaje.
+//
+// Lanza std::invalid_argument si dequantize no sabe leer el formato del tensor.
+void exigir_salida_descuantizable(const TensorInfo& info, const char* quien);
+
 // Convierte los bytes crudos de un tensor a float aplicando su cuantizacion. Si
 // info.element_count no es 0, devuelve exactamente esos elementos y descarta el relleno
 // que el driver pueda haber agregado al final de `raw`.
@@ -54,11 +65,15 @@ std::vector<float> dequantize(const TensorInfo& info, std::span<const std::uint8
 //    al rango del tipo. Es el inverso de real = q * 2^-fixed_point_pos.
 //
 // El redondeo es al entero mas cercano (mitad hacia arriba). El recorte al rango del tipo
-// es inevitable: un valor fuera de rango no es representable.
+// es inevitable: un valor fuera de rango no es representable. PERO si se recorta mas del
+// 1% de los valores, la entrada satura: eso no es un dato de entrada, es un error de
+// configuracion (el modo de escala no corresponde al dominio del tensor) y se lanza
+// std::invalid_argument en vez de dejar un tensor lleno de valores recortados.
 //
 // Lanza std::invalid_argument si el formato no se soporta (solo fp32, fp16, uint8 e
-// int8), si info.element_count no es 0 y el numero de valores no es exactamente ese, o
-// si una cuantizacion afín trae scale <= 0.
+// int8), si info.element_count no es 0 y el numero de valores no es exactamente ese, si
+// una cuantizacion afín trae scale <= 0, si un valor no es finito o si la entrada
+// satura (mas del 1% de los valores se recortan).
 std::vector<std::uint8_t> quantize(const TensorInfo& info, std::span<const float> values);
 
 }  // namespace vision

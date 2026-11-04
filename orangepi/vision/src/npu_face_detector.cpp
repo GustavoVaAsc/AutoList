@@ -7,17 +7,14 @@ namespace vision {
 
 namespace {
 
-// El tensor de entrada tiene que ser el que el modelo espera (640x640 por omision).
-// Si las opciones no dicen nada (0 o menos), se toma el del propio .nb.
-void ajustar_tamano(NpuDetectorOptions& options, const TensorInfo& info) {
-  const InputShape shape = input_shape(info);
-  if (options.input_width <= 0) options.input_width = shape.width;
-  if (options.input_height <= 0) options.input_height = shape.height;
-  if (options.input_width != shape.width || options.input_height != shape.height) {
-    throw std::invalid_argument(
-        "NpuFaceDetector: el modelo espera una entrada de " + std::to_string(shape.width) + "x" +
-        std::to_string(shape.height) + " y se pidio " + std::to_string(options.input_width) +
-        "x" + std::to_string(options.input_height));
+// El tensor de salida tiene que traer los elementos que el layout espera: si no, el
+// fallo aparece en cada fotograma, con el alumno posando y la luz encendida.
+void comprobar_salida(const TensorInfo& info, std::size_t esperados, const char* quien) {
+  exigir_salida_descuantizable(info, quien);
+  if (info.element_count != esperados) {
+    throw std::invalid_argument(std::string(quien) + ": la salida del modelo trae " +
+                                std::to_string(info.element_count) + " elementos y el layout "
+                                "espera " + std::to_string(esperados));
   }
 }
 
@@ -26,18 +23,51 @@ void ajustar_tamano(NpuDetectorOptions& options, const TensorInfo& info) {
 NpuFaceDetector::NpuFaceDetector(const npu::Driver& driver, const std::filesystem::path& nb_file,
                                  const NpuDetectorOptions& options)
     : network_(driver, nb_file), options_(options) {
-  if (network_.input_count() == 0) {
-    throw std::invalid_argument("NpuFaceDetector: el modelo no tiene entradas");
+  // Un modelo de rostro tiene una sola entrada: con mas de una, solo se rellenaria la
+  // primera y la red correria con las demas sin inicializar.
+  if (network_.input_count() != 1) {
+    throw std::invalid_argument("NpuFaceDetector: el modelo debe tener una sola entrada y "
+                                "tiene " + std::to_string(network_.input_count()));
   }
   // El tensor de salida que se lee es el de las cajas; el resto lo apunta el layout.
   options_.layout.boxes_output_index = options_.output_index;
-  if (options_.output_index >= network_.output_count()) {
+  const std::size_t salidas = network_.output_count();
+  if (options_.output_index >= salidas) {
     throw std::invalid_argument("NpuFaceDetector: el modelo tiene " +
-                                std::to_string(network_.output_count()) +
+                                std::to_string(salidas) +
                                 " salidas y se pidio la " + std::to_string(options_.output_index));
   }
+  // Los indices de salida del layout tambien tienen que estar dentro de las salidas.
+  if (!options_.layout.score_in_boxes_tensor &&
+      options_.layout.scores_output_index >= salidas) {
+    throw std::invalid_argument("NpuFaceDetector: el layout pide el score en la salida " +
+                                std::to_string(options_.layout.scores_output_index) +
+                                " y el modelo solo tiene " + std::to_string(salidas) + " salidas");
+  }
+  if (!options_.layout.landmarks_in_boxes_tensor &&
+      options_.layout.landmarks_output_index >= salidas) {
+    throw std::invalid_argument("NpuFaceDetector: el layout pide los landmarks en la salida " +
+                                std::to_string(options_.layout.landmarks_output_index) +
+                                " y el modelo solo tiene " + std::to_string(salidas) + " salidas");
+  }
   input_info_ = network_.input_info(0);
-  ajustar_tamano(options_, input_info_);
+  ajustar_tamano_entrada(options_.input_width, options_.input_height, input_info_,
+                         "NpuFaceDetector");
+  // Las anclas se generan una vez: dependen solo del tamano de entrada.
+  anchors_ = generate_anchors(options_.layout, options_.input_width, options_.input_height);
+  // El formato y el numero de elementos de las salidas se comprueban al arrancar, no en
+  // cada fotograma.
+  const std::size_t por_ancla = static_cast<std::size_t>(values_per_anchor(options_.layout));
+  comprobar_salida(network_.output_info(options_.layout.boxes_output_index),
+                   anchors_.size() * por_ancla, "NpuFaceDetector");
+  if (!options_.layout.score_in_boxes_tensor) {
+    comprobar_salida(network_.output_info(options_.layout.scores_output_index), anchors_.size(),
+                     "NpuFaceDetector");
+  }
+  if (!options_.layout.landmarks_in_boxes_tensor) {
+    comprobar_salida(network_.output_info(options_.layout.landmarks_output_index),
+                     anchors_.size() * 10, "NpuFaceDetector");
+  }
 }
 
 std::vector<FaceDetection> NpuFaceDetector::detect(const cv::Mat& bgr) {
@@ -63,9 +93,9 @@ std::vector<FaceDetection> NpuFaceDetector::detect(const cv::Mat& bgr) {
                                       network_.read_output(options_.layout.landmarks_output_index)});
   }
 
+  // Las anclas van cacheadas: no se regeneran en cada fotograma.
   std::vector<FaceDetection> detecciones =
-      decode_detector_outputs(tensores, options_.layout, options_.input_width,
-                              options_.input_height);
+      decode_detector_outputs(tensores, options_.layout, anchors_);
 
   // Del modelo a la imagen original: la escala se aplica al final.
   const float escala_x = static_cast<float>(bgr.cols) / static_cast<float>(options_.input_width);

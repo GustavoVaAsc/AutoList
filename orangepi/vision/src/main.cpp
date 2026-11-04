@@ -76,10 +76,12 @@ void uso(const char* programa) {
       << "  --help           Muestra esta ayuda y sale\n";
 }
 
-// Los modelos .nb no se versionan (plan, seccion 11). Estas son las rutas donde se
-// espera encontrarlos; el nombre del modelo de reconocimiento sale de la
-// configuracion ("servicio.modelo").
-constexpr const char* kRutaDetector = "/opt/autolist/models/detector.nb";
+// Los modelos .nb no se versionan (plan, seccion 11). Estos son el directorio donde se
+// espera encontrarlos y el nombre del detector; el nombre del modelo de reconocimiento
+// sale de la configuracion ("servicio.modelo"). Las rutas se construyen con
+// vision::ruta_modelo, que no deja que el nombre se salga del directorio.
+constexpr const char* kDirectorioModelos = "/opt/autolist/models";
+constexpr const char* kNombreDetector = "detector";
 
 // Codigo de salida propio para "faltan los modelos" (EX_CONFIG de sysexits.h). Es
 // un problema de configuracion de la maquina, no un fallo del proceso: con
@@ -87,8 +89,12 @@ constexpr const char* kRutaDetector = "/opt/autolist/models/detector.nb";
 // journal). La unidad lleva RestartPreventExitStatus=78.
 constexpr int kSalidaFaltanModelos = 78;
 
-std::string ruta_embedding(const ProcessConfig& config) {
-  return "/opt/autolist/models/" + config.service.model_name + ".nb";
+std::filesystem::path ruta_detector() {
+  return ruta_modelo(kNombreDetector, kDirectorioModelos);
+}
+
+std::filesystem::path ruta_embedding(const ProcessConfig& config) {
+  return ruta_modelo(config.service.model_name, kDirectorioModelos);
 }
 
 bool leer_entorno(const std::string& nombre, std::string& valor) {
@@ -308,11 +314,14 @@ int main(int argc, char** argv) {
   // --dry-run. Cuando existan, se enchufan los adaptadores reales sobre la NPU
   // (include/vision/npu_face_detector.hpp y include/vision/npu_face_embedder.hpp).
   if (!dry_run) {
-    const std::string detector = kRutaDetector;
-    const std::string embedding = ruta_embedding(config);
+    const std::filesystem::path detector = ruta_detector();
+    const std::filesystem::path embedding = ruta_embedding(config);
     if (!std::filesystem::exists(detector) || !std::filesystem::exists(embedding)) {
-      std::cerr << "[vision] faltan los modelos .nb (" << detector << ", " << embedding
-                << "); usa --dry-run para verificar el cableado\n";
+      // Solo se registran los NOMBRES de los modelos: las rutas absolutas no se
+      // imprimen (el arranque va al journal).
+      std::cerr << "[vision] faltan los modelos .nb (" << kNombreDetector << ".nb, "
+                << config.service.model_name << ".nb); usa --dry-run para verificar el "
+                "cableado\n";
       // Codigo propio: es una configuracion que falta, no un fallo del proceso. Con
       // Restart=on-failure, systemd lo relanzaria cada 5 s sin parar.
       return kSalidaFaltanModelos;
@@ -412,7 +421,7 @@ int main(int argc, char** argv) {
       // con el .nb real, que todavia no existe.
       NpuDetectorOptions opciones_detector;
       detector_npu =
-          std::make_unique<NpuFaceDetector>(*driver_npu, kRutaDetector, opciones_detector);
+          std::make_unique<NpuFaceDetector>(*driver_npu, ruta_detector(), opciones_detector);
       NpuEmbedderOptions opciones_embedder;
       embedder_npu = std::make_unique<NpuFaceEmbedder>(*driver_npu, ruta_embedding(config),
                                                        opciones_embedder);
@@ -427,8 +436,9 @@ int main(int argc, char** argv) {
                    "desconocida\n";
       return 1;
     }
-    std::cerr << "[vision] detector y embedder sobre la NPU cargados (" << kRutaDetector
-              << ", " << ruta_embedding(config) << ")\n";
+    // Solo el nombre del modelo, no la ruta completa.
+    std::cerr << "[vision] detector y embedder sobre la NPU cargados (" << kNombreDetector
+              << ".nb, " << config.service.model_name << ".nb)\n";
   }
 
   SystemClock reloj;

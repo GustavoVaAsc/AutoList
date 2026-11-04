@@ -73,10 +73,25 @@ std::uint16_t float_to_half(float value) {
 }
 
 // Redondea al entero mas cercano (mitad hacia arriba) y recorta al rango del tipo.
-int round_and_clip(float value, int minimo, int maximo) {
+// `recortado` dice si el valor estaba fuera del rango (lo que cuenta como saturacion).
+//
+// Un valor no finito (NaN o infinito) no se puede convertir a entero: en C++ eso es
+// comportamiento indefinido, asi que se lanza antes de intentarlo.
+int round_and_clip(float value, int minimo, int maximo, bool& recortado) {
+  recortado = false;
+  if (!std::isfinite(value)) {
+    throw std::invalid_argument(
+        "quantize: un valor no finito (NaN o infinito) no se puede cuantizar");
+  }
   const float redondeado = std::round(value);
-  if (redondeado < static_cast<float>(minimo)) return minimo;
-  if (redondeado > static_cast<float>(maximo)) return maximo;
+  if (redondeado < static_cast<float>(minimo)) {
+    recortado = true;
+    return minimo;
+  }
+  if (redondeado > static_cast<float>(maximo)) {
+    recortado = true;
+    return maximo;
+  }
   return static_cast<int>(redondeado);
 }
 
@@ -93,6 +108,31 @@ std::size_t element_size(DataFormat format) {
     case DataFormat::Other: break;
   }
   return 0;
+}
+
+bool formato_desquantizable(DataFormat format) {
+  switch (format) {
+    case DataFormat::Fp32:
+    case DataFormat::Uint8:
+    case DataFormat::Int8:
+    case DataFormat::Uint16:
+    case DataFormat::Int16: return true;
+    case DataFormat::Fp16:
+    case DataFormat::Other: break;
+  }
+  return false;
+}
+
+void exigir_salida_descuantizable(const TensorInfo& info, const char* quien) {
+  if (formato_desquantizable(info.format)) return;
+  if (info.format == DataFormat::Fp16) {
+    throw std::invalid_argument(std::string(quien) +
+                                ": la salida del modelo es fp16: hay que ampliar "
+                                "dequantize antes de usar este modelo");
+  }
+  throw std::invalid_argument(std::string(quien) + ": la salida del modelo tiene un formato "
+                                "que dequantize no sabe leer (" +
+                                std::string(to_string(info.format)) + ")");
 }
 
 std::string_view to_string(DataFormat format) {
@@ -188,6 +228,7 @@ std::vector<std::uint8_t> quantize(const TensorInfo& info, std::span<const float
       const int minimo = con_signo ? -128 : 0;
       const int maximo = con_signo ? 127 : 255;
       std::vector<std::uint8_t> out(values.size());
+      std::size_t recortados = 0;
       for (std::size_t i = 0; i < values.size(); ++i) {
         float cuantizado = 0.0f;
         switch (info.quant) {
@@ -205,9 +246,21 @@ std::vector<std::uint8_t> quantize(const TensorInfo& info, std::span<const float
             cuantizado = std::round(values[i]);
             break;
         }
-        const int recortado = round_and_clip(cuantizado, minimo, maximo);
-        out[i] = con_signo ? static_cast<std::uint8_t>(static_cast<std::int8_t>(recortado))
-                            : static_cast<std::uint8_t>(recortado);
+        bool recortado = false;
+        const int valor = round_and_clip(cuantizado, minimo, maximo, recortado);
+        if (recortado) ++recortados;
+        out[i] = con_signo ? static_cast<std::uint8_t>(static_cast<std::int8_t>(valor))
+                            : static_cast<std::uint8_t>(valor);
+      }
+      // Saturacion: si se recorta mas del 1% de los valores, el dominio real no
+      // corresponde al tensor (por ejemplo, el byte de la imagen sobre un tensor
+      // cuantificado con escala 1/255). Eso es un error de configuracion, no un dato.
+      if (recortados * 100 > values.size()) {
+        throw std::invalid_argument(
+            "quantize: la entrada satura: " + std::to_string(recortados) + " de " +
+            std::to_string(values.size()) +
+            " valores se recortaron al rango del tensor; el modo de escala no corresponde "
+            "al dominio del tensor");
       }
       return out;
     }

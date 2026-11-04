@@ -2,6 +2,7 @@
 // puras, asi que no necesitan NPU ni modelo.
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -78,16 +79,41 @@ TEST(quantize_int8_afin_acepta_el_zero_point_negativo) {
 }
 
 TEST(quantize_recorta_al_rango_del_tipo) {
-  const TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::None, {3});
-  const std::vector<std::uint8_t> bytes = quantize(info, std::vector<float>{-10.0f, 300.0f, 200.4f});
-  CHECK_EQ(static_cast<int>(bytes[0]), 0);
-  CHECK_EQ(static_cast<int>(bytes[1]), 255);
-  CHECK_EQ(static_cast<int>(bytes[2]), 200);
+  // Un recorte minimo (menos del 1% de los valores) se acepta: el tensor no puede
+  // representar esos valores, pero la entrada no esta saturada.
+  TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::None, {200});
+  std::vector<float> valores(200, 10.0f);
+  valores[0] = 300.0f;
+  valores[1] = -10.0f;
+  const std::vector<std::uint8_t> bytes = quantize(info, valores);
+  CHECK_EQ(static_cast<int>(bytes[0]), 255);
+  CHECK_EQ(static_cast<int>(bytes[1]), 0);
+  CHECK_EQ(static_cast<int>(bytes[2]), 10);
 
-  const TensorInfo con_signo = tensor(DataFormat::Int8, QuantFormat::None, {2});
-  const std::vector<std::uint8_t> bytes_con_signo = quantize(con_signo, std::vector<float>{-200.0f, 200.0f});
+  const TensorInfo con_signo = tensor(DataFormat::Int8, QuantFormat::None, {200});
+  std::vector<float> valores_con_signo(200, 0.0f);
+  valores_con_signo[0] = -200.0f;
+  valores_con_signo[1] = 200.0f;
+  const std::vector<std::uint8_t> bytes_con_signo = quantize(con_signo, valores_con_signo);
   CHECK_EQ(static_cast<int>(bytes_con_signo[0]), 0x80);  // -128
   CHECK_EQ(static_cast<int>(bytes_con_signo[1]), 0x7F);  // 127
+}
+
+// Saturar la entrada no es un dato de entrada, es un error de configuracion (el modo de
+// escala no corresponde al dominio del tensor): hay que fallar, no recortar en silencio.
+TEST(quantize_rechaza_una_entrada_que_satura) {
+  const TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::None, {3});
+  CHECK_THROWS(quantize(info, std::vector<float>{-10.0f, 300.0f, 200.4f}), std::invalid_argument);
+
+  const TensorInfo con_signo = tensor(DataFormat::Int8, QuantFormat::None, {2});
+  CHECK_THROWS(quantize(con_signo, std::vector<float>{-200.0f, 200.0f}), std::invalid_argument);
+}
+
+TEST(quantize_rechaza_un_valor_no_finito) {
+  const TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::None, {2});
+  CHECK_THROWS(quantize(info, std::vector<float>{std::nanf(""), 1.0f}), std::invalid_argument);
+  CHECK_THROWS(quantize(info, std::vector<float>{std::numeric_limits<float>::infinity(), 1.0f}),
+               std::invalid_argument);
 }
 
 TEST(quantize_fp32_escribe_los_bytes_del_float) {
@@ -210,6 +236,83 @@ TEST(el_preproceso_unitario_codifica_el_dominio_real_con_la_cuantizacion_del_ten
   // El valor real que se cuantiza es el byte dividido entre 255.
   const std::vector<float> valores = preprocess_to_floats(imagen_de_prueba(), info, options);
   CHECK_NEAR(valores[0], 3.0f / 255.0f, 1e-9);
+}
+
+// El modo de escala se deriva del tensor: dejarlo a mano era la fuente del fallo
+// abierto (el byte sobre un tensor con escala 1/255 saturaba la entrada a 255).
+TEST(el_modo_de_escala_se_deriva_del_tensor) {
+  TensorInfo unidad = tensor(DataFormat::Uint8, QuantFormat::Affine, {2, 2, 3, 1});
+  unidad.scale = 1.0f / 255.0f;
+  unidad.zero_point = 0;
+  CHECK_EQ(static_cast<int>(modo_escala_efectivo(ScaleMode::Auto, unidad)),
+           static_cast<int>(ScaleMode::Unit));
+
+  const TensorInfo sin_cuantizar = tensor(DataFormat::Uint8, QuantFormat::None, {2, 2, 3, 1});
+  CHECK_EQ(static_cast<int>(modo_escala_efectivo(ScaleMode::Auto, sin_cuantizar)),
+           static_cast<int>(ScaleMode::None));
+}
+
+TEST(el_modo_de_escala_falla_cerrado_cuando_no_se_puede_deducir) {
+  // 8 bits con cuantizacion afin que no es 1/255 con zero_point 0.
+  TensorInfo otra = tensor(DataFormat::Uint8, QuantFormat::Affine, {2, 2, 3, 1});
+  otra.scale = 0.5f;
+  otra.zero_point = 128;
+  CHECK_THROWS(modo_escala_efectivo(ScaleMode::Auto, otra), std::invalid_argument);
+
+  // Tensor de punto flotante: el dominio real no se puede deducir.
+  const TensorInfo flotante = tensor(DataFormat::Fp32, QuantFormat::None, {2, 2, 3, 1});
+  CHECK_THROWS(modo_escala_efectivo(ScaleMode::Auto, flotante), std::invalid_argument);
+
+  // Un modo explicito que no es compatible con la cuantizacion del tensor.
+  TensorInfo unidad = tensor(DataFormat::Uint8, QuantFormat::Affine, {2, 2, 3, 1});
+  unidad.scale = 1.0f / 255.0f;
+  unidad.zero_point = 0;
+  CHECK_THROWS(modo_escala_efectivo(ScaleMode::None, unidad), std::invalid_argument);
+  CHECK_THROWS(modo_escala_efectivo(ScaleMode::ArcFace, unidad), std::invalid_argument);
+  const TensorInfo sin_cuantizar = tensor(DataFormat::Uint8, QuantFormat::None, {2, 2, 3, 1});
+  CHECK_THROWS(modo_escala_efectivo(ScaleMode::ArcFace, sin_cuantizar), std::invalid_argument);
+  CHECK_THROWS(modo_escala_efectivo(ScaleMode::Unit, sin_cuantizar), std::invalid_argument);
+
+  // Con un tensor de punto flotante, el modo explicito se respeta (el llamador lo
+  // eligio a mano).
+  CHECK_EQ(static_cast<int>(modo_escala_efectivo(ScaleMode::ArcFace, flotante)),
+           static_cast<int>(ScaleMode::ArcFace));
+}
+
+// El preproceso por omision (modo derivado) no satura la entrada de un tensor
+// cuantificado con escala 1/255: el byte de la imagen vuelve a ser el byte.
+TEST(el_preproceso_por_omision_no_satura_un_tensor_con_escala_1_255) {
+  TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::Affine, {2, 2, 3, 1});
+  info.scale = 1.0f / 255.0f;
+  info.zero_point = 0;
+  const std::vector<std::uint8_t> bytes =
+      preprocess_to_bytes(imagen_de_prueba(), info, PreprocessOptions{});
+  CHECK_EQ(static_cast<int>(bytes[0]), 3);    // rojo del pixel (0,0)
+  CHECK_EQ(static_cast<int>(bytes[11]), 10);  // azul del pixel (1,1)
+  for (const std::uint8_t byte : bytes) CHECK(byte != 255);
+}
+
+// Las dimensiones del tensor vienen del .nb: sin un techo, un .nb corrupto pediria
+// decenas de gigabytes y mataria el proceso.
+TEST(el_preproceso_rechaza_un_tensor_de_entrada_enorme) {
+  const TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::None, {5000, 5000, 3, 1});
+  CHECK_THROWS(preprocess_to_floats(imagen_de_prueba(), info, PreprocessOptions{}),
+               std::invalid_argument);
+}
+
+TEST(el_preproceso_rechaza_un_lote_distinto_de_uno) {
+  const TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::None, {2, 2, 3, 2});
+  CHECK_THROWS(preprocess_to_floats(imagen_de_prueba(), info, PreprocessOptions{}),
+               std::invalid_argument);
+}
+
+// El tamano del tensor se comprueba contra el buffer del driver antes de reservar
+// memoria.
+TEST(el_preproceso_rechaza_un_tensor_que_no_cabe_en_el_buffer_del_driver) {
+  TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::None, {2, 2, 3, 1});
+  info.size_bytes = 4;  // el driver reservo menos de lo que necesita el tensor
+  CHECK_THROWS(preprocess_to_floats(imagen_de_prueba(), info, PreprocessOptions{}),
+               std::invalid_argument);
 }
 
 TEST(los_bytes_del_preproceso_cubren_exactamente_el_tamano_del_tensor) {

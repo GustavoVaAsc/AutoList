@@ -12,6 +12,7 @@
 // arrancar con omisiones a medias seria peor que no arrancar.
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 
 #include "vision/vision_service.hpp"
@@ -104,5 +105,16 @@ bool url_admite_token(const std::string& url);
 // archivo existe pero no se puede leer o no es valido.
 bool load_process_config(const std::string& path, ProcessConfig& out, bool& found,
                          std::string& error);
+
+// El nombre del modelo ("servicio.modelo") solo puede llevar letras, digitos, punto,
+// guion y guion bajo, hasta 64 caracteres. Asi el nombre no puede construir una ruta
+// fuera del directorio de modelos (un "../" en el nombre ejecutaria un .nb de donde
+// quiera en el driver del kernel).
+bool nombre_modelo_valido(const std::string& nombre);
+
+// Ruta del modelo .nb dentro del directorio de modelos. Falla cerrado (lanza
+// std::invalid_argument) si el nombre no es valido o si la ruta sale del directorio.
+std::filesystem::path ruta_modelo(const std::string& nombre,
+                                  const std::filesystem::path& directorio);
 
 }  // namespace vision

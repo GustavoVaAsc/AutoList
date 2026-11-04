@@ -11,8 +11,9 @@
 // ejecucion (no se asume 128 ni 512).
 //
 // LIMITACION CONOCIDA: la desquantizacion (vision::dequantize) no todavia sabe leer una
-// salida en fp16 (solo fp32 y enteros). Si el .nb devuelve su salida en fp16, habra que
-// ampliar dequantize antes de usar este adaptador.
+// salida en fp16 (solo fp32 y enteros). Si el .nb devuelve su salida en fp16, el
+// constructor lo dice (std::invalid_argument) en vez de fallar en cada inferencia,
+// con el alumno posando y la luz encendida.
 
 #include <cstddef>
 #include <filesystem>
@@ -33,8 +34,8 @@ struct NpuEmbedderOptions {
   int input_height = 112;
   // PROVISIONAL: depende del .nb, que todavia no existe (ver PreprocessOptions).
   ColorOrder color_order = ColorOrder::Rgb;
-  // PROVISIONAL: por omision la normalizacion va DENTRO del modelo cuantizado.
-  ScaleMode scale_mode = ScaleMode::None;
+  // El modo de escala se deriva del tensor de entrada (Auto) salvo que se elija a mano.
+  ScaleMode scale_mode = ScaleMode::Auto;
   // Tensor de salida que se lee. Por omision el 0.
   std::size_t output_index = 0;
 };
@@ -43,8 +44,9 @@ struct NpuEmbedderOptions {
 //
 // NO es segura entre hilos: la usa el hilo de trabajo del servicio, el mismo que
 // llama a poll(). Lanza std::invalid_argument si las opciones no cuadran con el .nb
-// (tamano de entrada distinto del del tensor) y npu::NpuError si el modelo no se puede
-// cargar o preparar.
+// (tamano de entrada distinto del del tensor, indice de salida fuera de rango, salida
+// en un formato que dequantize no sabe leer o una salida sin elementos) y npu::NpuError
+// si el modelo no se puede cargar o preparar.
 class NpuFaceEmbedder final : public FaceEmbedder {
  public:
   NpuFaceEmbedder(const npu::Driver& driver, const std::filesystem::path& nb_file,

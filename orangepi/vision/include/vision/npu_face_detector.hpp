@@ -33,8 +33,8 @@ struct NpuDetectorOptions {
   int input_height = 640;
   // PROVISIONAL: depende del .nb, que todavia no existe (ver PreprocessOptions).
   ColorOrder color_order = ColorOrder::Rgb;
-  // PROVISIONAL: por omision la normalizacion va DENTRO del modelo cuantizado.
-  ScaleMode scale_mode = ScaleMode::None;
+  // El modo de escala se deriva del tensor de entrada (Auto) salvo que se elija a mano.
+  ScaleMode scale_mode = ScaleMode::Auto;
   // Disposicion de la salida del modelo (PROVISIONAL: ver DetectorLayout).
   DetectorLayout layout{};
   // Tensor de salida que trae las cajas. Por omision el 0. Si el .nb expone el score y
@@ -45,7 +45,9 @@ struct NpuDetectorOptions {
 // Red de deteccion sobre la NPU.
 //
 // Lanza std::invalid_argument si las opciones no cuadran con el .nb (tamano de entrada
-// distinto del del tensor) y npu::NpuError si el modelo no se puede cargar o preparar.
+// distinto del del tensor, indice de salida fuera de rango, salida en un formato que
+// dequantize no sabe leer, o numero de elementos de la salida que no cuadra con el
+// layout) y npu::NpuError si el modelo no se puede cargar o preparar.
 class NpuFaceDetector final : public FaceDetector {
  public:
   NpuFaceDetector(const npu::Driver& driver, const std::filesystem::path& nb_file,
@@ -60,6 +62,9 @@ class NpuFaceDetector final : public FaceDetector {
   npu::Network network_;
   NpuDetectorOptions options_;
   TensorInfo input_info_;
+  // Las anclas dependen solo del tamano de entrada (que es fijo): se generan una vez
+  // y se reutilizan en cada fotograma.
+  std::vector<Anchor> anchors_;
 };
 
 }  // namespace vision
