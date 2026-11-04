@@ -32,5 +32,11 @@
   },
   "http": {
     "allow_invalid_certificates": false
+  },
+  "npu": {
+    "color": "rgb",
+    "escala": "auto",
+    "ancho": 640,
+    "alto": 640
   }
 }

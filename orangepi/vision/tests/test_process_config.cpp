@@ -292,3 +292,82 @@ TEST(url_admite_token_solo_con_https_o_localhost) {
   CHECK(!url_admite_token("ftp://192.168.1.50/api/galeria"));
   CHECK(!url_admite_token("esto-no-es-una-url"));
 }
+
+// --- Tercera ronda: el bloque "npu" ----------------------------------------------
+//
+// Los parametros de los adaptadores sobre la NPU (color, modo de escala y tamano de
+// entrada del detector) estaban codificados en el codigo. Ahora estan en el bloque
+// "npu" de la configuracion, que es opcional: si no esta, el comportamiento es el de
+// siempre.
+TEST(config_carga_el_bloque_npu) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"npu": {"color": "bgr", "escala": "arcface", "ancho": 320, "alto": 320}})",
+      config, error));
+  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Bgr));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::ArcFace));
+  CHECK_EQ(config.npu.detector_width, 320);
+  CHECK_EQ(config.npu.detector_height, 320);
+}
+
+TEST(config_sin_bloque_npu_deja_los_valores_por_omision) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"servicio": {"poll_ms": 50}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Rgb));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::Auto));
+  CHECK_EQ(config.npu.detector_width, 640);
+  CHECK_EQ(config.npu.detector_height, 640);
+}
+
+TEST(config_rechaza_un_color_o_una_escala_desconocidos) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"npu": {"color": "rgbx"}})", config, error));
+  CHECK(error.find("npu.color") != std::string::npos);
+  CHECK(!parse_process_config(R"({"npu": {"escala": "centrada"}})", config, error));
+  CHECK(error.find("npu.escala") != std::string::npos);
+  // Una clave desconocida dentro del bloque, tambien.
+  CHECK(!parse_process_config(R"({"npu": {"color": "rgb", "colores": 1}})", config, error));
+  CHECK(error.find("colores") != std::string::npos);
+  // Un tamano negativo no tiene sentido.
+  CHECK(!parse_process_config(R"({"npu": {"ancho": -1}})", config, error));
+  CHECK(error.find("npu.ancho") != std::string::npos);
+}
+
+// Los cuatro valores validos de la escala.
+TEST(config_acepta_las_cuatro_escalas) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"npu": {"escala": "auto"}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::Auto));
+  CHECK(parse_process_config(R"({"npu": {"escala": "ninguna"}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::None));
+  CHECK(parse_process_config(R"({"npu": {"escala": "unidad"}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::Unit));
+  CHECK(parse_process_config(R"({"npu": {"escala": "arcface"}})", config, error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::ArcFace));
+}
+
+// Un tamano de 0 significa "el que tenga el .nb".
+TEST(config_acepta_un_tamano_de_entrada_en_cero) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"npu": {"ancho": 0, "alto": 0}})", config, error));
+  CHECK_EQ(config.npu.detector_width, 0);
+  CHECK_EQ(config.npu.detector_height, 0);
+}
+
+// ruta_modelo y nombre_modelo_valido no se contradicen: un nombre que empieza por ".."
+// pero no es un ".." (como "..modelo") es valido para los dos.
+TEST(la_ruta_del_modelo_acepta_un_nombre_que_empieza_por_dos_puntos) {
+  const std::filesystem::path raiz = "/opt/autolist/models";
+  CHECK(vision::nombre_modelo_valido("..modelo"));
+  CHECK_EQ(vision::ruta_modelo("..modelo", raiz).string(),
+           std::string("/opt/autolist/models/..modelo.nb"));
+  // Un ".." de verdad (un directorio) sigue sin valer.
+  CHECK(!vision::nombre_modelo_valido(".."));
+  CHECK_THROWS(vision::ruta_modelo("..", raiz), std::invalid_argument);
+  CHECK_THROWS(vision::ruta_modelo("../otro", raiz), std::invalid_argument);
+}

@@ -40,6 +40,17 @@ cv::Mat imagen_de_prueba() {
   return imagen;
 }
 
+// Devuelve el mensaje de la excepcion, o una cadena vacia si no hubo ninguna.
+template <typename Accion>
+std::string mensaje_de_error(Accion&& accion) {
+  try {
+    accion();
+  } catch (const std::exception& error) {
+    return error.what();
+  }
+  return "";
+}
+
 }  // namespace
 
 TEST(quantize_uint8_sin_cuantizacion_es_el_valor_redondeado) {
@@ -332,4 +343,159 @@ TEST(los_bytes_del_preproceso_cubren_exactamente_el_tamano_del_tensor) {
       preprocess_to_bytes(imagen_de_prueba(), info, PreprocessOptions{});
   CHECK_EQ(rellenados.size(), std::size_t{16});
   CHECK_EQ(static_cast<int>(rellenados[12]), 0);
+}
+
+// --- Tercera ronda: la validacion del tensor de ENTRADA al arrancar --------------
+//
+// El tensor de entrada se validaba en el PRIMER FOTOGRAMA: con un .nb de entrada fp32
+// o uint16, el proceso arrancaba bien, publicaba en_linea=true y cada pase de lista
+// devolvia error_internal. La validacion tiene que salir al construir el adaptador.
+
+// Un tensor de entrada que no vale tiene que hacer fallar el proceso AL ARRANCAR.
+TEST(el_tensor_de_entrada_se_valida_al_arrancar) {
+  // Un tensor de 16 bits no se sabe escribir: el proceso tiene que salir.
+  const TensorInfo uint16 = tensor(DataFormat::Uint16, QuantFormat::None, {2, 2, 3, 1});
+  CHECK_THROWS(validar_tensor_entrada(uint16, PreprocessOptions{}, "NpuFaceDetector"),
+               std::invalid_argument);
+
+  // Un tensor de punto flotante: el dominio real no se puede deducir (falla cerrado).
+  const TensorInfo fp32 = tensor(DataFormat::Fp32, QuantFormat::None, {2, 2, 3, 1});
+  CHECK_THROWS(validar_tensor_entrada(fp32, PreprocessOptions{}, "NpuFaceDetector"),
+               std::invalid_argument);
+  // Con el modo de escala elegido a mano, un tensor de punto flotante vale.
+  PreprocessOptions arcface;
+  arcface.scale_mode = ScaleMode::ArcFace;
+  validar_tensor_entrada(fp32, arcface, "NpuFaceEmbedder");
+
+  // Un tensor de un solo canal no tiene sentido con una imagen BGR.
+  const TensorInfo un_canal = tensor(DataFormat::Uint8, QuantFormat::None, {2, 2, 1, 1});
+  CHECK_THROWS(validar_tensor_entrada(un_canal, PreprocessOptions{}, "NpuFaceDetector"),
+               std::invalid_argument);
+  // Un lote distinto de 1, tampoco.
+  const TensorInfo lote = tensor(DataFormat::Uint8, QuantFormat::None, {2, 2, 3, 2});
+  CHECK_THROWS(validar_tensor_entrada(lote, PreprocessOptions{}, "NpuFaceDetector"),
+               std::invalid_argument);
+  // Un tensor sin las tres dimensiones minimas no se puede interpretar.
+  const TensorInfo incompleto = tensor(DataFormat::Uint8, QuantFormat::None, {2, 2});
+  CHECK_THROWS(validar_tensor_entrada(incompleto, PreprocessOptions{}, "NpuFaceDetector"),
+               std::invalid_argument);
+}
+
+// El mensaje de un tensor que no se puede deducir nombra el formato REAL: no dice
+// "punto flotante" si el formato no lo es (el uint16 no lo es).
+TEST(el_mensaje_del_formato_no_dice_punto_flotante_cuando_no_lo_es) {
+  const TensorInfo uint16 = tensor(DataFormat::Uint16, QuantFormat::None, {2, 2, 3, 1});
+  const std::string mensaje = mensaje_de_error(
+      [&] { modo_escala_efectivo(ScaleMode::Auto, uint16); });
+  CHECK(!mensaje.empty());
+  CHECK(mensaje.find("punto flotante") == std::string::npos);
+  CHECK(mensaje.find("uint16") != std::string::npos);
+
+  // Con un tensor de punto flotante, el mensaje si lo dice.
+  const TensorInfo fp32 = tensor(DataFormat::Fp32, QuantFormat::None, {2, 2, 3, 1});
+  const std::string mensaje_fp32 =
+      mensaje_de_error([&] { modo_escala_efectivo(ScaleMode::Auto, fp32); });
+  CHECK(mensaje_fp32.find("punto flotante") != std::string::npos);
+  CHECK(mensaje_fp32.find("fp32") != std::string::npos);
+}
+
+// El rango que el tensor puede REPRESENTAR tiene que contener el dominio que implica
+// el modo de escala. Con un int8 de escala 1/255 y zero_point 0 el rango real es
+// [-0.502, 0.498], que NO cubre el [0,1] del modo Unit deducido: el modelo se rechaza
+// al arrancar (no en cada fotograma, y no en silencio).
+TEST(un_tensor_int8_no_cubre_el_dominio_del_modo_de_escala) {
+  TensorInfo info = tensor(DataFormat::Int8, QuantFormat::Affine, {2, 2, 3, 1});
+  info.scale = 1.0f / 255.0f;
+  info.zero_point = 0;
+  // El modo deducido es Unit (dominio [0,1]).
+  CHECK_EQ(static_cast<int>(modo_escala_efectivo(ScaleMode::Auto, info)),
+           static_cast<int>(ScaleMode::Unit));
+
+  const std::string mensaje = mensaje_de_error([&] {
+    validar_tensor_entrada(info, PreprocessOptions{}, "NpuFaceDetector");
+  });
+  CHECK(!mensaje.empty());
+  CHECK(mensaje.find("NpuFaceDetector") != std::string::npos);
+  // El mensaje dice el rango del tensor y el rango que hace falta.
+  CHECK(mensaje.find("-0.501961") != std::string::npos);
+  CHECK(mensaje.find("0.498039") != std::string::npos);
+  CHECK(mensaje.find("[0, 1]") != std::string::npos);
+}
+
+// El rango del tensor y el dominio de cada modo de escala.
+TEST(el_rango_del_tensor_y_el_dominio_de_cada_modo) {
+  // Un uint8 afin con escala 1/255 y zero_point 0 representa [0,1].
+  TensorInfo unidad = tensor(DataFormat::Uint8, QuantFormat::Affine, {2, 2, 3, 1});
+  unidad.scale = 1.0f / 255.0f;
+  unidad.zero_point = 0;
+  CHECK_NEAR(rango_tensor(unidad).minimo, 0.0, 1e-6);
+  CHECK_NEAR(rango_tensor(unidad).maximo, 1.0, 1e-6);
+
+  // Un int8 con la misma escala representa [-0.502, 0.498].
+  TensorInfo con_signo = tensor(DataFormat::Int8, QuantFormat::Affine, {2, 2, 3, 1});
+  con_signo.scale = 1.0f / 255.0f;
+  con_signo.zero_point = 0;
+  CHECK_NEAR(rango_tensor(con_signo).minimo, -0.501961, 1e-5);
+  CHECK_NEAR(rango_tensor(con_signo).maximo, 0.498039, 1e-5);
+
+  // Un uint8 sin cuantizacion representa el byte: [0, 255].
+  const TensorInfo crudo = tensor(DataFormat::Uint8, QuantFormat::None, {2, 2, 3, 1});
+  CHECK_NEAR(rango_tensor(crudo).minimo, 0.0, 1e-6);
+  CHECK_NEAR(rango_tensor(crudo).maximo, 255.0, 1e-6);
+
+  CHECK_NEAR(dominio_escala(ScaleMode::None).maximo, 255.0, 1e-6);
+  CHECK_NEAR(dominio_escala(ScaleMode::Unit).minimo, 0.0, 1e-6);
+  CHECK_NEAR(dominio_escala(ScaleMode::Unit).maximo, 1.0, 1e-6);
+  CHECK_NEAR(dominio_escala(ScaleMode::ArcFace).minimo, -1.0, 1e-6);
+  CHECK_NEAR(dominio_escala(ScaleMode::ArcFace).maximo, 1.0, 1e-6);
+  // El modo Auto no es un modo resuelto.
+  CHECK_THROWS(dominio_escala(ScaleMode::Auto), std::invalid_argument);
+}
+
+// El techo de memoria es por lado Y total: 2048x2048x3 pasa del techo por lado (4096)
+// pero son 12,6 M de elementos (201 MB de float): tiene que rechazarse.
+TEST(el_preproceso_rechaza_un_tensor_con_demasiados_elementos) {
+  const TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::None, {2048, 2048, 3, 1});
+  CHECK_THROWS(validar_tensor_entrada(info, PreprocessOptions{}, "NpuFaceDetector"),
+               std::invalid_argument);
+  CHECK_THROWS(preprocess_to_floats(imagen_de_prueba(), info, PreprocessOptions{}),
+               std::invalid_argument);
+}
+
+// Y hay un techo de bytes reservados (float + imagen redimensionada + bytes del
+// tensor), comprobado ANTES de reservar y antes del resize.
+TEST(el_preproceso_rechaza_un_tensor_que_reserva_demasiados_bytes) {
+  // 1158x1158x3 son 4,0 M de elementos (por debajo del techo de elementos) pero, en
+  // fp32, el preproceso reservaria mas de 32 MB.
+  const TensorInfo info = tensor(DataFormat::Fp32, QuantFormat::None, {1158, 1158, 3, 1});
+  CHECK(info.element_count <= kMaxElementosEntrada);
+  const std::string mensaje =
+      mensaje_de_error([&] { validar_tensor_entrada(info, PreprocessOptions{}, "NpuFaceDetector"); });
+  CHECK(!mensaje.empty());
+  CHECK(mensaje.find("bytes") != std::string::npos);
+}
+
+// Un tensor de entrada que vale (el del modelo de ejemplo del fabricante) pasa la
+// validacion y deduce el modo Unit.
+TEST(un_tensor_valido_pasa_la_validacion_de_entrada) {
+  TensorInfo info = tensor(DataFormat::Uint8, QuantFormat::Affine, {224, 224, 3, 1});
+  info.scale = 1.0f / 255.0f;
+  info.zero_point = 0;
+  validar_tensor_entrada(info, PreprocessOptions{}, "NpuFaceEmbedder");
+  CHECK_EQ(static_cast<int>(modo_escala_efectivo(ScaleMode::Auto, info)),
+           static_cast<int>(ScaleMode::Unit));
+}
+
+// Las anclas del detector se generan con las dimensiones de la entrada: sin acotarlas
+// antes, un .nb que declarara 60000x60000 pediria 112 millones de anclas (~2,2 GB)
+// antes de que nada lo rechazara.
+TEST(las_dimensiones_de_las_anclas_se_acotan_antes_de_generarlas) {
+  comprobar_tamano_entrada(640, 640, "NpuFaceDetector");
+  comprobar_tamano_entrada(112, 112, "NpuFaceEmbedder");
+  // 4096x4096x3 son 50 M de elementos: pasan del techo por lado, pero no del total.
+  CHECK_THROWS(comprobar_tamano_entrada(4096, 4096, "NpuFaceDetector"), std::invalid_argument);
+  CHECK_THROWS(comprobar_tamano_entrada(60000, 60000, "NpuFaceDetector"),
+               std::invalid_argument);
+  CHECK_THROWS(comprobar_tamano_entrada(0, 640, "NpuFaceDetector"), std::invalid_argument);
+  CHECK_THROWS(comprobar_tamano_entrada(640, -1, "NpuFaceDetector"), std::invalid_argument);
 }

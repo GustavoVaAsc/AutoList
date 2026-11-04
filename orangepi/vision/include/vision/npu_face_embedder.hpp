@@ -32,9 +32,11 @@ struct NpuEmbedderOptions {
   // Si se deja en 0 (o en negativo), se toma el del tensor del .nb.
   int input_width = 112;
   int input_height = 112;
-  // PROVISIONAL: depende del .nb, que todavia no existe (ver PreprocessOptions).
+  // Orden de color del tensor de entrada (archivo de configuracion, bloque "npu",
+  // clave "color"). Por omision RGB.
   ColorOrder color_order = ColorOrder::Rgb;
-  // El modo de escala se deriva del tensor de entrada (Auto) salvo que se elija a mano.
+  // El modo de escala se deriva del tensor de entrada (Auto) salvo que se elija a mano
+  // (archivo de configuracion, bloque "npu", clave "escala").
   ScaleMode scale_mode = ScaleMode::Auto;
   // Tensor de salida que se lee. Por omision el 0.
   std::size_t output_index = 0;
@@ -45,7 +47,8 @@ struct NpuEmbedderOptions {
 // NO es segura entre hilos: la usa el hilo de trabajo del servicio, el mismo que
 // llama a poll(). Lanza std::invalid_argument si las opciones no cuadran con el .nb
 // (tamano de entrada distinto del del tensor, indice de salida fuera de rango, salida
-// en un formato que dequantize no sabe leer o una salida sin elementos) y npu::NpuError
+// en un formato que dequantize no sabe leer, una salida sin elementos, o un tensor de
+// entrada con un formato, unas dimensiones o un rango que no valen) y npu::NpuError
 // si el modelo no se puede cargar o preparar.
 class NpuFaceEmbedder final : public FaceEmbedder {
  public:

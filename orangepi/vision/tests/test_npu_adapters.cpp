@@ -106,3 +106,47 @@ TEST(el_detector_rechaza_un_tamano_de_entrada_que_no_cuadra_con_el_modelo) {
   vision::NpuDetectorOptions options;
   CHECK_THROWS(vision::NpuFaceDetector(driver, kModelo, options), std::invalid_argument);
 }
+
+// --- Tercera ronda: el tensor de entrada se valida AL ARRANCAR ------------------
+//
+// El modelo del fabricante (uint8 afin con escala 1/255 y zero_point 0) tiene que
+// pasar la validacion de entrada y deducir el modo Unit: con el, la entrada no satura.
+TEST(el_modelo_del_fabricante_pasa_la_validacion_de_entrada) {
+  if (!hay_modelo()) return;
+  vision::npu::Driver driver;
+  vision::npu::Network red(driver, kModelo);
+  const vision::TensorInfo& entrada = red.input_info(0);
+
+  // La validacion de arranque no lanza con el tensor del fabricante.
+  vision::validar_tensor_entrada(entrada, vision::PreprocessOptions{}, "NpuFaceEmbedder");
+  // El modo deducido es Unit (dominio real [0,1]).
+  CHECK_EQ(static_cast<int>(vision::modo_escala_efectivo(vision::ScaleMode::Auto, entrada)),
+           static_cast<int>(vision::ScaleMode::Unit));
+}
+
+// Un modo de escala que no cuadra con el tensor tiene que hacer fallar el PROCESO al
+// arrancar (al construir el adaptador), no en el primer fotograma.
+TEST(el_embedder_rechaza_un_modo_de_escala_incompatible_al_arrancar) {
+  if (!hay_modelo()) return;
+  vision::npu::Driver driver;
+  vision::NpuEmbedderOptions options;
+  options.input_width = 224;
+  options.input_height = 224;
+  // El tensor del fabricante esta cuantificado con escala 1/255: su dominio es [0,1], no
+  // [-1,1]. Con ArcFace, el adaptador tiene que.rejectarlo al construirlo.
+  options.scale_mode = vision::ScaleMode::ArcFace;
+  CHECK_THROWS(vision::NpuFaceEmbedder(driver, kModelo, options), std::invalid_argument);
+}
+
+// Con el tamano de entrada en 0, se toma el del .nb (224 en el modelo del fabricante).
+TEST(el_embedder_toma_el_tamano_de_entrada_del_modelo_cuando_se_pide_cero) {
+  if (!hay_modelo()) return;
+  vision::npu::Driver driver;
+  vision::NpuEmbedderOptions options;
+  options.input_width = 0;
+  options.input_height = 0;
+  vision::NpuFaceEmbedder embedder(driver, kModelo, options);
+  const cv::Mat imagen(224, 224, CV_8UC3, cv::Scalar(10, 20, 30));
+  const std::vector<float> embedding = embedder.embed(imagen);
+  CHECK(!embedding.empty());
+}

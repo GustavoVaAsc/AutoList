@@ -83,11 +83,15 @@ void uso(const char* programa) {
 constexpr const char* kDirectorioModelos = "/opt/autolist/models";
 constexpr const char* kNombreDetector = "detector";
 
-// Codigo de salida propio para "faltan los modelos" (EX_CONFIG de sysexits.h). Es
-// un problema de configuracion de la maquina, no un fallo del proceso: con
-// Restart=on-failure, systemd lo reiniciaria cada 5 s para siempre (y llenaria el
-// journal). La unidad lleva RestartPreventExitStatus=78.
-constexpr int kSalidaFaltanModelos = 78;
+// Codigo de salida propio para los errores de CONFIGURACION (EX_CONFIG de sysexits.h):
+// "faltan los modelos .nb" y "el .nb no encaja con el codigo". No es un fallo del
+// proceso, es una configuracion que falta o que no vale: con Restart=on-failure,
+// systemd lo reiniciaria cada 5 s para siempre (y llenaria el journal). La unidad lleva
+// RestartPreventExitStatus=78.
+//
+// El 1 se sigue usando para los demas fallos (el bus no arranca, el servicio no se
+// puede construir, el driver de la NPU no responde).
+constexpr int kSalidaConfig = 78;
 
 std::filesystem::path ruta_detector() {
   return ruta_modelo(kNombreDetector, kDirectorioModelos);
@@ -313,10 +317,22 @@ int main(int argc, char** argv) {
   // Sin los modelos .nb no hay detector ni embedder: el proceso solo arranca en
   // --dry-run. Cuando existan, se enchufan los adaptadores reales sobre la NPU
   // (include/vision/npu_face_detector.hpp y include/vision/npu_face_embedder.hpp).
+  //
+  // Las rutas se construyen aqui, dentro de un try: ruta_modelo falla cerrado si el
+  // nombre no es valido, y una excepcion fuera de un try terminaria el proceso con
+  // std::terminate en vez de un mensaje claro.
+  std::filesystem::path detector_nb;
+  std::filesystem::path embedding_nb;
   if (!dry_run) {
-    const std::filesystem::path detector = ruta_detector();
-    const std::filesystem::path embedding = ruta_embedding(config);
-    if (!std::filesystem::exists(detector) || !std::filesystem::exists(embedding)) {
+    try {
+      detector_nb = ruta_detector();
+      embedding_nb = ruta_embedding(config);
+    } catch (const std::exception& error) {
+      std::cerr << "[vision] no se pudo construir la ruta de los modelos .nb: "
+                << error.what() << '\n';
+      return 1;
+    }
+    if (!std::filesystem::exists(detector_nb) || !std::filesystem::exists(embedding_nb)) {
       // Solo se registran los NOMBRES de los modelos: las rutas absolutas no se
       // imprimen (el arranque va al journal).
       std::cerr << "[vision] faltan los modelos .nb (" << kNombreDetector << ".nb, "
@@ -324,7 +340,7 @@ int main(int argc, char** argv) {
                 "cableado\n";
       // Codigo propio: es una configuracion que falta, no un fallo del proceso. Con
       // Restart=on-failure, systemd lo relanzaria cada 5 s sin parar.
-      return kSalidaFaltanModelos;
+      return kSalidaConfig;
     }
   }
 
@@ -416,17 +432,32 @@ int main(int argc, char** argv) {
     // proceso avisa y termina: en produccion no se arranca a ciegas.
     try {
       driver_npu = std::make_unique<npu::Driver>();
-      // PROVISIONAL: los parametros por omision (640x640 el detector, 112x112 el
-      // embedder, color RGB y la normalizacion dentro del modelo) hay que confirmarlos
-      // con el .nb real, que todavia no existe.
+      // Los parametros vienen del bloque "npu" de la configuracion (por omision, los de
+      // siempre): el orden de color, el modo de escala y el tamano de entrada del
+      // detector (0 = el que tenga el .nb).
       NpuDetectorOptions opciones_detector;
+      opciones_detector.input_width = config.npu.detector_width;
+      opciones_detector.input_height = config.npu.detector_height;
+      opciones_detector.color_order = config.npu.color_order;
+      opciones_detector.scale_mode = config.npu.scale_mode;
       detector_npu =
-          std::make_unique<NpuFaceDetector>(*driver_npu, ruta_detector(), opciones_detector);
+          std::make_unique<NpuFaceDetector>(*driver_npu, detector_nb, opciones_detector);
+      // El embedder comparte el color y el modo de escala; su tamano de entrada (112)
+      // lo fija el .nb de reconocimiento.
       NpuEmbedderOptions opciones_embedder;
-      embedder_npu = std::make_unique<NpuFaceEmbedder>(*driver_npu, ruta_embedding(config),
+      opciones_embedder.color_order = config.npu.color_order;
+      opciones_embedder.scale_mode = config.npu.scale_mode;
+      embedder_npu = std::make_unique<NpuFaceEmbedder>(*driver_npu, embedding_nb,
                                                        opciones_embedder);
       detector = detector_npu.get();
       embedder = embedder_npu.get();
+    } catch (const std::invalid_argument& error) {
+      // El .nb no encaja con el codigo: su disposicion de salidas, su tamano de entrada
+      // o el formato de su tensor de entrada no son los que el codigo espera. Es un
+      // error de configuracion, igual que "faltan los modelos": con el 78, systemd no
+      // reinicia el servicio cada 5 s para siempre.
+      std::cerr << "[vision] el .nb no encaja con el codigo: " << error.what() << '\n';
+      return kSalidaConfig;
     } catch (const std::exception& error) {
       std::cerr << "[vision] no se pudieron cargar los modelos .nb en la NPU: "
                 << error.what() << '\n';

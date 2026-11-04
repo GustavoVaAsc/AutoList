@@ -4,6 +4,7 @@
 #include <cmath>
 #include <climits>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 #include "minitest.hpp"
@@ -335,4 +336,78 @@ TEST(el_pipeline_rechaza_un_tensor_que_no_cuadra_con_el_numero_de_anclas) {
   DetectorLayout layout;
   const std::vector<DetectorTensor> tensores = {DetectorTensor{0, std::vector<float>(10, 0.0f)}};
   CHECK_THROWS(decode_detector_outputs(tensores, layout, 640, 640), std::invalid_argument);
+}
+
+// --- Tercera ronda: los valores no finitos se descartan --------------------------
+//
+// Un score NaN pasa el filtro "score < umbral" (la comparacion con NaN es falsa) y
+// llegaba al partial_sort y al stable_sort con un comparador que, con un NaN, no es una
+// relacion de orden estricto debil (comportamiento indefinido segun el estandar).
+TEST(el_pipeline_descarta_el_ancla_con_un_score_no_finito) {
+  DetectorLayout layout;
+  layout.score_threshold = 0.5f;
+  const std::vector<Anchor> anclas = generate_anchors(layout, 640, 640);
+  const int valores = values_per_anchor(layout);
+  std::vector<float> tensor(anclas.size() * static_cast<std::size_t>(valores), 0.0f);
+  tensor[4] = std::nanf("");                    // score NaN de la primera ancla
+  tensor[100 * valores + 4] = 0.8f;             // score bueno de la ancla 100
+
+  const std::vector<DetectorTensor> tensores = {DetectorTensor{0, tensor}};
+  const std::vector<FaceDetection> detecciones =
+      decode_detector_outputs(tensores, layout, 640, 640);
+  // La ancla con el score NaN se descarta: solo pasa la que tiene un score bueno.
+  CHECK_EQ(detecciones.size(), std::size_t{1});
+  CHECK_NEAR(detecciones[0].score, 0.8, 1e-6);
+}
+
+// Un landmark NaN haria que align_face lanzara en cada fotograma: el ancla se
+// descarta antes de decodificar los offsets.
+TEST(el_pipeline_descarta_el_ancla_con_landmarks_no_finitos) {
+  DetectorLayout layout;
+  layout.score_threshold = 0.5f;
+  const std::vector<Anchor> anclas = generate_anchors(layout, 640, 640);
+  const int valores = values_per_anchor(layout);
+  std::vector<float> tensor(anclas.size() * static_cast<std::size_t>(valores), 0.0f);
+  tensor[4] = 0.9f;          // score bueno de la primera ancla
+  tensor[5] = std::nanf(""); // el primer offset de landmark es NaN
+  tensor[100 * valores + 4] = 0.8f;
+
+  const std::vector<DetectorTensor> tensores = {DetectorTensor{0, tensor}};
+  const std::vector<FaceDetection> detecciones =
+      decode_detector_outputs(tensores, layout, 640, 640);
+  CHECK_EQ(detecciones.size(), std::size_t{1});
+  CHECK_NEAR(detecciones[0].score, 0.8, 1e-6);
+  for (const cv::Point2f& punto : detecciones[0].landmarks) CHECK(std::isfinite(punto.x));
+}
+
+// Lo mismo, con los landmarks en un tensor aparte.
+TEST(el_pipeline_descarta_el_ancla_con_landmarks_no_finitos_en_tensor_apartado) {
+  DetectorLayout layout;
+  layout.score_threshold = 0.5f;
+  layout.landmarks_in_boxes_tensor = false;
+  layout.landmarks_output_index = 1;
+  const std::vector<Anchor> anclas = generate_anchors(layout, 640, 640);
+  std::vector<float> cajas(anclas.size() * 5, 0.0f);
+  std::vector<float> landmarks(anclas.size() * 10, 0.0f);
+  cajas[4] = 0.9f;
+  landmarks[3] = std::nanf("");  // el offset x del primer landmark de la ancla 0
+  cajas[100 * 5 + 4] = 0.8f;
+
+  const std::vector<DetectorTensor> tensores = {DetectorTensor{0, cajas},
+                                                 DetectorTensor{1, landmarks}};
+  const std::vector<FaceDetection> detecciones =
+      decode_detector_outputs(tensores, layout, 640, 640);
+  CHECK_EQ(detecciones.size(), std::size_t{1});
+  CHECK_NEAR(detecciones[0].score, 0.8, 1e-6);
+}
+
+// El NMS es una API publica: un score NaN en el comparador del orden no seria una
+// relacion de orden estricto debil, asi que se rechaza con una excepcion clara.
+TEST(el_nms_rechaza_un_score_no_finito) {
+  const std::vector<cv::Rect2f> cajas = {cv::Rect2f(0.0f, 0.0f, 10.0f, 10.0f),
+                                         cv::Rect2f(50.0f, 50.0f, 10.0f, 10.0f)};
+  const std::vector<float> scores = {0.9f, std::nanf("")};
+  CHECK_THROWS(nms(cajas, scores, 0.4f), std::invalid_argument);
+  const std::vector<float> infinitos = {0.9f, std::numeric_limits<float>::infinity()};
+  CHECK_THROWS(nms(cajas, infinitos, 0.4f), std::invalid_argument);
 }

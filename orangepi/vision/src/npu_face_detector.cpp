@@ -51,9 +51,20 @@ NpuFaceDetector::NpuFaceDetector(const npu::Driver& driver, const std::filesyste
                                 " y el modelo solo tiene " + std::to_string(salidas) + " salidas");
   }
   input_info_ = network_.input_info(0);
+  // El tensor de ENTRADA se valida al arrancar: formato, dimensiones, modo de escala y
+  // rango representable. Un .nb con otra disposicion tiene que hacer fallar el proceso
+  // aqui, no en el primer fotograma con el alumno delante de la camara.
+  PreprocessOptions preproceso;
+  preproceso.color_order = options_.color_order;
+  preproceso.scale_mode = options_.scale_mode;
+  validar_tensor_entrada(input_info_, preproceso, "NpuFaceDetector");
   ajustar_tamano_entrada(options_.input_width, options_.input_height, input_info_,
                          "NpuFaceDetector");
-  // Las anclas se generan una vez: dependen solo del tamano de entrada.
+  // Las anclas se generan una vez: dependen solo del tamano de entrada. Antes de
+  // generarlas, las dimensiones se acotan: sin este techo, un .nb que declarara
+  // 60000x60000 pediria 112 millones de anclas (~2,2 GB) antes de que nada lo
+  // rechazara.
+  comprobar_tamano_entrada(options_.input_width, options_.input_height, "NpuFaceDetector");
   anchors_ = generate_anchors(options_.layout, options_.input_width, options_.input_height);
   // El formato y el numero de elementos de las salidas se comprueban al arrancar, no en
   // cada fotograma.

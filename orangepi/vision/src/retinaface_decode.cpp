@@ -16,6 +16,14 @@ constexpr float kVarBox[4] = {0.1f, 0.2f, 0.3f, 0.3f};
 // Relacion de la segunda ancla de cada posicion (la misma area que la cuadrada).
 constexpr float kRatioAncla = 1.3f;
 
+// true si los 10 offsets de landmarks son finitos.
+bool landmarks_finitos(const float* offsets) {
+  for (std::size_t i = 0; i < 10; ++i) {
+    if (!std::isfinite(offsets[i])) return false;
+  }
+  return true;
+}
+
 // La entrada de referencia del RetinaFace clasico, para la que valen los tamanos base.
 constexpr float kEntradaDeReferencia = 640.0f;
 
@@ -153,6 +161,14 @@ std::vector<int> nms(const std::vector<cv::Rect2f>& boxes, const std::vector<flo
     throw std::invalid_argument("nms: el umbral de IoU " + std::to_string(iou_threshold) +
                                 " esta fuera de [0, 1]");
   }
+  // Un score no finito haria que el comparador del orden no sea una relacion de orden
+  // estricto debil (comportamiento indefinido segun el estandar): se rechaza antes.
+  for (std::size_t i = 0; i < scores.size(); ++i) {
+    if (!std::isfinite(scores[i])) {
+      throw std::invalid_argument("nms: el score " + std::to_string(i) +
+                                  " no es finito (NaN o infinito)");
+    }
+  }
   std::vector<int> indices(boxes.size());
   std::iota(indices.begin(), indices.end(), 0);
   // De mayor a menor score; a igualdad de score, el indice menor va primero (estable).
@@ -257,7 +273,14 @@ std::vector<FaceDetection> decode_detector_outputs(const std::vector<DetectorTen
       offsets = landmarks->values.data() + i * 10;
     }
 
+    // Un score no finito (NaN) pasa el filtro "score < umbral" (la comparacion con NaN
+    // es falsa) y llegaria al NMS con un comparador que no es una relacion de orden
+    // estricto debil: se descarta el ancla.
+    if (!std::isfinite(score)) continue;
     if (score < layout.score_threshold) continue;
+    // Los offsets de landmarks tambien tienen que ser finitos: si no, el punto sale
+    // NaN y align_face lanza en cada fotograma.
+    if (!landmarks_finitos(offsets)) continue;
 
     const cv::Rect2f bbox = decode_box(anchors[i], base);
     cajas_decodificadas.push_back(bbox);

@@ -139,6 +139,44 @@ bool exigir(const bool condicion, const char* seccion, const char* clave, const 
   return false;
 }
 
+// Mapea la cadena del orden de color del bloque "npu" al enumerado. Un color
+// desconocido hace fallar la carga de la configuracion, como las demas claves.
+bool leer_color(const std::string& valor, ColorOrder& color, std::string& error) {
+  if (valor == "rgb") {
+    color = ColorOrder::Rgb;
+    return true;
+  }
+  if (valor == "bgr") {
+    color = ColorOrder::Bgr;
+    return true;
+  }
+  error = "npu.color: se esperaba \"rgb\" o \"bgr\"";
+  return false;
+}
+
+// Mapea la cadena del modo de escala del bloque "npu" al enumerado. Una escala
+// desconocida hace fallar la carga de la configuracion, como las demas claves.
+bool leer_escala(const std::string& valor, ScaleMode& modo, std::string& error) {
+  if (valor == "auto") {
+    modo = ScaleMode::Auto;
+    return true;
+  }
+  if (valor == "ninguna") {
+    modo = ScaleMode::None;
+    return true;
+  }
+  if (valor == "unidad") {
+    modo = ScaleMode::Unit;
+    return true;
+  }
+  if (valor == "arcface") {
+    modo = ScaleMode::ArcFace;
+    return true;
+  }
+  error = "npu.escala: se esperaba \"auto\", \"ninguna\", \"unidad\" o \"arcface\"";
+  return false;
+}
+
 // La URL de la galeria, partida en esquema y host.
 struct UrlPartes {
   std::string esquema;
@@ -196,7 +234,8 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   ProcessConfig config;
   error.clear();
 
-  if (!solo_claves(parsed, {"mqtt", "captura", "galeria", "umbrales", "servicio", "http"},
+  if (!solo_claves(parsed, {"mqtt", "captura", "galeria", "umbrales", "servicio", "http",
+                            "npu"},
                    nullptr, error)) {
     return false;
   }
@@ -356,6 +395,30 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   }
   if (!leer_string(bloque, "http", "ca_file", config.http.ca_file, error)) return false;
 
+  // Bloque "npu": los parametros de los adaptadores sobre la NPU. Es opcional: si no
+  // esta, se quedan los valores por omision (los de siempre).
+  if (!seccion(parsed, "npu", bloque, error)) return false;
+  if (!solo_claves(bloque, {"color", "escala", "ancho", "alto"}, "npu", error)) {
+    return false;
+  }
+  std::string color = "rgb";
+  if (!leer_string(bloque, "npu", "color", color, error)) return false;
+  if (!leer_color(color, config.npu.color_order, error)) return false;
+  std::string escala = "auto";
+  if (!leer_string(bloque, "npu", "escala", escala, error)) return false;
+  if (!leer_escala(escala, config.npu.scale_mode, error)) return false;
+  if (!leer_entero(bloque, "npu", "ancho", config.npu.detector_width, error)) return false;
+  if (!leer_entero(bloque, "npu", "alto", config.npu.detector_height, error)) return false;
+  // 0 significa "el tamano que tenga el .nb"; un negativo no tiene sentido.
+  if (!exigir(config.npu.detector_width >= 0, "npu", "ancho", "no puede ser negativo",
+              error)) {
+    return false;
+  }
+  if (!exigir(config.npu.detector_height >= 0, "npu", "alto", "no puede ser negativo",
+              error)) {
+    return false;
+  }
+
   out = std::move(config);
   return true;
 }
@@ -414,10 +477,17 @@ std::filesystem::path ruta_modelo(const std::string& nombre,
     throw std::invalid_argument("ruta_modelo: el nombre del modelo no es valido");
   }
   const std::filesystem::path ruta = directorio / (nombre + ".nb");
-  // La ruta tiene que seguir dentro del directorio de modelos.
+  // La ruta tiene que seguir dentro del directorio de modelos. Se compara COMPONENTE A
+  // COMPONENTE (no por el prefijo): un nombre valido como "..modelo" no es un "..", y
+  // los dos validadores (nombre_modelo_valido y ruta_modelo) tienen que decir lo mismo.
   const std::filesystem::path relativa = ruta.lexically_relative(directorio);
-  if (relativa.empty() || relativa.native().rfind("..", 0) == 0) {
+  if (relativa.empty()) {
     throw std::invalid_argument("ruta_modelo: la ruta del modelo sale del directorio de modelos");
+  }
+  for (const std::filesystem::path& componente : relativa) {
+    if (componente == "..") {
+      throw std::invalid_argument("ruta_modelo: la ruta del modelo sale del directorio de modelos");
+    }
   }
   return ruta;
 }

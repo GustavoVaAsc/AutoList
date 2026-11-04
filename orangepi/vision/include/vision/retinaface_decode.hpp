@@ -123,8 +123,9 @@ float iou(const cv::Rect2f& a, const cv::Rect2f& b);
 // Supresion de no maximos por IoU. Devuelve los indices conservados, del score mas
 // alto al mas bajo.
 //
-// Lanza std::invalid_argument si no hay un score por caja o si el umbral de IoU esta
-// fuera de [0, 1].
+// Lanza std::invalid_argument si no hay un score por caja, si el umbral de IoU esta
+// fuera de [0, 1] o si algun score no es finito (un NaN en el comparador del orden no
+// seria una relacion de orden estricto debil: comportamiento indefinido).
 std::vector<int> nms(const std::vector<cv::Rect2f>& boxes, const std::vector<float>& scores,
                      float iou_threshold);
 
@@ -145,6 +146,12 @@ struct DetectorTensor {
 // Lanza std::invalid_argument si falta el tensor de cajas, si falta el tensor de scores
 // o el de landmarks que el layout pide aparte, si el numero de valores no cuadra con el
 // numero de anclas o si un tensor apartado no trae un valor por ancla.
+//
+// El ancla se descarta (no es una deteccion) si su score no es finito o si los offsets
+// de sus landmarks no lo son: un NaN en el score pasaria el filtro del umbral (la
+// comparacion con NaN es falsa) y llegaria al NMS con un comparador que no es una
+// relacion de orden estricto debil, y un NaN en un landmark haria que align_face
+// lanzara en cada fotograma.
 std::vector<FaceDetection> decode_detector_outputs(const std::vector<DetectorTensor>& tensors,
                                                     const DetectorLayout& layout,
                                                     int input_width, int input_height);

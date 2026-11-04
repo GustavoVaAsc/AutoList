@@ -28,12 +28,15 @@ namespace vision {
 
 struct NpuDetectorOptions {
   // Tamano de la entrada del modelo. Por omision 640x640 (el RetinaFace clasico).
-  // Si se deja en 0 (o en negativo), se toma el del tensor del .nb.
+  // Si se deja en 0 (o en negativo), se toma el del tensor del .nb. Se puede fijar en el
+  // archivo de configuracion (bloque "npu", claves "ancho" y "alto").
   int input_width = 640;
   int input_height = 640;
-  // PROVISIONAL: depende del .nb, que todavia no existe (ver PreprocessOptions).
+  // Orden de color del tensor de entrada (archivo de configuracion, bloque "npu",
+  // clave "color"). Por omision RGB.
   ColorOrder color_order = ColorOrder::Rgb;
-  // El modo de escala se deriva del tensor de entrada (Auto) salvo que se elija a mano.
+  // El modo de escala se deriva del tensor de entrada (Auto) salvo que se elija a mano
+  // (archivo de configuracion, bloque "npu", clave "escala").
   ScaleMode scale_mode = ScaleMode::Auto;
   // Disposicion de la salida del modelo (PROVISIONAL: ver DetectorLayout).
   DetectorLayout layout{};
@@ -46,8 +49,9 @@ struct NpuDetectorOptions {
 //
 // Lanza std::invalid_argument si las opciones no cuadran con el .nb (tamano de entrada
 // distinto del del tensor, indice de salida fuera de rango, salida en un formato que
-// dequantize no sabe leer, o numero de elementos de la salida que no cuadra con el
-// layout) y npu::NpuError si el modelo no se puede cargar o preparar.
+// dequantize no sabe leer, numero de elementos de la salida que no cuadra con el
+// layout, o un tensor de entrada con un formato, unas dimensiones o un rango que no
+// valen) y npu::NpuError si el modelo no se puede cargar o preparar.
 class NpuFaceDetector final : public FaceDetector {
  public:
   NpuFaceDetector(const npu::Driver& driver, const std::filesystem::path& nb_file,

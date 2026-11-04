@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <string>
 
+#include "vision/npu_preprocess.hpp"
 #include "vision/vision_service.hpp"
 
 namespace vision {
@@ -78,6 +79,25 @@ struct HttpSettings {
   std::string ca_file;
 };
 
+// Bloque "npu": los parametros de los adaptadores sobre la NPU.
+//
+// Son los que hasta ahora estaban codificados en el codigo. Dependen del .nb real,
+// que todavia no existe: por eso estan en el archivo de configuracion y no hace falta
+// recompilar cuando llegue.
+//
+// El bloque entero es opcional: si no esta, el comportamiento es el de siempre (RGB,
+// escala deducida del tensor y entrada de 640x640 en el detector).
+struct NpuSettings {
+  // "color": "rgb" (por omision) o "bgr".
+  ColorOrder color_order = ColorOrder::Rgb;
+  // "escala": "auto" (por omision, se deduce del tensor), "ninguna" (el byte crudo),
+  // "unidad" (x/255) o "arcface" ((x-127.5)/127.5).
+  ScaleMode scale_mode = ScaleMode::Auto;
+  // "ancho" y "alto": tamano de entrada del detector. 0 significa "el que tenga el .nb".
+  int detector_width = 640;
+  int detector_height = 640;
+};
+
 // La configuracion completa del proceso.
 struct ProcessConfig {
   MqttSettings mqtt;
@@ -86,6 +106,7 @@ struct ProcessConfig {
   ThresholdSettings thresholds;
   ServiceSettings service;
   HttpSettings http;
+  NpuSettings npu;
 
   // El mapeo a la configuracion de la maquina de estados.
   ServiceConfig to_service_config() const;
