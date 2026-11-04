@@ -393,15 +393,25 @@ Alinea las imagenes de un manifiesto a 112x112 con **el mismo warp de 5 puntos q
 
 Sirve para dos cosas: el set de calibracion del `.nb` (Acuity/Pegasus) y el ajuste de los umbrales con LFW (18 de noviembre).
 
-El manifiesto tiene una linea por imagen, con la ruta y los 5 landmarks en pixeles de la imagen:
+El manifiesto tiene una linea por imagen, con la ruta y los 5 landmarks en pixeles de la imagen. Acepta tres formatos:
 
 ```
 ruta_de_imagen<TAB>x1 y1 x2 y2 x3 y3 x4 y4 x5 y5
+ruta_de_imagen<TAB>x1<TAB>y1<TAB>...
+ruta_de_imagen x1 y1 x2 y2 x3 y3 x4 y4 x5 y5
 ```
 
-Los puntos van en el orden de `FaceDetection::landmarks`: ojo izquierdo, ojo derecho, nariz, boca izquierda, boca derecha. Las lineas vacias y las que empiezan por `#` se ignoran; una linea mal formada es un error (codigo de salida 1). Las imagenes que no se pueden leer, o con landmarks degenerados, se omiten con un aviso y el script sigue. La salida es un PNG de 112x112 por imagen, con el nombre base de la original.
+Los puntos van en el orden de `FaceDetection::landmarks`: ojo izquierdo, ojo derecho, nariz, boca izquierda, boca derecha. El formato con TAB es el que permite una ruta con espacios. Las lineas vacias y las que empiezan por `#` se ignoran; una linea mal formada es un error (codigo de salida 1). Las imagenes que no se pueden leer, con landmarks no finitos o degenerados, o de mas de 4000 px por lado, se omiten con un aviso y el script sigue. La salida es un PNG de 112x112 por imagen, con el nombre base de la original.
 
 El script compila el programa en un directorio temporal: no toca el repositorio, solo escribe en el directorio de salida.
+
+**La salida no puede estar dentro del repositorio.** Los recortes de rostros son datos biometricos irreversibles: un `git add .` los meteria en el historial de forma permanente. Si el directorio de salida cae dentro de la raiz del repo, la herramienta lo rechaza antes de escribir nada (codigo de salida 1). Usa un directorio de fuera (`/tmp/salida` o un volumen externo). El `.gitignore` de la raiz ignora ademas `/dataset/`, `/datos/`, `/lfw/` y `/herramientas/salida*/`, por si se.worktree el dataset en otra parte del arbol.
+
+`herramientas/pruebas_alinear_lfw.sh` comprueba los tres formatos, la ruta con espacios, los caminos de error y la barrera del repositorio:
+
+```bash
+herramientas/pruebas_alinear_lfw.sh
+```
 
 **De donde salen los landmarks importa.** Para calibrar el `.nb` el recorte tiene que ser **el mismo que vera la placa**, o sea el que produce el detector con sus landmarks. Los landmarks que trae LFW sirven para el ajuste de umbrales, pero no para la cuantizacion del modelo: hay que regenerar el manifiesto con el detector cuando exista.
 
