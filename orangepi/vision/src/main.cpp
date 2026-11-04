@@ -34,6 +34,9 @@
 #include "vision/httplib_client.hpp"
 #include "vision/mqtt_bus.hpp"
 #include "vision/mqtt_contract.hpp"
+#include "vision/npu.hpp"
+#include "vision/npu_face_detector.hpp"
+#include "vision/npu_face_embedder.hpp"
 #include "vision/process_config.hpp"
 #include "vision/vision_service.hpp"
 #include "vision/wall_clock.hpp"
@@ -302,7 +305,8 @@ int main(int argc, char** argv) {
 
   // --- Modelos -----------------------------------------------------------------
   // Sin los modelos .nb no hay detector ni embedder: el proceso solo arranca en
-  // --dry-run. Cuando existan, aqui se enchufran (include/vision/npu.hpp).
+  // --dry-run. Cuando existan, se enchufan los adaptadores reales sobre la NPU
+  // (include/vision/npu_face_detector.hpp y include/vision/npu_face_embedder.hpp).
   if (!dry_run) {
     const std::string detector = kRutaDetector;
     const std::string embedding = ruta_embedding(config);
@@ -313,9 +317,6 @@ int main(int argc, char** argv) {
       // Restart=on-failure, systemd lo relanzaria cada 5 s sin parar.
       return kSalidaFaltanModelos;
     }
-    std::cerr << "[vision] el detector y el embedder sobre la NPU todavia no estan "
-                 "implementados\n";
-    return 1;
   }
 
   // --- Adaptadores -------------------------------------------------------------
@@ -378,18 +379,56 @@ int main(int argc, char** argv) {
   // red del bus.
   bus.set_connect_listener([&recarga_pendiente] { recarga_pendiente.store(true); });
 
-  // El detector y el embedder: en --dry-run son los dobles en memoria. Cuando haya
-  // modelos, aqui se enchufan los reales sobre la NPU.
-  fakes::FakeFaceDetector detector;
-  fakes::FakeFaceEmbedder embedder;
-  {
+  // El detector y el embedder: en --dry-run son los dobles en memoria; en produccion,
+  // los adaptadores reales sobre la NPU.
+  //
+  // El driver de la NPU se declara ANTES que las redes: se destruyen en orden inverso y
+  // el driver tiene que vivir mas que ellas. La NPU se usa desde el hilo de trabajo (el
+  // mismo que llama a poll()), nunca desde otro hilo: las redes no son seguras entre
+  // hilos.
+  fakes::FakeFaceDetector detector_falso;
+  fakes::FakeFaceEmbedder embedder_falso;
+  std::unique_ptr<npu::Driver> driver_npu;
+  std::unique_ptr<NpuFaceDetector> detector_npu;
+  std::unique_ptr<NpuFaceEmbedder> embedder_npu;
+  FaceDetector* detector = &detector_falso;
+  FaceEmbedder* embedder = &embedder_falso;
+
+  if (dry_run) {
     FaceDetection cara;
     cara.score = 0.99f;
     for (std::size_t i = 0; i < cara.landmarks.size(); ++i) {
       cara.landmarks[i] = kArcFaceReference[i] * 2.0f + cv::Point2f(200.0f, 100.0f);
     }
-    detector.detections = {cara};
-    embedder.outputs = {{0.9f, 0.1f, 0.2f, 0.3f}};
+    detector_falso.detections = {cara};
+    embedder_falso.outputs = {{0.9f, 0.1f, 0.2f, 0.3f}};
+  } else {
+    // Los modelos .nb existen (ya se comprobo arriba). Si no se pueden cargar, el
+    // proceso avisa y termina: en produccion no se arranca a ciegas.
+    try {
+      driver_npu = std::make_unique<npu::Driver>();
+      // PROVISIONAL: los parametros por omision (640x640 el detector, 112x112 el
+      // embedder, color RGB y la normalizacion dentro del modelo) hay que confirmarlos
+      // con el .nb real, que todavia no existe.
+      NpuDetectorOptions opciones_detector;
+      detector_npu =
+          std::make_unique<NpuFaceDetector>(*driver_npu, kRutaDetector, opciones_detector);
+      NpuEmbedderOptions opciones_embedder;
+      embedder_npu = std::make_unique<NpuFaceEmbedder>(*driver_npu, ruta_embedding(config),
+                                                       opciones_embedder);
+      detector = detector_npu.get();
+      embedder = embedder_npu.get();
+    } catch (const std::exception& error) {
+      std::cerr << "[vision] no se pudieron cargar los modelos .nb en la NPU: "
+                << error.what() << '\n';
+      return 1;
+    } catch (...) {
+      std::cerr << "[vision] no se pudieron cargar los modelos .nb en la NPU: excepcion "
+                   "desconocida\n";
+      return 1;
+    }
+    std::cerr << "[vision] detector y embedder sobre la NPU cargados (" << kRutaDetector
+              << ", " << ruta_embedding(config) << ")\n";
   }
 
   SystemClock reloj;
@@ -399,7 +438,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<VisionService> servicio;
   try {
     servicio = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, detector, embedder, galeria, reloj, reloj_pared},
+        ServiceDeps{bus, http, *detector, *embedder, galeria, reloj, reloj_pared},
         config.to_service_config());
   } catch (const std::exception& error) {
     std::cerr << "[vision] no se pudo construir el servicio: " << error.what() << '\n';

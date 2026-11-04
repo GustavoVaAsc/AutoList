@@ -37,6 +37,49 @@ float read_integer(DataFormat format, const std::uint8_t* p) {
   }
 }
 
+// Convierte un float a media precision (IEEE 754 binary16) con redondeo al mas cercano
+// y al par. Se hace a mano para no depender de OpenCV en un archivo de tensores.
+std::uint16_t float_to_half(float value) {
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  const std::uint32_t sign = (bits >> 16) & 0x8000u;
+  const std::uint32_t exponent_bits = (bits >> 23) & 0xffu;
+  const std::uint32_t mantissa = bits & 0x7fffffu;
+  if (exponent_bits == 0xffu) {
+    // Infinito o NaN: se conserva el NaN (con un bit de mantija).
+    return static_cast<std::uint16_t>(sign | 0x7c00u | (mantissa != 0 ? 0x200u : 0u));
+  }
+  const std::int32_t exponent = static_cast<std::int32_t>(exponent_bits) - 127 + 15;
+  if (exponent >= 0x1f) {
+    // Desbordamiento: se satura al infinito.
+    return static_cast<std::uint16_t>(sign | 0x7c00u);
+  }
+  if (exponent <= 0) {
+    // Denormal: se normaliza la mantissa y se desplaza.
+    if (exponent < -10) return static_cast<std::uint16_t>(sign);  // por debajo del rango
+    const std::uint32_t mantissa_normalizada = mantissa | 0x800000u;
+    const std::uint32_t desplazamiento = static_cast<std::uint32_t>(14 - exponent);
+    const std::uint32_t entero = mantissa_normalizada >> desplazamiento;
+    const std::uint32_t resto = mantissa_normalizada & ((1u << desplazamiento) - 1u);
+    const std::uint32_t medio = 1u << (desplazamiento - 1);
+    std::uint32_t resultado = entero;
+    if (resto > medio || (resto == medio && (entero & 1u) != 0)) ++resultado;
+    return static_cast<std::uint16_t>(sign | resultado);
+  }
+  std::uint32_t resultado = (static_cast<std::uint32_t>(exponent) << 10) | (mantissa >> 13);
+  const std::uint32_t resto = mantissa & 0x1fffu;
+  if (resto > 0x1000u || (resto == 0x1000u && (resultado & 1u) != 0)) ++resultado;
+  return static_cast<std::uint16_t>(sign | resultado);
+}
+
+// Redondea al entero mas cercano (mitad hacia arriba) y recorta al rango del tipo.
+int round_and_clip(float value, int minimo, int maximo) {
+  const float redondeado = std::round(value);
+  if (redondeado < static_cast<float>(minimo)) return minimo;
+  if (redondeado > static_cast<float>(maximo)) return maximo;
+  return static_cast<int>(redondeado);
+}
+
 }  // namespace
 
 std::size_t element_size(DataFormat format) {
@@ -110,6 +153,71 @@ std::vector<float> dequantize(const TensorInfo& info, std::span<const std::uint8
     }
   }
   return out;
+}
+
+std::vector<std::uint8_t> quantize(const TensorInfo& info, std::span<const float> values) {
+  if (info.element_count != 0 && values.size() != info.element_count) {
+    throw std::invalid_argument("quantize: el tensor declara " +
+                                std::to_string(info.element_count) + " elementos y llegaron " +
+                                std::to_string(values.size()));
+  }
+  if (info.quant == QuantFormat::Affine && !(info.scale > 0.0f)) {
+    throw std::invalid_argument("quantize: la cuantizacion afín necesita scale > 0");
+  }
+
+  switch (info.format) {
+    case DataFormat::Fp32: {
+      std::vector<std::uint8_t> out(values.size() * sizeof(float));
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        const float value = values[i];
+        std::memcpy(out.data() + i * sizeof(float), &value, sizeof(float));
+      }
+      return out;
+    }
+    case DataFormat::Fp16: {
+      std::vector<std::uint8_t> out(values.size() * sizeof(std::uint16_t));
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        const std::uint16_t media = float_to_half(values[i]);
+        std::memcpy(out.data() + i * sizeof(std::uint16_t), &media, sizeof(std::uint16_t));
+      }
+      return out;
+    }
+    case DataFormat::Uint8:
+    case DataFormat::Int8: {
+      const bool con_signo = info.format == DataFormat::Int8;
+      const int minimo = con_signo ? -128 : 0;
+      const int maximo = con_signo ? 127 : 255;
+      std::vector<std::uint8_t> out(values.size());
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        float cuantizado = 0.0f;
+        switch (info.quant) {
+          case QuantFormat::Affine:
+            // q = round(real / scale) + zero_point
+            cuantizado = std::round(values[i] / info.scale) +
+                         static_cast<float>(info.zero_point);
+            break;
+          case QuantFormat::DynamicFixedPoint:
+            // q = round(real * 2^pos)
+            cuantizado = std::round(values[i] * std::ldexp(1.0f, info.fixed_point_pos));
+            break;
+          case QuantFormat::None:
+            // q = round(real)
+            cuantizado = std::round(values[i]);
+            break;
+        }
+        const int recortado = round_and_clip(cuantizado, minimo, maximo);
+        out[i] = con_signo ? static_cast<std::uint8_t>(static_cast<std::int8_t>(recortado))
+                            : static_cast<std::uint8_t>(recortado);
+      }
+      return out;
+    }
+    case DataFormat::Uint16:
+    case DataFormat::Int16:
+    case DataFormat::Other:
+      break;
+  }
+  throw std::invalid_argument("quantize: formato no soportado: " +
+                              std::string(to_string(info.format)));
 }
 
 }  // namespace vision

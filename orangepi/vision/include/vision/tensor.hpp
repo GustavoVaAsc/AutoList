@@ -39,4 +39,26 @@ std::size_t element_size(DataFormat format);
 // si su tamano no es multiplo del elemento.
 std::vector<float> dequantize(const TensorInfo& info, std::span<const std::uint8_t> raw);
 
+// Simetrico de dequantize: convierte valores float a los bytes crudos que espera un
+// tensor de entrada, aplicando su cuantizacion.
+//
+// Formato (el real es el valor que el modelo espera; el byte es lo que se escribe):
+//  - fp32/fp16: los bytes del float en el endianness nativo (la placa es little-endian,
+//    que es el que espera VIPLite). Para fp16 el float se convierte a media precision.
+//  - uint8/int8 con cuantizacion afin: q = round(real / scale) + zero_point, recortado al
+//    rango del tipo. Es el inverso de real = (q - zero_point) * scale.
+//  - uint8/int8 sin cuantizacion (quant == None): q = round(real), recortado al rango del
+//    tipo. El valor real es el byte de la imagen (0..255) cuando la normalizacion va
+//    DENTRO del modelo cuantizado.
+//  - uint8/int8 con punto fijo dinamico: q = round(real * 2^fixed_point_pos), recortado
+//    al rango del tipo. Es el inverso de real = q * 2^-fixed_point_pos.
+//
+// El redondeo es al entero mas cercano (mitad hacia arriba). El recorte al rango del tipo
+// es inevitable: un valor fuera de rango no es representable.
+//
+// Lanza std::invalid_argument si el formato no se soporta (solo fp32, fp16, uint8 e
+// int8), si info.element_count no es 0 y el numero de valores no es exactamente ese, o
+// si una cuantizacion afín trae scale <= 0.
+std::vector<std::uint8_t> quantize(const TensorInfo& info, std::span<const float> values);
+
 }  // namespace vision
