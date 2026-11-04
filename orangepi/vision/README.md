@@ -197,7 +197,7 @@ El motivo de que esto sea automático: con el modo equivocado, `quantize` satura
 - Las anclas se **cachean** en el detector: dependen solo del tamaño de entrada, no de la imagen.
 - El NMS recibe solo las **500 cajas de mejor score** (como el RetinaFace de referencia con "nms top 500"), en vez de comparar entre sí las 16 800 anclas.
 
-Medido en la placa: decodificar las 16 800 anclas bajó de **487 ms a 2,2 ms**, y un fotograma completo (preproceso 15 ms + inferencia 4-8 ms + decode 2 ms) queda en el orden de los 20 ms.
+Medido en la placa: decodificar las 16 800 anclas bajó de **487 ms a 2,2 ms**, y un fotograma completo (preproceso 15 ms + inferencia 4-8 ms + decode 2 ms) queda por debajo de los 30 ms.
 
 **Lo que sigue siendo PROVISIONAL**, porque el `.nb` todavía no existe: la disposición de la salida del detector (15 valores por ancla), la convención de decodificación (varianzas 0.1/0.2/0.3/0.3 aplicadas al valor predicho **sin** factor de stride, al estilo de InsightFace; el stride solo fija la rejilla y el tamaño del ancla), el color por omisión (RGB) y el tamaño de entrada (640x640 el detector, 112x112 el embedder). El código falla cerrado si el `.nb` no encaja con lo pedido; hay que contrastar estos supuestos con el modelo real en cuanto exista.
 
@@ -241,7 +241,7 @@ El archivo de configuración es JSON, con las claves en español como el resto d
   "mqtt": {"host": "127.0.0.1", "port": 1883, "usuario": "vision", "clave_env": "MQTT_PASSWORD", "client_id": "vision"},
   "captura": {"url": "http://192.168.1.50/capture", "rafaga": 4, "espera_luz_ms": 300, "http_timeout_ms": 2000, "max_body_bytes": 2097152},
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN", "timeout_ms": 5000},
-  "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45},
+  "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45, "min_similitud_pose": 0.5},
   "servicio": {"poll_ms": 20, "max_inbox_events": 16, "modelo": "w600k_mbf-uint8-v1", "acepta_png": false},
   "http": {"allow_invalid_certificates": false, "ca_file": ""}
 }
@@ -264,7 +264,7 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | `umbrales` | `min_sharpness` | varianza mínima del Laplaciano | `0.0` |
 | | `min_recognized_score` | umbral de "reconocido" | `0.6` |
 | | `min_dudoso_score` | umbral de "dudoso" | `0.45` |
-| | `min_similitud_pose` | similitud mínima (coseno) de la peor pose con la media de las candidatas; por debajo se descarta esa pose y se recalcula la media | `0.5` |
+| | `min_similitud_pose` | similitud mínima (coseno) de la peor pose con la media de las candidatas; por debajo se descarta esa pose y se recalcula la media. Con `0` el descarte queda desactivado | `0.5` |
 | `servicio` | `poll_ms` | periodo del bucle | `20` |
 | | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
 | | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
@@ -427,7 +427,7 @@ ruta_de_imagen<TAB>x1<TAB>y1<TAB>...
 ruta_de_imagen x1 y1 x2 y2 x3 y3 x4 y4 x5 y5
 ```
 
-Los puntos van en el orden de `FaceDetection::landmarks`: ojo izquierdo, ojo derecho, nariz, boca izquierda, boca derecha. El formato con TAB es el que permite una ruta con espacios. Las lineas vacias y las que empiezan por `#` se ignoran; una linea mal formada es un error (codigo de salida 1). Las imagenes que no se pueden leer, con landmarks no finitos o degenerados, o de mas de 4000 px por lado, se omiten con un aviso y el script sigue. La salida es un PNG de 112x112 por imagen, con el nombre base de la original.
+Los puntos van en el orden de `FaceDetection::landmarks`: ojo izquierdo, ojo derecho, nariz, boca izquierda, boca derecha. El formato con TAB es el que permite una ruta con espacios. Las lineas vacias y las que empiezan por `#` se ignoran; **una linea mal formada (un campo de mas o de menos, o una coordenada no finita) es un error del manifiesto y aborta todo el lote** (codigo de salida 1), porque un manifiesto a medias no sirve. Lo que se omite con un aviso y el script sigue es la imagen: la que no se puede leer, la de mas de 4000 px por lado y la que tiene los landmarks degenerados (puntos coincidentes). Los avisos dicen el numero de linea del manifiesto, no la ruta: la ruta suele llevar el nombre de la persona y eso es informacion biometrica que no tiene que salir en un log. La salida es un PNG de 112x112 por imagen, con el nombre base de la original.
 
 El script compila el programa en un directorio temporal: no toca el repositorio, solo escribe en el directorio de salida.
 

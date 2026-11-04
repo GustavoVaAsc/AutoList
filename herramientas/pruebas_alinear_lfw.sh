@@ -16,8 +16,10 @@
 set -eu
 
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
-BINARIO="$(mktemp -u)/alinear_lfw"
 DIR_TMP="$(mktemp -d)"
+# El binario va dentro de DIR_TMP, que el trap borra: mktemp -u ademas es
+# predictable (no es atomico).
+BINARIO="$DIR_TMP/alinear_lfw"
 FALLOS=0
 
 limpiar() {
@@ -132,7 +134,9 @@ printf '%s\t%s\n' "$IMAGEN_ESPACIOS" "$(printf '%s' "$LANDMARKS" | tr ' ' '\t')"
 comprobar_alineado "ruta con espacios (c)" "$DIR_TMP/sal_espc" "$DIR_TMP/sal_espc/rostro grande.png"
 
 echo "== Linea mal formada"
-printf '%s 30 40\n' "$IMAGEN" > "$DIR_TMP/mal.txt"
+# Coordenadas con valores que no pueden aparecer en una ruta (ni en un nombre de
+# directorio temporal): la comprobacion de que el log NO las imprime es exacta.
+printf '%s 987654 876543\n' "$IMAGEN" > "$DIR_TMP/mal.txt"
 if "$BINARIO" --manifest "$DIR_TMP/mal.txt" --out "$DIR_TMP/sal_mal" --repo-root "$RAIZ" > "$DIR_TMP/mal.log" 2>&1; then
     fallo "linea mal formada: la herramienta deberia salir con error"
 else
@@ -141,7 +145,7 @@ else
     else
         fallo "linea mal formada: el mensaje no es claro"; cat "$DIR_TMP/mal.log" >&2
     fi
-    if grep -q "30" "$DIR_TMP/mal.log"; then
+    if grep -q "987654" "$DIR_TMP/mal.log" || grep -q "876543" "$DIR_TMP/mal.log"; then
         fallo "linea mal formada: el mensaje imprime el valor de la coordenada"
     else
         ok "linea mal formada: el mensaje no imprime el valor de la coordenada"
@@ -191,7 +195,9 @@ else
 fi
 
 echo "== Salida dentro del repositorio"
-SALIDA_DENTRO="$RAIZ/salida_prueba_alinear"
+# La ruta de salida va en un directorio que el .gitignore ya cubre: si la barrera
+# se rompiera, los recortes no quedarian sin ignorar a un "git add ." de distancia.
+SALIDA_DENTRO="$RAIZ/herramientas/salida-prueba"
 rm -rf "$SALIDA_DENTRO"
 if "$BINARIO" --manifest "$DIR_TMP/a.txt" --out "$SALIDA_DENTRO" --repo-root "$RAIZ" > "$DIR_TMP/dentro.log" 2>&1; then
     fallo "salida dentro del repo: la herramienta deberia salir con error"

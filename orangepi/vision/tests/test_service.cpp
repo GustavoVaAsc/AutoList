@@ -709,6 +709,29 @@ TEST(el_promedio_sin_muestras_lanza_error) {
   CHECK_THROWS(mean_embedding({{1.0f, 0.0f}}, {}), std::invalid_argument);
 }
 
+// Un promedio de embeddings de distintas dimensiones leeria fuera de rango: lanza.
+TEST(el_promedio_con_dimensiones_distintas_lanza_error) {
+  const std::vector<std::vector<float>> poses = {{1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}};
+  CHECK_THROWS(mean_embedding(poses, {0, 1}), std::invalid_argument);
+}
+
+// Un grupo coherente de tres poses basta: las dos anomalas se descartan y el registro
+// sale con las tres (el descarte se detiene al llegar a tres, porque bajar de tres a dos
+// no puede producir un registro valido).
+TEST(el_descarte_conserva_un_grupo_coherente_de_tres) {
+  const std::vector<std::vector<float>> poses = {{1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {1.0f, 0.0f, 0.0f, 0.0f},
+                                                 {0.0f, 1.0f, 0.0f, 0.0f},
+                                                 {0.0f, 0.0f, 1.0f, 0.0f}};
+  const std::vector<std::size_t> supervivientes = keep_consistent_poses(poses, 0.50f);
+  CHECK_EQ(supervivientes.size(), std::size_t{3});
+  CHECK(std::find(supervivientes.begin(), supervivientes.end(), std::size_t{3}) ==
+        supervivientes.end());
+  CHECK(std::find(supervivientes.begin(), supervivientes.end(), std::size_t{4}) ==
+        supervivientes.end());
+}
+
 TEST(enrollment_pose_names_follow_the_plan) {
   Harness h;
   h.queue_frames(5);

@@ -51,6 +51,10 @@ namespace {
 struct Entrada {
   std::string ruta;
   std::array<cv::Point2f, 5> landmarks;
+  // Numero de linea del manifiesto. Los avisos dicen la linea y no la ruta: la
+  // ruta suele llevar el nombre de la persona (LFW: "Apolo_W_Newton_0001.jpg")
+  // y eso es informacion biometrica que no tiene que salir en un log.
+  int linea = 0;
 };
 
 // Lado maximo admitido por imagen, en pixeles. La placa tiene 4 GB: una imagen
@@ -60,7 +64,7 @@ constexpr int kLadoMaximoPx = 4000;
 constexpr const char* kUso =
     "Uso: alinear_lfw --manifest RUTA --out DIR [--repo-root DIR]\n"
     "\n"
-    "Alinea las imagens del manifiesto a 112x112 con vision::align_face y escribe\n"
+    "Alinea las imagenes del manifiesto a 112x112 con vision::align_face y escribe\n"
     "un PNG por imagen en el directorio de salida.\n"
     "\n"
     "Formatos de manifiesto aceptados (una imagen por linea):\n"
@@ -306,6 +310,7 @@ int main(int argc, char** argv) {
     if (recortada.empty() || recortada[0] == '#') continue;
 
     Entrada fila;
+    fila.linea = numero_linea;
     std::string error;
     if (!parsear_linea(recortada, fila, error)) {
       std::cerr << "Error: " << manifiesto << ":" << numero_linea << ": " << error
@@ -331,16 +336,16 @@ int main(int argc, char** argv) {
     // servicio, y descarta el canal alfa si lo hubiera.
     const cv::Mat imagen = cv::imread(fila.ruta, cv::IMREAD_COLOR);
     if (imagen.empty()) {
-      std::cerr << "Aviso: se omite " << fila.ruta << ": no se pudo leer la imagen\n";
+      std::cerr << "Aviso: se omite la linea " << fila.linea << ": no se pudo leer la imagen\n";
       ++omitidas;
       continue;
     }
     // La imagen ya esta decodificada: se comprueba el tamano y se omite si es
     // enorme, para no reserving mas memoria en la placa.
     if (imagen.cols > kLadoMaximoPx || imagen.rows > kLadoMaximoPx) {
-      std::cerr << "Aviso: se omite " << fila.ruta << ": la imagen mide " << imagen.cols << "x"
-                << imagen.rows << " y excede el limite de " << kLadoMaximoPx
-                << " px por lado\n";
+      std::cerr << "Aviso: se omite la linea " << fila.linea << ": la imagen mide "
+                << imagen.cols << "x" << imagen.rows << " y excede el limite de "
+                << kLadoMaximoPx << " px por lado\n";
       ++omitidas;
       continue;
     }
@@ -349,7 +354,7 @@ int main(int argc, char** argv) {
     try {
       alineada = vision::align_face(imagen, fila.landmarks);
     } catch (const std::exception& e) {
-      std::cerr << "Aviso: se omite " << fila.ruta << ": " << e.what() << "\n";
+      std::cerr << "Aviso: se omite la linea " << fila.linea << ": " << e.what() << "\n";
       ++omitidas;
       continue;
     }
@@ -358,12 +363,12 @@ int main(int argc, char** argv) {
     // Dos imagenes distintas con el mismo nombre sin extension apuntan al
     // mismo PNG: la segunda pisa a la primera. Se avisa, pero se sigue.
     if (!nombres_usados.insert(nombre_salida(fila.ruta)).second) {
-      std::cerr << "Aviso: " << fila.ruta << " comparte nombre de salida con otra imagen ("
-                << nombre_salida(fila.ruta) << ".png): se sobrescribe\n";
+      std::cerr << "Aviso: la linea " << fila.linea
+                << " comparte nombre de salida con otra imagen: se sobrescribe\n";
     }
     if (!cv::imwrite(destino.string(), alineada)) {
-      std::cerr << "Aviso: se omite " << fila.ruta << ": no se pudo escribir " << destino
-                << "\n";
+      std::cerr << "Aviso: se omite la linea " << fila.linea
+                << ": no se pudo escribir el PNG\n";
       ++omitidas;
       continue;
     }

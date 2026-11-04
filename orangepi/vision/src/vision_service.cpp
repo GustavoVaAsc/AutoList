@@ -96,7 +96,9 @@ constexpr std::string_view kFallbackTimestamp = "1970-01-01T00:00:00.000+00:00";
 
 // Promedio de los embeddings indicados (ya normalizados y de la misma dimension: el
 // servicio lo comprueba al aceptar cada pose). Lanza std::invalid_argument si la lista
-// de indices esta vacia: una media sin muestras no es un embedding.
+// de indices esta vacia (una media sin muestras no es un embedding) o si los embeddings
+// indicados no tienen la misma dimension (leer fuera de rango no es un fallo que se pueda
+// diagnosticar despues).
 std::vector<float> mean_embedding(const std::vector<std::vector<float>>& embeddings,
                                   const std::vector<std::size_t>& indices) {
   if (indices.empty()) {
@@ -104,6 +106,9 @@ std::vector<float> mean_embedding(const std::vector<std::vector<float>>& embeddi
   }
   std::vector<float> mean(embeddings.front().size(), 0.0f);
   for (const std::size_t indice : indices) {
+    if (embeddings[indice].size() != mean.size()) {
+      throw std::invalid_argument("mean_embedding: los embeddings no tienen la misma dimension");
+    }
     for (std::size_t i = 0; i < mean.size(); ++i) mean[i] += embeddings[indice][i];
   }
   for (float& x : mean) x /= static_cast<float>(indices.size());
@@ -118,6 +123,12 @@ std::vector<float> mean_embedding(const std::vector<std::vector<float>>& embeddi
 //   3. se recalcula la media con las candidatas que quedan y se repite;
 //   4. se para cuando la peor ya supera el umbral o cuando quedan menos de tres
 //      candidatas (el registro se cierra como inconsistente, sin embedding).
+//
+// El registro es valido si queda un grupo coherente de al menos tres poses. Por eso el
+// descarte sigue mientras queden tres candidatas: al llegar a tres, si la peor sigue
+// por debajo del umbral, es que no hay grupo coherente de tres y el registro se cierra
+// como inconsistente (fallar cerrado). Parar antes, en tres, daria por bueno un grupo
+// que no se ha comprobado.
 //
 // La regla es robusta frente a un grupo en conflicto: la media se recalcula con lo que
 // queda en cada vuelta, asi que un outlier deja de arrastrar a las demas. Antes (comparar
@@ -134,7 +145,7 @@ std::vector<std::size_t> keep_consistent_poses(const std::vector<std::vector<flo
     // Una pose con algun valor no finito no se puede comparar: se descarta antes de que
     // contamine la media de las candidatas (si no, contaminaria la de todas).
     if (!embedding_finito(embeddings[i])) {
-      avisar_pose_descartada(i, "no finita");
+      avisar_pose_descartada(i, "embedding no finito");
       continue;
     }
     candidatas.push_back(i);
