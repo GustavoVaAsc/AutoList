@@ -33,6 +33,11 @@ struct ServiceConfig {
   // ambar); por debajo de min_dudoso_score es "desconocido".
   float min_recognized_score = 0.60f;
   float min_dudoso_score = 0.45f;
+  // Similitud (coseno) minima entre una pose y la media de las demas para que la pose
+  // sobreviva al descarte de outliers del registro (plan 5.4, paso 5). Las que quedan
+  // por debajo se descartan; si sobreviven menos de tres, el registro es inconsistente.
+  // PROVISIONAL: se recalibra con LFW (hito del 18 de noviembre, plan, secciones 9 y 12.1).
+  float min_pose_similarity = 0.60f;
   // Nombre y version del modelo de reconocimiento; lo publica el servicio en el
   // embedding y en el estado. Provisional hasta que exista el .nb (plan 6.2).
   std::string model_name = "w600k_mbf-uint8-v1";

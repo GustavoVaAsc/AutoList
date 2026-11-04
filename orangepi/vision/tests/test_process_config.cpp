@@ -28,7 +28,8 @@ const char* kConfigCompleta = R"({
               "http_timeout_ms": 1500, "max_body_bytes": 1048576},
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN",
               "timeout_ms": 4000},
-  "umbrales": {"min_sharpness": 12.5, "min_recognized_score": 0.7, "min_dudoso_score": 0.5},
+  "umbrales": {"min_sharpness": 12.5, "min_recognized_score": 0.7, "min_dudoso_score": 0.5,
+               "min_similitud_pose": 0.55},
   "servicio": {"poll_ms": 50, "max_inbox_events": 32, "modelo": "w600k_mbf-uint8-v1",
                "acepta_png": true},
   "http": {"allow_invalid_certificates": true}
@@ -55,6 +56,7 @@ TEST(config_documento_vacio_usa_omisiones) {
   CHECK_NEAR(config.thresholds.min_sharpness, 0.0, 1e-9);
   CHECK_NEAR(config.thresholds.min_recognized_score, 0.6, 1e-6);
   CHECK_NEAR(config.thresholds.min_dudoso_score, 0.45, 1e-6);
+  CHECK_NEAR(config.thresholds.min_similitud_pose, 0.60, 1e-6);
   CHECK_EQ(config.service.poll_ms, 20);
   CHECK_EQ(config.service.max_inbox_events, std::size_t{16});
   CHECK_EQ(config.service.model_name, std::string("w600k_mbf-uint8-v1"));
@@ -82,6 +84,7 @@ TEST(config_completa) {
   CHECK_NEAR(config.thresholds.min_sharpness, 12.5, 1e-9);
   CHECK_NEAR(config.thresholds.min_recognized_score, 0.7, 1e-6);
   CHECK_NEAR(config.thresholds.min_dudoso_score, 0.5, 1e-6);
+  CHECK_NEAR(config.thresholds.min_similitud_pose, 0.55, 1e-6);
   CHECK_EQ(config.service.poll_ms, 50);
   CHECK_EQ(config.service.max_inbox_events, std::size_t{32});
   CHECK_EQ(config.service.model_name, std::string("w600k_mbf-uint8-v1"));
@@ -131,6 +134,31 @@ TEST(config_rechaza_json_invalido) {
   CHECK(!parse_process_config("{no es json", config, error));
 }
 
+// El umbral de similitud de las poses del registro (descarte de outliers, plan 5.4).
+TEST(config_carga_el_umbral_de_similitud_de_las_poses) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"umbrales": {"min_similitud_pose": 0.75}})", config, error));
+  CHECK_NEAR(config.thresholds.min_similitud_pose, 0.75, 1e-6);
+  CHECK_NEAR(config.to_service_config().min_pose_similarity, 0.75, 1e-6);
+}
+
+TEST(config_rechaza_el_umbral_de_similitud_de_las_poses_fuera_de_rango) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"umbrales": {"min_similitud_pose": 1.5}})", config, error));
+  CHECK(error.find("min_similitud_pose") != std::string::npos);
+  CHECK(!parse_process_config(R"({"umbrales": {"min_similitud_pose": -0.1}})", config, error));
+  CHECK(error.find("min_similitud_pose") != std::string::npos);
+}
+
+TEST(config_rechaza_una_clave_desconocida_en_los_umbrales) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"umbrales": {"min_similitud_pose_": 0.6}})", config, error));
+  CHECK(error.find("min_similitud_pose_") != std::string::npos);
+}
+
 TEST(config_mapeo_a_service_config) {
   ProcessConfig config;
   std::string error;
@@ -142,6 +170,7 @@ TEST(config_mapeo_a_service_config) {
   CHECK_EQ(servicio.min_sharpness, 12.5);
   CHECK_NEAR(servicio.min_recognized_score, 0.7, 1e-6);
   CHECK_NEAR(servicio.min_dudoso_score, 0.5, 1e-6);
+  CHECK_NEAR(servicio.min_pose_similarity, 0.55, 1e-6);
   CHECK_EQ(servicio.http_timeout.count(), 1500);
   CHECK_EQ(servicio.max_body_bytes, std::size_t{1048576});
   CHECK_EQ(servicio.max_inbox_events, std::size_t{32});

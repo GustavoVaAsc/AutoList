@@ -1,7 +1,10 @@
 #include "vision/vision_service.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -33,15 +36,56 @@ class ScopeExit {
   F action_;
 };
 
-// Promedio de embeddings ya normalizados y de la misma dimension (el servicio lo
-// comprueba al aceptar cada pose).
-std::vector<float> mean_embedding(const std::vector<std::vector<float>>& embeddings) {
+// Promedio de los embeddings indicados (ya normalizados y de la misma dimension: el
+// servicio lo comprueba al aceptar cada pose).
+std::vector<float> mean_embedding(const std::vector<std::vector<float>>& embeddings,
+                                  const std::vector<std::size_t>& indices) {
   std::vector<float> mean(embeddings.front().size(), 0.0f);
-  for (const std::vector<float>& e : embeddings) {
-    for (std::size_t i = 0; i < mean.size(); ++i) mean[i] += e[i];
+  for (const std::size_t indice : indices) {
+    for (std::size_t i = 0; i < mean.size(); ++i) mean[i] += embeddings[indice][i];
   }
-  for (float& x : mean) x /= static_cast<float>(embeddings.size());
+  for (float& x : mean) x /= static_cast<float>(indices.size());
   return mean;
+}
+
+// Similitud del coseno entre dos vectores. Si alguno tiene norma cero no hay direccion
+// que comparar: la similitud es 0 (la pose se descarta).
+float cosine_similarity(const std::vector<float>& a, const std::vector<float>& b) {
+  double dot = 0.0;
+  double norma_a = 0.0;
+  double norma_b = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    dot += static_cast<double>(a[i]) * b[i];
+    norma_a += static_cast<double>(a[i]) * a[i];
+    norma_b += static_cast<double>(b[i]) * b[i];
+  }
+  if (norma_a <= 0.0 || norma_b <= 0.0) return 0.0f;
+  return static_cast<float>(dot / (std::sqrt(norma_a) * std::sqrt(norma_b)));
+}
+
+// Descarte de outliers del registro (plan 5.4, paso 5): cada pose se compara con la media
+// de las otras cuatro y se descarta la que se aleja mas (similitud por debajo del
+// umbral). Devuelve los indices de las poses que sobreviven, en el orden del registro.
+// Cada descarte se avisa por stderr, sin tocar el contrato MQTT.
+std::vector<std::size_t> keep_consistent_poses(const std::vector<std::vector<float>>& embeddings,
+                                                float min_pose_similarity) {
+  std::vector<std::size_t> survivors;
+  for (std::size_t i = 0; i < embeddings.size(); ++i) {
+    std::vector<std::size_t> otras;
+    for (std::size_t j = 0; j < embeddings.size(); ++j) {
+      if (j != i) otras.push_back(j);
+    }
+    const std::vector<float> media = mean_embedding(embeddings, otras);
+    const float similitud = cosine_similarity(embeddings[i], media);
+    if (similitud < min_pose_similarity) {
+      std::ostringstream texto;
+      texto << std::fixed << std::setprecision(2) << similitud;
+      std::cerr << "[vision] pose descartada: similitud " << texto.str() << '\n';
+      continue;
+    }
+    survivors.push_back(i);
+  }
+  return survivors;
 }
 
 void log_error(const char* context, const std::exception& error) {
@@ -79,6 +123,10 @@ VisionService::VisionService(ServiceDeps deps, ServiceConfig config)
       config_.min_dudoso_score > config_.min_recognized_score) {
     throw std::invalid_argument(
         "ServiceConfig: los umbrales de decision no son validos (0 <= dudoso <= reconocido <= 1)");
+  }
+  if (config_.min_pose_similarity < 0.0f || config_.min_pose_similarity > 1.0f) {
+    throw std::invalid_argument(
+        "ServiceConfig: min_pose_similarity debe estar entre 0 y 1");
   }
   // Si la segunda suscripcion lanza, la primera (ya miembro) se da de baja al deshacerse
   // el constructor. Todo lo que usan los handlers esta construido antes de este punto.
@@ -583,17 +631,29 @@ void VisionService::advance_enrollment() {
     return;
   }
 
+  // Descarte de outliers (plan 5.4, paso 5): las poses que se alejan del resto se
+  // descartan y el embedding sale de las que quedan. Si no sobreviven al menos tres, el
+  // registro es inconsistente: no se publica "completado" ni el embedding.
+  const std::vector<std::size_t> supervivientes =
+      keep_consistent_poses(e.embeddings, config_.min_pose_similarity);
+  if (supervivientes.size() < 3) {
+    std::cerr << "[vision] registro inconsistente: solo " << supervivientes.size() << " de "
+              << e.embeddings.size() << " poses coinciden (hacen falta al menos 3)\n";
+    publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kInconsistent);
+    finish_enrollment();
+    return;
+  }
+
   // Las 5 poses aceptadas: se avisa con "completado" y despues se publica el embedding.
   publish_progress(e, EnrollmentStatus::Completed);
-  // Promedio de embeddings normalizados, normalizado de nuevo (el descarte de outliers
-  // queda pendiente).
+  // Promedio de los embeddings normalizados que sobreviven, normalizado de nuevo.
   std::optional<EmbeddingMessage> message;
   try {
     EmbeddingMessage embedding_message;
     embedding_message.timestamp = timestamp;
     embedding_message.account = e.account;
     embedding_message.model = config_.model_name;
-    embedding_message.embedding = l2_normalized(mean_embedding(e.embeddings));
+    embedding_message.embedding = l2_normalized(mean_embedding(e.embeddings, supervivientes));
     message = std::move(embedding_message);
   } catch (const std::exception& error) {
     log_error("no se pudo promediar el embedding", error);

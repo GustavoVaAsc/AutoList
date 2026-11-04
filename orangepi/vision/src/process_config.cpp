@@ -170,6 +170,7 @@ ServiceConfig ProcessConfig::to_service_config() const {
   config.min_sharpness = thresholds.min_sharpness;
   config.min_recognized_score = thresholds.min_recognized_score;
   config.min_dudoso_score = thresholds.min_dudoso_score;
+  config.min_pose_similarity = thresholds.min_similitud_pose;
   config.http_timeout = Millis(capture.http_timeout_ms);
   config.max_body_bytes = capture.max_body_bytes;
   config.max_inbox_events = service.max_inbox_events;
@@ -278,7 +279,8 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   }
 
   if (!seccion(parsed, "umbrales", bloque, error)) return false;
-  if (!solo_claves(bloque, {"min_sharpness", "min_recognized_score", "min_dudoso_score"},
+  if (!solo_claves(bloque, {"min_sharpness", "min_recognized_score", "min_dudoso_score",
+                            "min_similitud_pose"},
                    "umbrales", error)) {
     return false;
   }
@@ -291,6 +293,9 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   if (!leer_real(bloque, "umbrales", "min_dudoso_score", dudoso, error)) return false;
   config.thresholds.min_recognized_score = static_cast<float>(reconocido);
   config.thresholds.min_dudoso_score = static_cast<float>(dudoso);
+  double similitud_pose = config.thresholds.min_similitud_pose;
+  if (!leer_real(bloque, "umbrales", "min_similitud_pose", similitud_pose, error)) return false;
+  config.thresholds.min_similitud_pose = static_cast<float>(similitud_pose);
   if (!exigir(config.thresholds.min_sharpness >= 0.0, "umbrales", "min_sharpness",
               "no puede ser negativo", error)) {
     return false;
@@ -299,6 +304,10 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
               "min_recognized_score",
               "los umbrales deben cumplir 0 <= min_dudoso_score <= min_recognized_score <= 1",
               error)) {
+    return false;
+  }
+  if (!exigir(similitud_pose >= 0.0 && similitud_pose <= 1.0, "umbrales",
+              "min_similitud_pose", "debe estar entre 0 y 1", error)) {
     return false;
   }
 

@@ -449,12 +449,13 @@ TEST(test_command_runs_the_attendance_pipeline) {
 
 TEST(enrollment_runs_five_poses_and_publishes_normalized_mean_embedding) {
   Harness h;
-  // Normas distintas a proposito: cada pose se normaliza antes de promediar.
-  h.embedder.outputs = {{4.0f, 0.0f, 0.0f, 0.0f},
-                        {0.0f, 0.5f, 0.0f, 0.0f},
-                        {4.0f, 0.0f, 0.0f, 0.0f},
-                        {0.0f, 0.5f, 0.0f, 0.0f},
-                        {4.0f, 0.0f, 0.0f, 0.0f}};
+  // Normas distintas a proposito: cada pose se normaliza antes de promediar. Las cinco
+  // direcciones se parecen entre si (ninguna se descarta como anomala).
+  h.embedder.outputs = {{5.0f, 0.0f, 0.0f, 0.0f},
+                        {4.0f, 3.0f, 0.0f, 0.0f},
+                        {3.0f, 4.0f, 0.0f, 0.0f},
+                        {4.0f, 3.0f, 0.0f, 0.0f},
+                        {10.0f, 0.0f, 0.0f, 0.0f}};
   h.queue_frames(5);
 
   h.command(VisionAction::Enroll, "999000111");
@@ -492,12 +493,124 @@ TEST(enrollment_runs_five_poses_and_publishes_normalized_mean_embedding) {
   CHECK_EQ(embeddings.size(), std::size_t{1});
   CHECK_EQ(embeddings[0].account, std::string("999000111"));
   CHECK_EQ(embeddings[0].embedding.size(), std::size_t{4});
-  // Promedio de unitarios = (3, 2, 0, 0) / 5, normalizado.
-  const double norm = std::sqrt(13.0);
-  CHECK_NEAR(embeddings[0].embedding[0], 3.0 / norm, 1e-6);
-  CHECK_NEAR(embeddings[0].embedding[1], 2.0 / norm, 1e-6);
+  // Promedio de los unitarios de las cinco poses, normalizado.
+  const std::vector<std::vector<float>> unidades = {{1.0f, 0.0f}, {0.8f, 0.6f}, {0.6f, 0.8f},
+                                                     {0.8f, 0.6f}, {1.0f, 0.0f}};
+  double media0 = 0.0;
+  double media1 = 0.0;
+  for (const std::vector<float>& u : unidades) {
+    media0 += u[0];
+    media1 += u[1];
+  }
+  media0 /= static_cast<double>(unidades.size());
+  media1 /= static_cast<double>(unidades.size());
+  const double norma = std::sqrt(media0 * media0 + media1 * media1);
+  CHECK_NEAR(embeddings[0].embedding[0], media0 / norma, 1e-5);
+  CHECK_NEAR(embeddings[0].embedding[1], media1 / norma, 1e-5);
   CHECK_NEAR(embeddings[0].embedding[2], 0.0, 1e-6);
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+}
+
+// --- Descarte de outliers del registro (plan 5.4, paso 5) -------------------------------
+
+// Las cinco poses del registro, en el embedder falso, y el embedding publicado.
+namespace {
+
+struct RegistroFinal {
+  std::vector<EnrollmentProgress> progress;
+  std::vector<EmbeddingMessage> embeddings;
+  bool completo = false;
+};
+
+// Corre un registro completo de cinco poses con los embeddings dados.
+RegistroFinal correr_registro(Harness& h, const std::string& cuenta,
+                               const std::vector<std::vector<float>>& poses) {
+  h.embedder.outputs = poses;
+  h.queue_frames(5);
+  h.command(VisionAction::Enroll, cuenta);
+  h.service->poll();
+  for (int i = 0; i < 5; ++i) h.enrollment_step();
+
+  RegistroFinal resultado;
+  resultado.progress = h.progress();
+  resultado.embeddings = h.embeddings();
+  for (const EnrollmentProgress& p : resultado.progress) {
+    if (p.status == EnrollmentStatus::Completed) resultado.completo = true;
+  }
+  return resultado;
+}
+
+}  // namespace
+
+TEST(el_registro_descarta_la_pose_anomala_y_pro_media_el_resto) {
+  Harness h;
+  CapturedStderr log;
+  // Cuatro poses iguales y una ortogonal: la rara se descarta y no entra en la media.
+  const RegistroFinal registro = correr_registro(
+      h, "100000001", {{1.0f, 0.0f, 0.0f, 0.0f},
+                       {1.0f, 0.0f, 0.0f, 0.0f},
+                       {1.0f, 0.0f, 0.0f, 0.0f},
+                       {1.0f, 0.0f, 0.0f, 0.0f},
+                       {0.0f, 1.0f, 0.0f, 0.0f}});
+
+  CHECK_EQ(log.count("pose descartada"), std::size_t{1});
+  CHECK(log.count("similitud") >= 1);
+  CHECK(registro.completo);
+  CHECK_EQ(registro.embeddings.size(), std::size_t{1});
+  // La media de las cuatro buenas es (1,0,0,0), ya normalizada.
+  CHECK_NEAR(registro.embeddings[0].embedding[0], 1.0, 1e-6);
+  CHECK_NEAR(registro.embeddings[0].embedding[1], 0.0, 1e-6);
+  CHECK_NEAR(registro.embeddings[0].embedding[2], 0.0, 1e-6);
+  CHECK(h.service->state() == ServiceState::Idle);
+}
+
+TEST(el_registro_falla_como_inconsistente_si_solo_concuerdan_dos_poses) {
+  Harness h;
+  CapturedStderr log;
+  // Solo las dos primeras poses concuerdan entre si: ninguna llega al umbral.
+  const RegistroFinal registro = correr_registro(
+      h, "100000001", {{1.0f, 0.0f, 0.0f, 0.0f},
+                       {1.0f, 0.0f, 0.0f, 0.0f},
+                       {0.0f, 1.0f, 0.0f, 0.0f},
+                       {0.0f, 0.0f, 1.0f, 0.0f},
+                       {0.0f, 0.0f, 0.0f, 1.0f}});
+
+  CHECK_EQ(log.count("pose descartada"), std::size_t{5});
+  CHECK(registro.embeddings.empty());    // no se publica el embedding
+  CHECK(!registro.completo);             // ni el estado "completado"
+  CHECK(registro.progress.back().status == EnrollmentStatus::Error);
+  CHECK_EQ(registro.progress.back().reason.value(),
+           std::string(enrollment_reasons::kInconsistent));
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+}
+
+TEST(el_registro_con_poses_coherentes_promedia_las_cinco) {
+  Harness h;
+  CapturedStderr log;
+  const RegistroFinal registro = correr_registro(
+      h, "100000001", {{5.0f, 0.0f, 0.0f, 0.0f},
+                       {4.0f, 3.0f, 0.0f, 0.0f},
+                       {3.0f, 4.0f, 0.0f, 0.0f},
+                       {4.0f, 3.0f, 0.0f, 0.0f},
+                       {10.0f, 0.0f, 0.0f, 0.0f}});
+
+  CHECK_EQ(log.count("pose descartada"), std::size_t{0});
+  CHECK(registro.completo);
+  CHECK_EQ(registro.embeddings.size(), std::size_t{1});
+  const std::vector<std::vector<float>> unidades = {{1.0f, 0.0f}, {0.8f, 0.6f}, {0.6f, 0.8f},
+                                                     {0.8f, 0.6f}, {1.0f, 0.0f}};
+  double media0 = 0.0;
+  double media1 = 0.0;
+  for (const std::vector<float>& u : unidades) {
+    media0 += u[0];
+    media1 += u[1];
+  }
+  media0 /= static_cast<double>(unidades.size());
+  media1 /= static_cast<double>(unidades.size());
+  const double norma = std::sqrt(media0 * media0 + media1 * media1);
+  CHECK_NEAR(registro.embeddings[0].embedding[0], media0 / norma, 1e-5);
+  CHECK_NEAR(registro.embeddings[0].embedding[1], media1 / norma, 1e-5);
 }
 
 TEST(enrollment_pose_names_follow_the_plan) {
