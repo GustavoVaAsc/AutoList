@@ -482,17 +482,6 @@ code {
   transition-duration: var(--d-pulsar);
 }
 
-/* "Pronto": la vista aún no funciona; es un estado real, no un adorno. */
-.navegacion__pronto {
-  padding: 0 6px;
-  border: 1px solid var(--borde-control);
-  border-radius: var(--r-papel);
-  color: var(--suave);
-  font-size: var(--t-caption);
-  line-height: 18px;
-  font-weight: 400;
-}
-
 @media (max-width: 959px) {
   .navegacion__enlace {
     padding: 0 var(--e-2);
@@ -723,13 +712,39 @@ code {
 .campos {
   display: grid;
   align-items: end;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--e-4) var(--e-8);
   margin-top: var(--e-6);
 }
 
-@media (max-width: 640px) {
+.campos > .campo--materia {
+  grid-column: 1 / -1;
+}
+
+/* El ancho que importa es el de la hoja y no el de la ventana (a 1000 px el margen de
+   la importación le quita 19 rem): con 44 rem o más caben la materia y dos campos en
+   un renglón (2fr 1fr 1fr); con menos, la materia va arriba y los campos debajo, de a dos. */
+.hoja__encabezado {
+  container-type: inline-size;
+}
+
+@container (min-width: 44rem) {
   .campos {
+    grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr));
+  }
+
+  .campos > .campo--materia {
+    grid-column: auto;
+  }
+
+  .campos--dos {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .campos,
+  .campos--dos {
     grid-template-columns: minmax(0, 1fr);
     margin-top: var(--e-4);
   }
@@ -1503,6 +1518,279 @@ code {
 .tabla__cuenta {
   font-size: 15px;
   color: var(--cuerpo);
+}
+
+/* Búsqueda de la hoja de alumnos: como el filtro de grupo, un espacio por llenar,
+   sin caja y sobre su línea de tinta. */
+.entrada {
+  min-height: 40px;
+  padding: 0 var(--e-2);
+  border: 1px solid var(--borde-control);
+  border-radius: var(--r-control);
+  background: var(--hoja);
+  color: var(--tinta);
+  font: inherit;
+  font-size: var(--t-ui);
+  line-height: 1.4;
+}
+
+.entrada--campo {
+  width: 100%;
+  min-height: 0;
+  padding: 0 var(--e-1) var(--e-1) 0;
+  border: 0;
+  border-bottom: 1px solid var(--tinta);
+  border-radius: 0;
+  background: transparent;
+  font-size: 18px;
+}
+
+.entrada--campo:hover {
+  background: var(--papel2);
+}
+
+@media (max-width: 959px) {
+  .entrada--campo {
+    min-height: 44px;
+  }
+}
+
+/* Estado del rostro y su acción, en la misma celda: de lado en pantallas anchas y
+   apilados en un teléfono, donde el nombre necesita el ancho. El botón de renglón es
+   más bajo que el de la página (32 px) para que la fila no crezca; en pantallas
+   táctiles o angostas vuelve a 44 px (R-03). */
+.rostro-celda {
+  display: flex;
+  align-items: center;
+  gap: var(--e-4);
+}
+
+.boton--fila {
+  min-height: 32px;
+  padding: 0 var(--e-3);
+  font-size: 15px;
+}
+
+@media (max-width: 959px) {
+  .boton--fila {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 640px) {
+  .rostro-celda {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--e-2);
+  }
+}
+
+/* Registro. Elegir al alumno: renglones de la hoja con una casilla de opción cada uno.
+   Los que ya tienen rostro se ven en tinta suave y no se pueden elegir. */
+.hoja__entradilla {
+  margin-top: var(--e-3);
+}
+
+.hoja__cuerpo.hoja__cuerpo--pie-lista {
+  padding-top: var(--e-3);
+  padding-bottom: var(--e-3);
+  border-bottom: 1.5px solid var(--tinta);
+}
+
+.eleccion {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.eleccion__lista {
+  max-height: 26rem;
+  overflow-y: auto;
+}
+
+.eleccion__fila {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--e-4);
+  padding: var(--e-3) var(--e-8);
+  border-bottom: 1px solid var(--regla);
+  color: var(--tinta);
+  cursor: pointer;
+  transition: background-color var(--d-realce) var(--ease-entrada);
+}
+
+.eleccion__fila:last-child {
+  border-bottom: 0;
+}
+
+.eleccion__fila input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--tinta);
+}
+
+.eleccion__fila:has(input:checked) {
+  background: var(--papel2);
+}
+
+.eleccion__fila:has(input:checked) .eleccion__nombre {
+  font-weight: 600;
+}
+
+.eleccion__fila--registrado {
+  color: var(--suave);
+  cursor: not-allowed;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .eleccion__fila:not(.eleccion__fila--registrado):hover {
+    background: var(--papel2);
+  }
+}
+
+.eleccion__texto {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+
+@media (max-width: 640px) {
+  .eleccion__fila {
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: var(--e-3) var(--e-4);
+  }
+
+  .eleccion__fila .rostro {
+    grid-column: 2;
+  }
+}
+
+/* Casilla de consentimiento: la de papel de la hoja, nativa para que el teclado y el
+   lector de pantalla la entiendan. */
+.casilla {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--e-3);
+  color: var(--tinta);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.casilla input {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: 1px 0 0;
+  accent-color: var(--tinta);
+}
+
+.casilla:has(input:disabled) {
+  color: var(--suave);
+  cursor: not-allowed;
+}
+
+/* El margen de Registro: una hoja chica con la acción que sigue. */
+.caja-margen {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--e-3);
+  padding: var(--e-5);
+  border: 1px solid var(--regla);
+  border-top: 4px double var(--tinta);
+  border-radius: var(--r-papel);
+  background: var(--hoja);
+}
+
+@media (max-width: 640px) {
+  .caja-margen {
+    padding: var(--e-4);
+  }
+
+  .caja-margen > .boton {
+    align-self: stretch;
+  }
+}
+
+/* Con un registro abierto: lo que dice la vista, con la marca de asistencia que le toca. */
+.estado-registro {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--e-4);
+}
+
+.estado-registro > .marca-asistencia {
+  font-size: 30px;
+  margin-top: 2px;
+}
+
+.estado-registro__texto {
+  min-width: 0;
+}
+
+.estado-registro__titulo {
+  font-family: var(--serif);
+  font-size: var(--t-seccion);
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.estado-registro--error .estado-registro__titulo {
+  color: var(--error);
+}
+
+.estado-registro__texto > p {
+  max-width: 62ch;
+}
+
+/* Las cinco poses: renglones de la hoja. El estado va en palabras, con su marca. */
+.tabla--poses tbody > tr > * {
+  vertical-align: middle;
+}
+
+.tabla--poses tbody th.pose__nombre {
+  color: var(--tinta);
+  white-space: normal;
+}
+
+.tabla--poses td:last-child {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.pose__detalle {
+  display: block;
+  font-size: var(--t-caption);
+  color: var(--suave);
+}
+
+/* Con .rostro delante: la regla base de .rostro (más abajo) tiene la misma especificidad. */
+.rostro.rostro--pose-capturando,
+.rostro.rostro--pose-esperando_pose {
+  color: var(--tinta);
+  font-weight: 600;
+}
+
+.rostro.rostro--pose-aceptada {
+  color: var(--pluma);
+  font-weight: 600;
+}
+
+.rostro.rostro--pose-rechazada {
+  color: var(--error);
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .tabla--poses td:last-child {
+    white-space: normal;
+  }
 }
 
 /* Los renglones se escriben, de arriba abajo: cada uno se descubre de izquierda

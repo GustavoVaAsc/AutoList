@@ -8,6 +8,8 @@ interface Props {
   cambiadas: readonly string[]
   /** Id del encabezado que titula la tabla. */
   idTitulo: string
+  /** Abre la confirmación para retirar el rostro del alumno. */
+  alRetirar: (alumno: Alumno) => void
 }
 
 // Los renglones se escriben solo al montarse la tabla (la primera carga de la
@@ -29,9 +31,13 @@ const MARCA_ROSTRO = { pendiente: 'pendiente', registrado: 'presente' } as const
  * Lista de alumnos en una tabla semántica, con la forma de una lista impresa:
  * renglones con su regla, columnas alineadas y la marca de asistencia en la
  * columna del rostro. Los nombres y los grupos vienen del CSV: son entrada
- * externa y se pintan solo como texto.
+ * externa y se pintan solo como texto. La columna del rostro lleva también la
+ * acción que sigue: "Registrar rostro" (va a Registro con la cuenta elegida) si
+ * está pendiente, "Retirar rostro" (abre la confirmación) si ya está registrado.
+ * Volver a registrar a quien tiene rostro exige retirarlo antes (plan, sección
+ * 5.4), así que un enlace a Registro desde un alumno registrado no llevaría a nada.
  */
-export function TablaAlumnos({ alumnos, cambiadas, idTitulo }: Props) {
+export function TablaAlumnos({ alumnos, cambiadas, idTitulo, alRetirar }: Props) {
   const [entrando, setEntrando] = useState(true)
   const [resaltadas, setResaltadas] = useState<ReadonlySet<string>>(new Set())
 
@@ -85,11 +91,22 @@ export function TablaAlumnos({ alumnos, cambiadas, idTitulo }: Props) {
               </td>
               <td className="tabla__grupo">{a.grupo}</td>
               <td>
-                {/* El texto lleva el estado; la marca y el color son redundantes. */}
-                <span className={`rostro rostro--${a.rostro}`}>
-                  <MarcaAsistencia tipo={MARCA_ROSTRO[a.rostro]} />
-                  {ETIQUETA_ROSTRO[a.rostro]}
-                </span>
+                <div className="rostro-celda">
+                  {/* El texto lleva el estado; la marca y el color son redundantes. */}
+                  <span className={`rostro rostro--${a.rostro}`}>
+                    <MarcaAsistencia tipo={MARCA_ROSTRO[a.rostro]} />
+                    {ETIQUETA_ROSTRO[a.rostro]}
+                  </span>
+                  {a.rostro === 'registrado' ? (
+                    <button type="button" className="boton boton--fila" data-accion-cuenta={a.cuenta} aria-label={`Retirar rostro de ${a.nombre}`} onClick={() => alRetirar(a)}>
+                      Retirar rostro
+                    </button>
+                  ) : (
+                    <a className="boton boton--fila" data-accion-cuenta={a.cuenta} href={`#/registro?cuenta=${encodeURIComponent(a.cuenta)}`} aria-label={`Registrar rostro de ${a.nombre}`}>
+                      Registrar rostro
+                    </a>
+                  )}
+                </div>
               </td>
             </tr>
           )

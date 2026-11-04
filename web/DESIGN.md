@@ -28,8 +28,8 @@ La versión anterior imitaba un panel de base de datos (oscuro, esmeralda, tarje
 
 | Dial | Valor | Qué significa aquí |
 |---|---|---|
-| ENERGY | 2 | Papel cálido, tinta casi negra y una sola tinta de acento. Un foco por pantalla: en Alumnos, la hoja de la lista; en Métricas, la potencia; en Registro, el mensaje y su enlace. |
-| RHYTHM | 2 | Las tres vistas usan las mismas piezas (hoja, regla, marca) con composiciones distintas. Alumnos es una hoja con un margen para la importación. Métricas es una hoja de dos columnas (cifras con puntos guía y gráfica) y otra de lecturas. Registro es una hoja en blanco con una casilla grande. |
+| ENERGY | 2 | Papel cálido, tinta casi negra y una sola tinta de acento. Un foco por pantalla: en Alumnos, la hoja de la lista; en Métricas, la potencia; en Registro, la lista para elegir y, con un registro abierto, lo que dice el resumen del registro. |
+| RHYTHM | 2 | Las tres vistas usan las mismas piezas (hoja, regla, marca) con composiciones distintas. Alumnos es una hoja con un margen para la importación. Métricas es una hoja de dos columnas (cifras con puntos guía y gráfica) y otra de lecturas. Registro es una hoja con su margen: la lista para elegir y, con un registro abierto, las cinco poses como renglones. |
 | MOTION | 2 | Los renglones se escriben, la marca se traza, la vista cambia con un fundido corto y la zona del CSV responde al arrastre. Todo se apaga con `prefers-reduced-motion`. |
 
 ## Paleta
@@ -52,7 +52,7 @@ Tema claro por defecto (papel). El oscuro (papel de noche) es la misma hoja con 
 | `--sobre-pluma` | `#fcf9f1` | `#15130f` | Texto sobre el relleno de pluma. |
 | `--error` | `#a3241a` | `#ff9d8f` | Errores y faltas reales, y nada más. Su fondo es `--error-fondo` (`#fbe9e3` y `#2e1813`). |
 
-Uso de la pluma, con mesura y solo en tres sitios: la acción principal (el botón "Elegir archivo CSV"), el estado registrado o presente (la marca y su texto) y el foco (el anillo de 2 px). La zona del CSV la usa mientras se arrastra encima, porque es la acción principal respondiendo. El rojo no aparece salvo en errores y en la marca de falta.
+Uso de la pluma, con mesura y solo en tres sitios: la acción principal (los botones "Elegir archivo CSV" e "Iniciar registro"), el estado registrado o presente (la marca y su texto, también "Foto aceptada" en las poses) y el foco (el anillo de 2 px). La zona del CSV la usa mientras se arrastra encima, porque es la acción principal respondiendo. El rojo no aparece salvo en errores y en la marca de falta.
 
 Las advertencias no tienen color propio: llevan tinta sobre `--papel2` con borde de tinta. Un tono ámbar sería un cuarto color y la advertencia ya dice lo que es con su título.
 
@@ -90,9 +90,9 @@ Una casilla de papel y la marca que el profesor pone en ella. Se dibuja con un S
 
 | Marca | Dibujo | Dónde |
 |---|---|---|
-| Presente | Casilla con una palomita de pluma que sale por arriba | Alumno con rostro registrado; "Placa conectada"; avisos de éxito |
-| Pendiente | Casilla vacía, en tinta suave | Alumno con rostro pendiente; "Conectando" y "Sin sesión"; estados vacíos |
-| Falta | Casilla con una tachita en rojo | Fallo real: "Sin conexión con la placa"; avisos de error |
+| Presente | Casilla con una palomita de pluma que sale por arriba | Alumno con rostro registrado; "Placa conectada"; avisos de éxito; foto aceptada de una pose; "Registro completado" |
+| Pendiente | Casilla vacía, en tinta suave | Alumno con rostro pendiente; "Conectando" y "Sin sesión"; estados vacíos; pose pendiente, esperando o tomándose; registro en espera o en curso |
+| Falta | Casilla con una tachita en rojo | Fallo real: "Sin conexión con la placa"; avisos de error; foto rechazada de una pose; registro terminado con error |
 
 Es el gesto repetido: columna del rostro de Alumnos, resumen de la hoja, indicador de la cabecera, estados vacíos y avisos. Siempre acompaña a un texto que dice el estado: la marca refuerza y nunca es la única señal. El logo sigue siendo la palabra "AutoList" en texto, en la serif; no hay logotipo.
 
@@ -100,7 +100,8 @@ Es el gesto repetido: columna del rostro de Alumnos, resumen de la hoja, indicad
 
 - **Alumnos** (foco: la lista). Una hoja con encabezado de documento: título "Lista de alumnos", los campos de formulario Materia ("Fundamentos de Sistemas Embebidos", del plan) y Grupo, y los conteos reales de lo que se ve (alumnos, con rostro, pendientes). Como en un formulario impreso, la materia es texto preimpreso: va en la serif, sin línea de llenado. Solo el grupo, el espacio por llenar (el filtro), lleva su línea de tinta. Debajo, los renglones con su regla, numerados, con las columnas alineadas. La importación del CSV vive en el margen de la hoja (19 rem fijos, no crece con la ventana), a la derecha desde 1000 px de ancho y debajo en las angostas, como acción secundaria. En una pantalla angosta caben nombre y estado; la cuenta y el grupo pasan debajo del nombre.
 - **Métricas y asistencia.** Cabecera de la vista y una hoja de energía en dos columnas: a la izquierda la potencia (cifra protagonista) y las demás cifras como renglones con puntos guía, como un recibo; a la derecha la gráfica, una línea de tinta sin relleno. Debajo, la hoja de lecturas recientes y el estado vacío de asistencia.
-- **Registro.** Una hoja en blanco con una casilla grande vacía, el mensaje y el enlace a Alumnos. Su vista todavía no funciona y la navegación lo dice ("Pronto").
+- **Alumnos, búsqueda y acciones.** El campo de búsqueda va en el encabezado, junto al grupo, como otro espacio por llenar: sin caja, sobre su línea de tinta. Los tres campos (materia, grupo, búsqueda) comparten renglón cuando la hoja mide 44 rem o más (consulta de contenedor, porque el ancho que importa es el de la hoja y no el de la ventana); con menos, la materia va arriba. En cada renglón, la celda del Rostro lleva el estado y su acción ("Registrar rostro" o "Retirar rostro", botón de 32 px en pantallas anchas y de 44 px en táctiles y angostas, apilado bajo el estado en un teléfono). La confirmación de retirar es el mismo diálogo de las cuentas existentes, de la misma hoja con su regla doble.
+- **Registro.** La composición de Alumnos: hoja y margen de 19 rem (debajo de la hoja bajo 1000 px). Con la vista libre, la hoja es la lista para elegir (renglones con una casilla de opción, los pendientes primero; los registrados en tinta suave y sin poder elegirse) con la búsqueda en su encabezado, y el margen es una hoja chica con el alumno elegido, la casilla de consentimiento, el aviso de que el formato está pendiente y "Iniciar registro", la única acción principal. Con un registro abierto, el encabezado lleva alumno, cuenta y grupo como campos del formulario; debajo, el resumen (la marca de asistencia que toca y el título en la serif: "Esperando al servicio de visión", "Registro en curso", "Guardando el rostro", "Registro completado"...), la advertencia de parecido si la hay y las cinco poses como renglones numerados con su regla: lo que se le pide al alumno, y la marca con el estado en palabras. Una foto rechazada lleva debajo el motivo. El margen lleva "Cancelar registro" o, al terminar, "Registrar a otro alumno". Sin miniaturas de las fotos: el contrato no define su transporte, y un espacio de relleno sería una imagen inventada.
 
 No hay cuadrícula, renglones ni papel milimétrico de fondo (R-07): las reglas existen solo donde hay renglones de datos. Nada de héroe más tarjetas ni de fila de estadísticas.
 
