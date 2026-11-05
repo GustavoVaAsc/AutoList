@@ -13,6 +13,7 @@ Todos los comandos de esta guía se ejecutan desde `orangepi/`, salvo que se ind
 - [Usuarios MQTT y ACL](#usuarios-mqtt-y-acl)
 - [Energía](#energía)
 - [API de alumnos y galería](#api-de-alumnos-y-galería)
+- [Sesiones y reportes CSV](#sesiones-y-reportes-csv)
 - [Operación](#operación)
 - [Seguridad y riesgos aceptados](#seguridad-y-riesgos-aceptados)
 
@@ -423,7 +424,61 @@ Riesgos conocidos del registro, aceptados por ahora:
 - **MQTT caído al iniciar un registro.** `POST /api/enrolamiento` escribe el consentimiento y abre la inscripción antes de publicar `enrolar`, y responde 202 aunque el broker no esté disponible. La orden no llega, la visión no hace nada y el registro vence a los 5 minutos (`error` con `vencido`, y el consentimiento se revierte). La vista lo muestra como "Esperando al servicio de visión".
 - **La visión se queda en "enrolando" tras un despliegue.** Al arrancar o desplegar Node-RED, la inscripción abierta se borra (vive en memoria) y no se publica `cancelar`: si la visión seguía capturando, queda ocupada hasta que termine o falle por sí sola, y su embedding se rechaza. Node-RED ya no puede destrabarla. Se resuelve reiniciando el servicio de visión (`orangepi-vision`, del host), y eso se coordina con Gustavo. Por eso no se despliega Node-RED con un registro abierto.
 - **Hora de reserva de la visión.** Si su reloj falla, la visión publica `ts` con la hora de reserva (1970) o vacío. El embedding de la cuenta abierta con un `ts` ilegible, vacío o de antes de 2000 cierra el registro como `embedding_invalido` y revierte el consentimiento; los mensajes de progreso con ese `ts` se descartan y el registro vence a los 5 minutos. Un `ts` posterior a la hora actual más 5 minutos se descarta siempre.
-- Un embedding que llega con el registro ya cerrado (cancelación, error o vencimiento con el embedding en vuelo) se retira en cuanto se guarda: el rostro queda sin guardar y la visión recibe `galeria/baja`. Si ese retiro falla (la base caída), la cuenta queda en una lista en memoria y se reintenta cada 15 s hasta que salga; solo entonces se publica la `baja`. Ese reintento se pierde si Node-RED se reinicia, y la limpieza de arranque no toca un rostro con consentimiento: revisar entonces con el superusuario.
+- Un embedding que llega con el registro ya cerrado (cancelación, error o vencimiento con el embedding en vuelo) se retira en cuanto se guarda: el rostro queda sin guardar y la visión recibe `galeria/baja`. El retiro solo actúa sobre el consentimiento bajo el que se guardó ese embedding (compara `consentimiento_fecha`). Con una fila afectada se publica `baja`; con cero (ya se había retirado, o la cuenta tiene otro consentimiento) no borra nada y se publica `alta`, para que la visión recargue la galería desde la base. Si el retiro falla (la base caída), el par cuenta/fecha queda en la lista `retiros_pendientes` y se reintenta cada 15 s hasta que salga. La lista vive en el almacén de contexto `persistente` (`localfilesystem`, `/data/context` del volumen `nodered_data`, con `contextStorage` en `nodered/settings.js`), así que sobrevive a un reinicio: tras reiniciar, el primer tick de 15 s lo reintenta. Conserva cuentas y fechas, nunca embeddings. Con una escritura al disco como máximo cada segundo, un corte de energía puede perder el último cambio; la limpieza de arranque no toca un rostro con consentimiento, así que ante la duda revisar con el superusuario las cuentas con rostro que no deberían tenerlo. Borrar el volumen `nodered_data` borra también esta lista.
+
+## Sesiones y reportes CSV
+
+La pestaña `Sesiones` de `nodered/flows/flows.json` lleva las sesiones de clase (plan, sección 5.3) y el reporte. Las órdenes entran **solo por MQTT**, por `aula/sesion/cmd`, que publica la pantalla (`iniciar` y `terminar`); no hay endpoints HTTP de sesiones. Un segundo `iniciar` a menos de 5 s del último aceptado se descarta (la pantalla ya pide doble toque). Node-RED escribe en `sesiones` y después publica `aula/sesion/estado` (retenido, QoS 1); en cada conexión al broker reconcilia ese estado con la base (contrato MQTT, sección 5, y v0.10). El rol de Node-RED puede hacer `INSERT` y `UPDATE (fin)` en `sesiones`: un volumen creado antes de este cambio necesita `02-roles.sh` (ver [Volúmenes existentes](#volúmenes-existentes)).
+
+### Reportes CSV
+
+Al cerrarse una sesión (`terminar`, o `iniciar` con otra olvidada abierta), Node-RED ejecuta la consulta del plan, sección 7.3, escribe las filas en `/data/reportes/.entrada-<id>.json` y un nodo `exec` ejecuta `/usr/bin/python3 -I -B /etc/nodered/reporte_csv.py <id>`. El programa (`nodered/reporte_csv.py`, solo biblioteca estándar) escribe `/data/reportes/sesion-<id>.csv` y borra la entrada. `/data` es el volumen `nodered_data`: los reportes sobreviven a un redespliegue y no hay purga (decisión de retención de `orangepi/AGENTS.md`). El archivo es UTF-8 con BOM, separado por comas, con las columnas `no_cuenta,nombre,estado,hora`, y su permiso es `0600`. **Lleva nombres y números de cuenta: no lo pegues en un chat ni en un documento, y no lo subas al repo.**
+
+Para ver qué hay y cuántas líneas tiene cada reporte (sin imprimir su contenido; `ls -la` muestra también los ocultos, y no debe haber ningún `.entrada-*`), desde `orangepi/`:
+
+```bash
+docker compose exec -T nodered sh -c 'ls -la /data/reportes'
+docker compose exec -T nodered sh -c 'wc -l /data/reportes/*.csv'
+```
+
+Para sacarlo del volumen a una carpeta de la placa (guárdalo fuera del repo):
+
+```bash
+docker compose cp nodered:/data/reportes/sesion-<id>.csv ~/reportes/
+```
+
+Los reportes pasan por una cola de a lo más 1 cada 2 s (arranca a lo más un `python3` cada 2 s; si uno tarda más, se solapan hasta el límite de 30 s del `exec`), así que el CSV puede tardar unos segundos en aparecer.
+
+**Un reporte fallido no se reintenta.** Si un reporte no aparece, `docker compose logs --tail=50 nodered` trae `Reporte de la sesión <id> falló: código N` (el programa no imprime datos de alumnos; los códigos son 1 entrada inválida o error al escribir, y 2 argumento incorrecto). El programa **borra siempre** `/data/reportes/.entrada-<id>.json`, también cuando falla, porque lleva nombres y números de cuenta: no queda nada que reintentar. Para regenerarlo a mano, con el superusuario se reconstruye la entrada con la consulta del plan (sección 7.3) y se vuelve a ejecutar el programa (sustituye `<id>` por el id de la sesión, en los tres lugares; se probó el 5 nov con una sesión de prueba y dio un CSV idéntico al original):
+
+```bash
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -v ON_ERROR_STOP=1 -v id=<id> -f -' <<'SQL' | docker compose exec -T nodered sh -c 'cat > /data/reportes/.entrada-<id>.json'
+SELECT json_build_object('sesion', :'id'::int, 'filas', COALESCE(json_agg(r ORDER BY r.no_cuenta), '[]'::json))
+FROM (
+  SELECT a.no_cuenta, a.nombre, COALESCE(s.estado, 'falta') AS estado,
+         to_char(s.hora AT TIME ZONE 'America/Mexico_City', 'YYYY-MM-DD HH24:MI:SS') AS hora
+  FROM alumnos a
+  LEFT JOIN asistencias s ON s.no_cuenta = a.no_cuenta AND s.sesion_id = :'id'::int
+  WHERE a.grupo = (SELECT grupo FROM sesiones WHERE id = :'id'::int)
+) r;
+SQL
+docker compose exec -T nodered /usr/bin/python3 -I -B /etc/nodered/reporte_csv.py <id>
+```
+
+**Retención manual.** No hay purga de reportes ni de la tabla `sesiones` (decisión de retención de [orangepi/AGENTS.md](AGENTS.md)): cada sesión suma un CSV de unos pocos KB y una fila, y a la larga la microSD se llenaría. Para revisar y quitar los CSV de más de 30 días y cualquier `.entrada-*` que haya quedado (no debería), desde `orangepi/` y después de sacar copia de lo que quieras conservar:
+
+```bash
+docker compose exec -T nodered sh -c 'find /data/reportes \( -name "sesion-*.csv" -mtime +30 -o -name ".entrada-*" \) -print'
+docker compose exec -T nodered sh -c 'find /data/reportes \( -name "sesion-*.csv" -mtime +30 -o -name ".entrada-*" \) -delete'
+```
+
+Las filas viejas de `sesiones` solo las borra un superusuario con aprobación humana ([Prohibido sin aprobación humana](AGENTS.md#prohibido-sin-aprobación-humana)), y solo si ninguna `asistencias` las referencia.
+
+**Pendiente:** un endpoint de descarga (sin fecha; por ahora el reporte se saca del volumen a mano).
+
+### Reiniciar la pantalla
+
+El nodo `inject` "Reiniciar pantalla" de la pestaña `Sesiones` publica `{"reiniciar":1}` en `aula/pantalla/reinicio` (QoS 1, sin retain) cuando se pulsa su botón en el editor de Node-RED. La pantalla sale con código 0 y systemd la levanta (`orangepi-pantalla.service`, `Restart=always`). No hay API para esto.
 
 ## Operación
 
@@ -442,9 +497,9 @@ Los nombres de servicio son `mosquitto`, `postgres`, `nodered` y `portainer`.
 
 ### Reconstruir Node-RED
 
-Usar `--build` después de cambiar `nodered/settings.js`, `nodered/Dockerfile`, `nodered/package.json`, `nodered/package-lock.json` o cualquier archivo de `web/`. Estos archivos se copian a la imagen (los de `web/` se compilan en ella), así que sin reconstruirla el cambio no tiene efecto.
+Usar `--build` después de cambiar `nodered/settings.js`, `nodered/Dockerfile`, `nodered/package.json`, `nodered/package-lock.json`, `nodered/reporte_csv.py` o cualquier archivo de `web/`. Estos archivos se copian a la imagen (los de `web/` se compilan en ella), así que sin reconstruirla el cambio no tiene efecto.
 
-La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-16`). Al reconstruir por un cambio, subir el sufijo (`-17`, `-18`...), como indica el comentario del archivo.
+La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-19`). Al reconstruir por un cambio, subir el sufijo (`-20`, `-21`...), como indica el comentario del archivo.
 
 Para aplicar solo un cambio de Node-RED o del frontend, sin tocar los demás servicios, desde `orangepi/`:
 
@@ -528,11 +583,12 @@ Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` también vienen de 
 |---|---|
 | Sin límite de intentos ni registro de los 401 | La API no limita los intentos de contraseña ni deja registro de las peticiones rechazadas (401 o 403). Con una sola cuenta de profesor, la defensa es una contraseña larga (mínimo 16 caracteres, forzado al arrancar; `openssl rand -hex 16`). Pendiente (no es de esta ronda): limitar intentos y registrar los 401 sin escribir credenciales. |
 | Certificado autofirmado: riesgo de MITM | HTTP Basic y `X-Galeria-Token` viajan por HTTPS con certificado autofirmado: protegen contra quien solo escucha, pero quien se interponga y presente otro certificado se llevaría la contraseña si el usuario acepta el aviso del navegador. Recomendación: instalar `nodered.crt` como certificado de confianza en la laptop del profesor (ver [Node-RED](#node-red)) y no aceptar avisos de certificado; el servicio de visión debe validarlo con `http.ca_file`. |
-| Inyección de fórmulas en el reporte CSV | La lista maestra se importa tal cual: un nombre que empiece con `=`, `+`, `-` o `@` queda guardado así. El peligro aparece al abrir en Excel un CSV exportado. **Requisito del reporte CSV (trabajo futuro, flujo con nodo `exec`):** neutralizar esos prefijos al exportar (por ejemplo, anteponer `'`). No se implementa en la importación. |
+| Inyección de fórmulas en el reporte CSV | La lista maestra se importa tal cual: un nombre que empiece con `=`, `+`, `-` o `@` queda guardado así. El peligro aparece al abrir en Excel un CSV exportado. El reporte CSV lo neutraliza al exportar (`nodered/reporte_csv.py`): antepone `'` a un valor, o a un segmento tras `;` o `,`, que empiece con `=`, `+`, `-`, `@`, tabulador, retorno de carro, sus formas de ancho completo o el signo menos U+2212. No se implementa en la importación. |
 | MQTT sin TLS | El listener 1883 va en texto plano: usuario y contraseña viajan sin cifrar. |
 | Una contraseña MQTT filtrada | La de `xiao` es la más expuesta: viaja en claro por la LAN. Con la contraseña de un rol, alguien conectado a la LAN puede conectarse con ese usuario y, por `use_username_as_clientid`, expulsar al cliente legítimo; al caer su conexión se dispara su Will (por ejemplo `{"en_linea": false}` en `aula/camara/estado`, retenido), y el atacante puede dejar retenido un estado falso en los tópicos que ese rol puede escribir. La ACL limita qué tópicos toca cada rol, pero no evita esto. Mitigaciones pendientes: restringir el puerto 1883 a la IP de la XIAO (y a la placa) en la cadena `DOCKER-USER` del host (cambio del host: lo coordina Yordi con el equipo, y aún no se hizo); descartar en Node-RED los estados vencidos por `ts` (flujos del 11 nov, Yordi); TLS en MQTT (sin decidir, ver Pendiente). |
 | Mensajes retenidos falsos | La ACL de Mosquitto 2 (`acl_file`) no puede impedir el retain por tópico. La defensa es que los consumidores de todo tópico con Retain = no ignoren lo retenido y lo vacío, en cualquier tópico (contrato MQTT, sección 1: la XIAO, el servicio de visión, incluidos `aula/camara/pir` y `aula/vision/cmd`, y Node-RED). Node-RED borra los retenidos de `*/cmd`, `aula/camara/pir` y `aula/camara/energia` en cada conexión al broker (flujo "Limpieza de retenidos"), lo que provoca un mensaje vacío en vivo en cada uno de esos tópicos, y su ingesta descarta `aula/camara/energia` con retain (con aviso) y vacío (en silencio). Para los demás tópicos con Retain = no (`aula/vision/resultado`, `aula/vision/embedding`, `aula/vision/enrolamiento`, `aula/vision/galeria/alta`, `aula/vision/galeria/baja`, `aula/pantalla/reinicio` y `aula/sistema/metricas`), los flujos del 11 nov deben descartar retain, o se amplía la lista de la limpieza. Un plugin de autorización de broker que sí lo impidiera queda fuera: es una decisión humana, y no se instala sin ella. |
-| Node-RED puede ejecutar código | Un nodo `exec`, previsto en el plan para el reporte CSV, ejecutaría comandos en el contenedor. Por eso el editor exige `adminAuth` (`nodered/settings.js`, línea 13), y `settings.js` no es escribible desde el contenedor (`nodered/Dockerfile`). |
+| Node-RED puede ejecutar código | El nodo `exec` del reporte CSV ejecuta comandos en el contenedor. Por eso el editor exige `adminAuth` (`nodered/settings.js`, línea 13); `settings.js` y `reporte_csv.py` no son escribibles desde el contenedor (`nodered/Dockerfile`); el comando es fijo, sin shell, y solo recibe el id entero de la sesión; los reportes pasan por una cola de 1 cada 2 s, un `iniciar` a menos de 5 s del anterior se descarta y el servicio tiene `pids_limit: 256` (`docker-compose.yml`). |
+| La microSD se llena: sin purga de reportes ni de sesiones | Cada sesión deja un CSV en `/data/reportes` y una fila en `sesiones`, y nada los borra (decisión de retención: no hay purga). Limpieza manual en [Reportes CSV](#reportes-csv). |
 | El panel de la pantalla no tiene autorización local | Quien esté frente a la pantalla táctil (ILI9341) puede abrir la puerta, probar la luz e iniciar o terminar la sesión: el panel no pide PIN ni pulsación larga, y el usuario MQTT `pantalla` puede publicar `aula/sesion/cmd` y `aula/actuador/cmd`. Mitigaciones actuales: iniciar y terminar piden un segundo toque, y "Abrir puerta" y encender la luz de prueba tienen un enfriamiento de 2 s (apagarla nunca se bloquea). Un PIN o una pulsación larga quedan para que el equipo lo decida. |
 | La Guía de registro se puede mantener abierta con mensajes repetidos | Un `aula/vision/enrolamiento` con `estado` `esperando_pose` y `paso` ≤ 1 se toma como el inicio de un registro nuevo: reabre la Guía aunque el profesor la haya cerrado con "Salir", reemplaza una Guía de otra cuenta y reinicia el techo `GUIA_MAX_S`. Así, quien tenga las credenciales de `vision` o de `nodered` (los dos pueden escribir ese tópico según la ACL) puede mantener la pantalla en la Guía, sin los botones de puerta, luz y sesión, publicando ese mensaje cada pocos segundos. También la reabre un reintento de la primera pose tras una `rechazada`. Se acepta porque los dos roles son de confianza y la regla evita que un mensaje final perdido (QoS 0) oculte el registro siguiente. Para cerrarlo a bajo costo: tratarlo como inicio solo si la Guía actual lleva más de unos 30 s sin progreso, o una sola vez por cuenta dentro de `GUIA_VENCE_S`. |
 | La luz de prueba puede apagar una luz que la visión encendió | "Probar luz LED" publica `luz:1` y, 3 s después, `luz:0` de forma automática. Si en ese lapso el servicio de visión encendió la tira para una captura, el `luz:0` de la pantalla la apaga. El contrato no define prioridad entre quienes publican `luz` (pantalla, Node-RED y visión). El firmware de la XIAO prevé apagar la tira sola a los 360 s del último `luz:1`, lo que acota el daño si un `luz:0` se pierde, pero no resuelve la prioridad. |
@@ -546,6 +602,7 @@ No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: No
 
 | Pendiente | Estado en el repo |
 |---|---|
+| Sesiones y reporte CSV | Hecho (pestaña `Sesiones`, `nodered/reporte_csv.py`) y verificado en la placa el 5 nov con `5.0.9-19` (`orangepi/AGENTS.md`, pasos 27 a 33, 35 y 36; `02-roles.sh` aplicado). Falta el paso 34: pulsar "Reiniciar pantalla" en el editor. El pase de lista sigue pendiente. |
 | `GALERIA_TOKEN` | Node-RED lo recibe por el compose. `GET /api/galeria` solo acepta el encabezado `X-Galeria-Token`; solo Node-RED y el servicio de visión tienen el token. Falta copiarlo a `/etc/pase-lista/vision.env` y verificarlo en la placa. |
 
 #### Sin fecha (sin decidir)

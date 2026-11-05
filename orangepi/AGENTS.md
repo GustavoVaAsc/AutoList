@@ -53,7 +53,7 @@ Estas acciones requieren que una persona lo apruebe en la conversación. No las 
 
 ## Verificación
 
-Ejecuta esta lista en la placa después de cualquier cambio en el stack. Un paso no cuenta como verificado si no se ejecutó. Los comandos salen de este archivo y de `orangepi/README.md`; los pasos 1 a 10 se ejecutaron en la placa el 2 de noviembre de 2026, tras activar la ACL. Los pasos 11 a 14 (autenticación de la API, galería, importación del CSV y frontend) se ejecutaron en la placa el 2 de noviembre de 2026, con la imagen `5.0.9-12`, la primera con autenticación. Las 3 filas de prueba del grupo `PRUEBA` (cuentas 999000001 a 999000003) quedaron en `alumnos`, porque el rol de Node-RED no puede borrarlas. Los pasos 15 a 25 (flujo `Registro`, búsqueda, retiro del rostro y vista de Registro) **no se han ejecutado en la placa**; los corre Yordi tras desplegar, con esas cuentas de prueba y con el servicio de visión apagado. El paso 25 es obligatorio: ningún dato de prueba debe quedar con consentimiento o rostro. **Antes de cualquier comando `docker compose` con este compose, `orangepi/.env` debe tener `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` y `GALERIA_TOKEN`** (`:?` en el compose: sin ellas ni `ps` ni `config -q` funcionan). Node-RED tampoco arranca si `NODERED_PROFESOR_PASSWORD`, `GALERIA_TOKEN` o `NODERED_ADMIN_PASSWORD` contienen `cambiar_esta_clave`, si dos de esos tres son iguales, si `GALERIA_TOKEN` tiene menos de 32 caracteres, si `NODERED_PROFESOR_PASSWORD` tiene menos de 16 o si alguno de esos dos tiene menos de 8 caracteres distintos; `openssl rand -hex 16` cumple todo (`orangepi/.env.example`).
+Ejecuta esta lista en la placa después de cualquier cambio en el stack. Un paso no cuenta como verificado si no se ejecutó. Los comandos salen de este archivo y de `orangepi/README.md`; los pasos 1 a 10 se ejecutaron en la placa el 2 de noviembre de 2026, tras activar la ACL. Los pasos 11 a 14 (autenticación de la API, galería, importación del CSV y frontend) se ejecutaron en la placa el 2 de noviembre de 2026, con la imagen `5.0.9-12`, la primera con autenticación. Las 3 filas de prueba del grupo `PRUEBA` (cuentas 999000001 a 999000003) quedaron en `alumnos`, porque el rol de Node-RED no puede borrarlas. Los pasos 15 a 25 (flujo `Registro`, búsqueda, retiro del rostro y vista de Registro) se ejecutaron en la placa el 3 de noviembre de 2026, con la imagen `5.0.9-17` (los pasos 23 y 24, Yordi en el navegador; el 21, sin la parte del rostro real, que espera a la visión); los pasos 15 a 20 y 25 se repitieron el 5 de noviembre con la imagen `5.0.9-18`. El paso 26 (retiro tardío atado a la fecha) se ejecutó el 5 de noviembre. Los pasos 27 a 33, 35 y 36 (sesiones y reporte CSV) se ejecutaron en la placa el 5 de noviembre con la imagen `5.0.9-19`; el 34 (pulsar "Reiniciar pantalla" en el editor) **no se ha ejecutado**. Se corren con el servicio de visión y la unidad de la pantalla apagados (con su usuario en marcha, `vision` y `pantalla` se expulsarían). Los pasos con cuentas usan las de prueba del grupo `PRUEBA`. El paso 25 es obligatorio al terminar los de registro: ningún dato de prueba debe quedar con consentimiento o rostro; el 36 dice qué queda de los pasos de sesiones. **Antes de cualquier comando `docker compose` con este compose, `orangepi/.env` debe tener `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` y `GALERIA_TOKEN`** (`:?` en el compose: sin ellas ni `ps` ni `config -q` funcionan). Node-RED tampoco arranca si `NODERED_PROFESOR_PASSWORD`, `GALERIA_TOKEN` o `NODERED_ADMIN_PASSWORD` contienen `cambiar_esta_clave`, si dos de esos tres son iguales, si `GALERIA_TOKEN` tiene menos de 32 caracteres, si `NODERED_PROFESOR_PASSWORD` tiene menos de 16 o si alguno de esos dos tiene menos de 8 caracteres distintos; `openssl rand -hex 16` cumple todo (`orangepi/.env.example`).
 
 Antes de cada uno de los pasos 4, 5 y 6, vuelve a anotar N, el id máximo actual de `metricas_energia`, con este comando. Guarda además el N anotado antes del paso 4 como N₀: es el que usa la limpieza acotada.
 
@@ -88,6 +88,17 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 | 23 | Alumnos: búsqueda y retiro del rostro | En el navegador, `https://<ip>:1880/app/#/alumnos`: buscar por nombre sin acentos y por cuenta; "Retirar rostro" de un integrante del equipo con rostro (Escape, Cancelar y confirmar); "Registrar rostro" de un pendiente. | La lista filtra y los conteos siguen a lo visible; el diálogo abre con el foco en "Cancelar" y Escape no retira nada; confirmar da el aviso "Rostro retirado", la fila pasa a pendiente y el foco vuelve a su botón; "Registrar rostro" abre Registro con ese alumno elegido. |
 | 24 | Registro en el navegador | `https://<ip>:1880/app/#/registro`: elegir un alumno de prueba, marcar el consentimiento, iniciar, mirar el progreso, recargar la página, cancelar. | "Iniciar registro" está deshabilitado sin la casilla. Con el registro abierto y la visión apagada dice "Esperando al servicio de visión" con el tiempo transcurrido y las 5 poses pendientes (no simula avance). Al recargar se retoma el registro. "Cancelar registro" lo cierra y la vista dice "Registro cancelado". |
 | 25 | **Obligatorio al terminar:** no quedan datos de prueba | Con el superusuario, la consulta de limpieza de abajo. | Da 0. Si no, retira lo que quede (paso 21, o un superusuario con `UPDATE ... SET embedding = NULL, consentimiento = false, consentimiento_fecha = NULL` sobre esas cuentas; el rol de Node-RED no puede borrar filas). |
+| 26 | El retiro tardío va atado a la fecha del consentimiento | Con la cuenta 999000001 sin consentimiento ni rostro (paso 25 en 0), el bloque del paso 26 de abajo. Corre en una transacción con `ROLLBACK`, como superusuario, y cambia al rol de Node-RED con `SET LOCAL ROLE`: no deja datos. El `psql` lleva `-q`, así que no salen las etiquetas de comando (`UPDATE 0`, `SET`, `ROLLBACK`). | La salida completa son dos líneas: `t` (`formato_ok`: la fecha que devuelve el `UPDATE` del embedding es `…\.\d{6}Z`) y `999000001`, del retiro con la fecha correcta. El retiro con la fecha +1 µs y el segundo retiro dan 0 filas y no imprimen nada. |
+| 27 | La pestaña `Sesiones` cargó, el rol puede escribir lo que necesita y la imagen trae Python | Tras `docker compose up -d --no-deps --build nodered` (etiqueta `5.0.9-19`): `docker compose logs --tail=50 nodered` y los comandos de privilegios y de Python del paso 27 de abajo. Si los privilegios no salen como se espera, aplica `02-roles.sh` como dice [orangepi/README.md](README.md#volúmenes-existentes) (no se amplía el rol a mano). | Sin errores de nodos; unos segundos después del arranque aparecen `Conectado al broker: se reconcilia aula/sesion/estado con la base` y `Estado de la sesión reconciliado con la base`. Privilegios: `t\|t\|f\|f\|t` (INSERT, UPDATE de `fin`, sin UPDATE de `materia`, sin DELETE, secuencia). Python: `Python 3.14.10` (la versión que la imagen traía el 5 de noviembre; si cambió, basta con que sea Python 3 reciente) y `-rw-r--r-- 1 root root … /etc/nodered/reporte_csv.py`. |
+| 28 | Iniciar una sesión escribe en la base y publica el estado retenido | Los comandos del paso 28 de abajo, en orden: publicar `iniciar` como `pantalla`, esperar 2 s, leer el retenido como `pantalla` y consultar `sesiones` como superusuario. Si la lectura no trae nada, repítela: Node-RED escribe en la base antes de publicar. | El retenido es `{"activa":true,"id":N,"materia":"PRUEBA","grupo":"PRUEBA","inicio":"…+00:00","tol_min":10}`. `sesiones` tiene una fila con `abierta = t` y esa `id`. |
+| 29 | Iniciar otra vez cierra la anterior y genera su reporte; un segundo `iniciar` en menos de 5 s se descarta | Con la sesión del paso 28 abierta y **pasados al menos 5 s** desde ese `iniciar`: publica el `iniciar` **dos veces seguidas** (la segunda llega a menos de 5 s de la primera) y espera 3 s (la cola de reportes deja pasar 1 cada 2 s); después lee el retenido, consulta `sesiones` (comandos 2 y 3 del paso 28) y lista los reportes (comandos del paso 29 y el listado de abajo). | Una sola fila `abierta = t` (la nueva, `id` N+1) y ninguna sesión N+2: la segunda orden se descartó y el log trae `Descartado: un iniciar llegó a menos de 5 s del anterior`. La anterior tiene `fin`. El retenido trae el id nuevo. Aparece `sesion-N.csv` (la sesión cerrada) en `/data/reportes` y el log trae `Iniciar cerró la sesión olvidada N`. Sin `.entrada-*` y sin errores `23505`. |
+| 30 | Terminar cierra, publica y genera el CSV | `terminar` como `pantalla`, espera 3 s, el retenido, `sesiones`, el listado y el conteo de líneas de los reportes (sin imprimirlos): comandos del paso 30 de abajo. | El retenido es `{"activa":false,"id":N+1}`; la sesión tiene `fin` y no queda ninguna abierta. `sesion-<N+1>.csv` existe con permisos `-rw-------` y su conteo es 1 + (alumnos del grupo `PRUEBA`) líneas (4 con las 3 cuentas de prueba). No queda ningún `.entrada-*`. El log dice `Reporte de la sesión N+1 escrito en /data/reportes/sesion-N+1.csv`. No se imprimen nombres. |
+| 31 | Terminar sin sesión abierta no cambia nada | Otro `terminar` con todo cerrado; cuenta de `sesiones` y de `/data/reportes` antes y después; el retenido. | Las cuentas no cambian y no hay un CSV nuevo. El retenido sigue siendo `{"activa":false,"id":N+1}` (Node-RED lo republicó desde la base; el log dice `Terminar sin sesión abierta`). |
+| 32 | Un `iniciar` inválido se descarta sin publicar | Los cinco comandos de inválidos del paso 32 de abajo; antes, `max(id)` de `sesiones`, y después, el retenido y el log. | El `max(id)` no cambia y el retenido sigue igual. `docker compose logs --tail=50 nodered` trae un `Descartado, …` por caso (tol_min, materia con salto de línea, accion desconocida, `marcar` y JSON roto), sin repetir el contenido del mensaje. |
+| 33 | Un retenido en `aula/sesion/cmd` se descarta | Los comandos del retenido del paso 33 de abajo, en orden: Node-RED **detenido** antes de publicar (si está conectado, el broker le entrega el retenido en vivo con `retain = false` y se acepta como una orden normal: el 5 nov así se abrió una sesión de más). | `max(id)` de `sesiones` no cambia. El log, tras el arranque, trae `Descartado mensaje retenido en aula/sesion/cmd` y `Estado de la sesión reconciliado con la base`. Al final se borra el retenido. |
+| 34 | El reinicio de la pantalla se publica | El suscriptor del paso 34 de abajo, lanzado antes, en otra terminal, y pulsar el botón del nodo "Reiniciar pantalla" en el editor (`https://<ip>:1880/`, pestaña Sesiones). Después, el mismo suscriptor otra vez. | El primero imprime `aula/pantalla/reinicio {"reiniciar":1}`. El segundo, lanzado después, no imprime nada y termina por tiempo: no se publicó con retain. |
+| 35 | La reconciliación restaura el retenido perdido | Los comandos del paso 35 de abajo: con una sesión abierta, detener Node-RED, borrar el retenido de `aula/sesion/estado` como `nodered`, comprobar que no hay nada, levantar Node-RED y leer otra vez. | Tras el arranque, el retenido vuelve a ser `{"activa":true,"id":M,…}` de la sesión abierta. El último comando del paso, `terminar`, deja la base sin sesión abierta. |
+| 36 | Qué queda de los pasos de sesiones | La consulta del paso 36 de abajo, como superusuario. | Las sesiones con `materia = 'PRUEBA'` **quedan**: el rol de Node-RED no tiene `DELETE` sobre `sesiones` (`sql/roles.sh`), y los CSV quedan en `/data/reportes`. Borrarlas es un `DELETE` de superusuario y requiere la aprobación de una persona ([Prohibido sin aprobación humana](#prohibido-sin-aprobación-humana)): se confirma que no hay sesiones reales ni `asistencias` que las referencien y se borra `WHERE materia = 'PRUEBA'`. Los CSV de prueba se quitan por id con `docker compose exec -T nodered sh -c 'rm -f /data/reportes/sesion-<id>.csv'`. Mientras tanto, la consulta las lista y ninguna debe estar abierta. |
 
 Privilegios del paso 15 (el rol sale de `NODERED_DB_USER`, expandido dentro del contenedor; no imprime secretos):
 
@@ -143,6 +154,127 @@ Comando del paso 20 (caso negativo, con un registro abierto; un vector de 3 núm
 
 ```bash
 docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u vision\n-P %s\n" "$MQTT_VISION_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/vision/embedding -m "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"cuenta\":\"999000001\",\"dim\":3,\"modelo\":\"prueba\",\"embedding\":[0.6,0.8,0.0]}"; rm -rf "$d"'
+```
+
+Bloque del paso 26 (retiro tardío atado a la fecha). Corre como superusuario con `-v rol=...` tomado del entorno del contenedor (no imprime secretos) y termina en `ROLLBACK`, así que no deja datos. Pone el consentimiento como lo hace el `POST` del profesor, cambia al rol de Node-RED, ejecuta el `UPDATE` del embedding de "Validar embedding" con un vector generado (norma 1, 512 componentes) y prueba el retiro de "UPDATE retirar rostro tardío" con la fecha +1 µs, con la correcta y otra vez:
+
+```bash
+docker compose exec -T postgres sh -c 'psql -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -v ON_ERROR_STOP=1 -v rol="$NODERED_DB_USER"' <<'SQL'
+BEGIN;
+UPDATE alumnos SET consentimiento = true, consentimiento_fecha = now() WHERE no_cuenta = '999000001' AND embedding IS NULL;
+SET LOCAL ROLE :"rol";
+UPDATE alumnos SET embedding = ('[' || array_to_string(array_fill(1/sqrt(512.0), ARRAY[512]), ',') || ']')::vector
+WHERE no_cuenta = '999000001' AND consentimiento AND embedding IS NULL
+RETURNING no_cuenta,
+  to_char(consentimiento_fecha AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS consentimiento_fecha
+\gset f_
+SELECT :'f_consentimiento_fecha' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$' AS formato_ok;
+SELECT to_char((:'f_consentimiento_fecha')::timestamptz AT TIME ZONE 'UTC' + interval '1 microsecond',
+               'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS f_mas
+\gset
+PREPARE retiro(text, text) AS
+  UPDATE alumnos SET embedding = NULL, consentimiento = false, consentimiento_fecha = NULL
+  WHERE no_cuenta = $1 AND consentimiento_fecha = $2::timestamptz
+  RETURNING no_cuenta;
+EXECUTE retiro('999000001', :'f_mas');
+EXECUTE retiro('999000001', :'f_consentimiento_fecha');
+EXECUTE retiro('999000001', :'f_consentimiento_fecha');
+ROLLBACK;
+SQL
+```
+
+Comandos del paso 27 (privilegios del rol de Node-RED sobre `sesiones` y Python de la imagen; no imprimen secretos):
+
+```bash
+docker compose exec -T postgres sh -c "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -tA -c \"SELECT has_table_privilege('\$NODERED_DB_USER', 'sesiones', 'INSERT'), has_column_privilege('\$NODERED_DB_USER', 'sesiones', 'fin', 'UPDATE'), has_column_privilege('\$NODERED_DB_USER', 'sesiones', 'materia', 'UPDATE'), has_table_privilege('\$NODERED_DB_USER', 'sesiones', 'DELETE'), has_sequence_privilege('\$NODERED_DB_USER', 'sesiones_id_seq', 'USAGE')\""
+docker compose exec -T nodered sh -c '/usr/bin/python3 --version; ls -l /etc/nodered/reporte_csv.py'
+```
+
+Comandos del paso 28 (publican y leen como `pantalla`, que puede escribir `aula/sesion/cmd` y leer `aula/sesion/estado`; la contraseña va en el archivo del cliente y el directorio se borra sin `rm -rf`). El `iniciar` es el mismo que publica la pantalla, con el grupo de prueba:
+
+```bash
+# 1. Iniciar (el mismo comando se repite en el paso 29)
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"iniciar\",\"materia\":\"PRUEBA\",\"grupo\":\"PRUEBA\",\"tol_min\":10}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+# 2. Esperar a que Node-RED escriba y publique, y leer el retenido de estado (llega al suscribirse;
+#    termina a los 5 s si no hay; si no trae nada, repite este comando)
+sleep 2
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_sub"; XDG_CONFIG_HOME="$d" mosquitto_sub -h localhost -t aula/sesion/estado -C 1 -W 5 -v; rm -f "$d/mosquitto_sub"; rmdir "$d"'
+# 3. Las últimas sesiones, como superusuario (sin nombres de alumnos)
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -c "SELECT id, materia, grupo, tolerancia_min, fin IS NULL AS abierta FROM sesiones ORDER BY id DESC LIMIT 3"'
+```
+
+Comandos del paso 29. Node-RED descarta un segundo `iniciar` que llegue a menos de 5 s del último aceptado (límite contra un goteo de órdenes y contra la reentrega duplicada de QoS 1): por eso se espera al menos 5 s desde el `iniciar` del paso 28 y los dos publicados aquí van seguidos (el primero se acepta, el segundo se descarta). Después se lee el retenido y se consulta `sesiones` (comandos 2 y 3 del paso 28) y se lista `/data/reportes`:
+
+```bash
+sleep 5
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"iniciar\",\"materia\":\"PRUEBA\",\"grupo\":\"PRUEBA\",\"tol_min\":10}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"iniciar\",\"materia\":\"PRUEBA\",\"grupo\":\"PRUEBA\",\"tol_min\":10}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+sleep 3
+```
+
+Listado de los reportes (pasos 29, 30 y 31). Muestra también los archivos ocultos, para ver si quedó algún `.entrada-*` (no debe quedar ninguno: el programa lo borra siempre). Solo nombres y permisos, nunca el contenido:
+
+```bash
+docker compose exec -T nodered sh -c 'ls -la /data/reportes'
+```
+
+Comandos del paso 30 (terminar, esperar a la cola de reportes y contar las líneas de cada reporte sin imprimirlos; `wc` imprime solo conteos y los nombres `sesion-<id>.csv`):
+
+```bash
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"terminar\"}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+sleep 3
+docker compose exec -T nodered sh -c 'wc -l /data/reportes/*.csv'
+docker compose logs --tail=50 nodered
+```
+
+Comandos del paso 32 (cinco `iniciar` inválidos o no soportados; ninguno debe cambiar `sesiones` ni el retenido). Anota antes `SELECT max(id) FROM sesiones` y compara después:
+
+```bash
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"iniciar\",\"materia\":\"PRUEBA\",\"grupo\":\"PRUEBA\",\"tol_min\":601}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"iniciar\",\"materia\":\"PRU\nEBA\",\"grupo\":\"PRUEBA\",\"tol_min\":10}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"pausar\"}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"marcar\",\"cuenta\":\"999000001\"}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -t aula/sesion/cmd -m "{\"accion\":\"iniciar\",\"materia\":\"PRUEBA\""; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+docker compose logs --tail=50 nodered
+```
+
+El retenido del paso 33. A diferencia del paso 19, aquí el mensaje sí tendría efecto en vivo, así que se publica con Node-RED **detenido**: un retenido publicado mientras Node-RED está conectado le llega con `retain = false` (MQTT 3.1.1) y se ejecuta. Se publica como `pantalla` un `iniciar` válido con `-r`; al arrancar Node-RED, el broker se lo entrega con la bandera retain (el log lo descarta); al final se borra para que no se repita en cada conexión. Antes y después, `SELECT max(id) FROM sesiones` no cambia:
+
+```bash
+# 1. Detener Node-RED y publicar el retenido (queda guardado en el broker)
+docker compose stop nodered
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -r -t aula/sesion/cmd -m "{\"accion\":\"iniciar\",\"materia\":\"PRUEBA\",\"grupo\":\"PRUEBA\",\"tol_min\":10}"; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+# 2. Levantar Node-RED, esperar a `healthy` (hasta 60 s) y leer el log
+docker compose start nodered
+docker compose ps
+docker compose logs --tail=50 nodered
+# 3. Borrar el retenido (-r -n: retenido vacío; `pantalla` puede escribir ese tópico)
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -r -n -t aula/sesion/cmd; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+```
+
+Suscriptor del paso 34 (como `pantalla`, que puede leer `aula/pantalla/reinicio`; la unidad de la pantalla debe estar apagada). Se lanza **antes** de pulsar el botón del nodo "Reiniciar pantalla" en el editor; el segundo uso, con `-W 3` y lanzado **después** de pulsarlo, no debe imprimir nada:
+
+```bash
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_sub"; XDG_CONFIG_HOME="$d" mosquitto_sub -h localhost -t aula/pantalla/reinicio -W 60 -C 1 -v; rm -f "$d/mosquitto_sub"; rmdir "$d"'
+```
+
+Comandos del paso 35 (con una sesión abierta por el `iniciar` del paso 28; el broker pierde el retenido de estado y Node-RED lo reconstruye al conectar). Con Node-RED detenido, `nodered` puede publicar sin expulsar a nadie, como en el paso 10:
+
+```bash
+docker compose stop nodered
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u nodered\n-P %s\n" "$MQTT_NODERED_PASSWORD" > "$d/mosquitto_pub"; XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost -q 1 -r -n -t aula/sesion/estado; rm -f "$d/mosquitto_pub"; rmdir "$d"'
+# Comprobar que no queda nada (no imprime nada y termina a los 3 s)
+docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u pantalla\n-P %s\n" "$MQTT_PANTALLA_PASSWORD" > "$d/mosquitto_sub"; XDG_CONFIG_HOME="$d" mosquitto_sub -h localhost -t aula/sesion/estado -W 3 -v; rm -f "$d/mosquitto_sub"; rmdir "$d"'
+docker compose start nodered
+# Esperar a `healthy` (hasta 60 s) y leer el retenido (comando 2 del paso 28): debe volver a ser la sesión abierta
+docker compose ps
+# Cerrar la sesión con el `terminar` del paso 30
+```
+
+Consulta del paso 36 (sesiones de prueba que quedan, sin nombres de alumnos):
+
+```bash
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -c "SELECT id, grupo, fin IS NULL AS abierta FROM sesiones WHERE materia = '"'"'PRUEBA'"'"' ORDER BY id"'
 ```
 
 Comandos del paso 6 (un comando por caso):
@@ -211,6 +343,7 @@ No rompas estas reglas sin decisión humana.
 - La zona horaria de la base está en `sql/schema.sql` (`ALTER DATABASE ... SET timezone`). Un volumen creado antes de ese ajuste sigue en UTC hasta que se aplica el paso de Volúmenes existentes del README y se reinicia Node-RED (`docker compose restart nodered`), para que su pool reconecte. Es un ajuste de configuración, no una tabla nueva: la regla de consultar al equipo no aplica.
 - Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` ya están en `sql/schema.sql` (plan, sección 7.2). Los embeddings son `vector(512)`, dimensión confirmada por Gustavo. `intentos` no guarda embeddings: quien no se reconoce no dio consentimiento.
 - `alumnos` tiene los CHECK `embedding IS NULL OR consentimiento` y `consentimiento = (consentimiento_fecha IS NOT NULL)`. Registrar son dos UPDATE: primero el consentimiento y su fecha, con el embedding aún NULL (lo escribe el endpoint HTTP del profesor), y después el embedding con `AND consentimiento AND embedding IS NULL` (lo escribe el manejador de MQTT, que nunca escribe el consentimiento). Retirar el rostro es el inverso (embedding NULL, consentimiento false, fecha NULL). El rol de Node-RED solo puede actualizar `nombre`, `grupo`, `embedding`, `consentimiento` y `consentimiento_fecha`, y no tiene DELETE (`sql/roles.sh`).
+- `sesiones`: el rol de Node-RED tiene `SELECT`, `INSERT` y `UPDATE (fin)`, y la secuencia; no puede cambiar `materia`, `grupo`, `inicio` ni `tolerancia_min`, y no tiene DELETE (`sql/roles.sh`). Iniciar es una sola sentencia con CTE que cierra la sesión abierta y hace el `INSERT` (plan, sección 5.3); `sesiones_una_abierta_idx` rechaza (23505) a la segunda de dos que lleguen a la vez, y el flujo entonces publica el estado de la base. Un volumen creado con el `UPDATE` de tabla completa necesita `02-roles.sh` para quedar con `UPDATE (fin)` ([orangepi/README.md](README.md#volúmenes-existentes)); sin aplicarlo, los flujos funcionan igual. Las sesiones de prueba de la verificación (`materia = 'PRUEBA'`) las borra solo un superusuario con aprobación humana (paso 36).
 - Corregir una asistencia ya registrada lo hace solo el superusuario: el rol de Node-RED tiene SELECT e INSERT sobre `asistencias`. Borrar la identidad completa de una persona (`nombre`, `no_cuenta`) también es un procedimiento de superusuario, porque `asistencias` referencia la fila.
 - No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: Node-RED no arranca sin sus variables (`nodered/autenticacion-api.js`). No se registra a ninguna persona real sin esa autenticación verificada en la placa y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo).
 - En `psql`, los embeddings se pasan con `\set` o con `PREPARE`/`EXECUTE`, nunca como literales pegados en la sentencia.
