@@ -127,7 +127,7 @@ services:
       context: ../nodered
       additional_contexts:
         web: ../web
-    image: pase-lista/nodered:5.0.9-17
+    image: pase-lista/nodered:5.0.9-19
     restart: unless-stopped
     logging: *logging
     # Solo recibe lo que usa: la contraseña de su usuario MQTT (nodered), el rol
@@ -182,6 +182,11 @@ services:
       retries: 3
       start_period: 60s
     mem_limit: 384m
+    # Defensa en profundidad del nodo exec (plan, sección 13): si algo desbocara procesos o hilos
+    # dentro del contenedor (un bucle que lanzara python3, una bomba de forks), el tope evita que
+    # agote la tabla de procesos de la placa. Node-RED con sus hilos (libuv, V8, el pool de
+    # Postgres) y un python3 a la vez usa unas decenas; 256 deja holgura sin dejar de ser un tope.
+    pids_limit: 256
 
   portainer:
     image: portainer/portainer-ce:2.45.3@sha256:3609c307943bca8e5c492f69ddd6965df177208b50678a4cff28391c8dd4e96e
