@@ -27,10 +27,11 @@ Reparto según `docs/HIGH-LEVEL-PLAN.md`, sección 12.2.
 
 | Persona | Carril | Módulos |
 |---|---|---|
-| Gustavo | Visión y campo | Servicio de visión en la NPU, firmware de la XIAO (sensores y actuadores), etapa de potencia |
+| Gustavo | Visión y campo | Servicio de visión en la NPU, firmware de la XIAO (cámara, sensores y actuadores, salvo la tira LED) |
 | Arnau | Hardware de la pantalla y documentación | Overlays de SPI, unidad systemd `orangepi-pantalla.service`, RTC DS3231, documentación y presentaciones del proyecto |
-| Yordi | Edge, datos, frontend y pantalla | Docker, Node-RED, Postgres, API HTTP, frontend web, programa de la pantalla ILI9341 |
+| Yordi | Edge, datos, frontend y pantalla | Docker, Node-RED, Postgres, API HTTP, frontend web, programa de la pantalla ILI9341, firmware de la tira LED de 12 V y su etapa de potencia (`firmware/xiao`) |
 
+- El firmware de la tira LED y su etapa de potencia eran de Gustavo y pasaron a Yordi, con el acuerdo de Gustavo. El resto de `firmware/xiao` (cámara, PIR, INA219, servo, LEDs RGB y buzzer) sigue siendo de Gustavo, que también flashea la placa.
 - El carril del agente sale de la petición de la persona o del nombre de la rama. Si no está claro, pregunta antes de editar.
 - Un agente que trabaja en un carril no edita módulos de otro carril sin decirlo en su resumen.
 - La documentación técnica de cada módulo (por ejemplo `orangepi/README.md`) la mantiene el carril de ese módulo. La documentación y las presentaciones del proyecto son de Arnau (plan, sección 12.2).
@@ -38,7 +39,7 @@ Reparto según `docs/HIGH-LEVEL-PLAN.md`, sección 12.2.
 
 ## Ramas e idioma
 
-- Una rama por módulo, según el plan (sección 11). Ramas actuales: `vision/npu` y `edge/sistema` (el edge). El plan sugiere `borde/nodered` como ejemplo; si vas a crear una rama nueva, pregunta qué nombre usar.
+- Una rama por módulo, según el plan (sección 11). Ramas actuales: `vision/npu`, `edge/sistema` (el edge) y `firmware/xiao`. El plan sugiere `borde/nodered` como ejemplo; si vas a crear una rama nueva, pregunta qué nombre usar.
 - Los módulos se fusionan a `main` cuando funcionan (plan, sección 11).
 - Documentación, comentarios de código, mensajes de commit y textos visibles al usuario van en español. Los identificadores técnicos (tópicos, variables, nombres de archivo) se escriben como están en el código.
 
@@ -69,10 +70,11 @@ orangepi/                 stack de la placa (AGENTS.md propio)
 nodered/                  imagen, ajustes y flujos (AGENTS.md propio)
   flows/flows.json        flujos; el editor de Node-RED los escribe aquí
 web/                      frontend (Vite + React + TypeScript; README propio)
+firmware/xiao/            firmware de la XIAO: por ahora la tira LED de 12 V (sketch Arduino, README propio; secrets.h ignorado por git)
 herramientas/             simular_energia.sh
 ```
 
-Aún no existe en el repo: `firmware/`.
+Aún no existe en el repo: el resto del firmware de la XIAO (de Gustavo) ni `firmware/pruebas-unitarias/`.
 
 `docs/SPEC.md` y `docs/PODA.md` son notas internas ignoradas por git (`.gitignore`). No los versiones.
 
@@ -86,12 +88,14 @@ No negociable:
 - Nunca imprimas el entorno de un contenedor. Eso incluye `docker inspect`, `env`, `printenv` y `echo $..._PASSWORD`. Las acciones que pueden imprimir secretos están en [Prohibido sin aprobación humana](orangepi/AGENTS.md#prohibido-sin-aprobación-humana).
 - No subas fotos de personas al repo. Los modelos `.nb`, `.onnx` y `.tflite`, y los datasets, quedan fuera de git (`.gitignore`; plan, sección 11).
 - Los embeddings biométricos nunca llegan al navegador ni al frontend. El registro exige consentimiento (plan, sección 5.4).
+- `firmware/xiao/secrets.h` tiene el Wi-Fi y la clave MQTT de `xiao`. No lo leas, no lo imprimas, no lo cites y no lo incluyas en un commit. Solo `firmware/xiao/secrets.h.example` se versiona (`.gitignore`).
 - `nodered/flows/flows.json` no contiene secretos. Las credenciales entran por variables de entorno (`orangepi/README.md`, sección Desplegar flujos).
 
 ## Hardware compartido
 
 La Orange Pi y la XIAO ESP32S3 Sense son equipos físicos únicos que se turnan (plan, sección 12.4).
 
+- La XIAO la flashea Gustavo desde su laptop con el IDE de Arduino. En la placa no hay `arduino-cli` ni PlatformIO y no se instalan: el firmware no se compila aquí.
 - En la placa, toca solo contenedores, imágenes y volúmenes del proyecto `pase-lista`. Hay otros contenedores que no son tuyos.
 - No uses `sudo`.
 - Propiedad del host: los overlays de SPI y la unidad systemd de la pantalla son de Arnau; la imagen del sistema y la NPU, de Gustavo; el stack de Docker, de Yordi. Para cualquier otro cambio en el host, coordina con el equipo (plan, secciones 12.2 y 12.4).
@@ -106,7 +110,7 @@ La Orange Pi y la XIAO ESP32S3 Sense son equipos físicos únicos que se turnan 
 
 ## Verificación
 
-- El repo no tiene suite de pruebas automatizada completa. El plan prevé pruebas unitarias de cámara, INA219 y servo (sección 11), que no están en este checkout. Lo único automatizado fuera de `orangepi/vision/` son las pruebas de `nodered/pruebas/` (`node --test nodered/pruebas/*.test.js`, sin dependencias): el middleware de la API y las funciones de los flujos `Alumnos` y `Registro`; y las de `web/pruebas/` (`node --test web/pruebas/*.test.js`, sin dependencias): la lógica pura del frontend (Alumnos y la cuenta de las cifras). Estas últimas piden Node 22.18 o posterior, que carga el `.ts` quitando los tipos (`web/README.md`, sección Comandos).
+- El repo no tiene suite de pruebas automatizada completa. El plan prevé pruebas unitarias de cámara, INA219 y servo (sección 11), que no están en este checkout. Lo único automatizado fuera de `orangepi/vision/` son las pruebas de `nodered/pruebas/` (`node --test nodered/pruebas/*.test.js`, sin dependencias): el middleware de la API y las funciones de los flujos `Alumnos` y `Registro`; y las de `web/pruebas/` (`node --test web/pruebas/*.test.js`, sin dependencias): la lógica pura del frontend (Alumnos y la cuenta de las cifras). Estas últimas piden Node 22.18 o posterior, que carga el `.ts` quitando los tipos (`web/README.md`, sección Comandos). También hay pruebas de host de la lógica de la tira LED en `firmware/xiao/pruebas/` (`g++`, sin dependencias; comandos en `firmware/xiao/README.md`, sección Pruebas de host): no cubren el sketch, que solo se verifica en la placa.
 - La verificación se hace en la placa, con la lista de cada `AGENTS.md` anidado. Para `orangepi/`, ver [Verificación](orangepi/AGENTS.md#verificación).
 - No digas que algo está listo sin haberlo verificado. Si no pudiste ejecutar la verificación, di qué falta y por qué.
 
