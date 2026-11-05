@@ -5,7 +5,7 @@ Va en el mismo bus SPI3 que la pantalla, con el chip select 1
 (/dev/spidev3.1), que maneja el kernel. La interrupcion TP_IRQ (pin fisico
 11, linea 32 de gpiochip0) baja al tocar.
 
-Todavia no lo usa main.py.
+Lo usan main.py (los toques) y calibrar_tactil.py (la calibracion).
 """
 
 from periphery import GPIO, SPI

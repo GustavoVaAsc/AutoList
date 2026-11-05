@@ -1,0 +1,4 @@
+# Variables PANTALLA_* de esta placa (calibracion del tactil, broker); el .example si se versiona
+pantalla.env
+# Archivos de clave locales (la clave real va en /etc/pase-lista/, fuera del repo)
+*.clave
