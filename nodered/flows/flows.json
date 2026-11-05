@@ -305,13 +305,13 @@
         "type": "tab",
         "label": "Limpieza de retenidos",
         "disabled": false,
-        "info": "En cada conexión de Node-RED al broker (también tras reiniciar Mosquitto), pide borrar los mensajes retenidos que hayan quedado en los tópicos de órdenes (*/cmd) y en los de eventos que nunca se retienen (aula/camara/pir y aula/camara/energia). Esos tópicos no se retienen (docs/contrato-mqtt.md, sección 1), pero la ACL de Mosquitto no puede impedir el retain por tópico: un cliente con credenciales podría dejar una orden o una lectura retenida que se repetiría en cada reconexión de su consumidor."
+        "info": "En cada conexión de Node-RED al broker (también tras reiniciar Mosquitto), pide borrar los mensajes retenidos que hayan quedado en los tópicos de órdenes (*/cmd) y en los de eventos que nunca se retienen (aula/camara/pir, aula/camara/energia y aula/vision/resultado). Esos tópicos no se retienen (docs/contrato-mqtt.md, sección 1), pero la ACL de Mosquitto no puede impedir el retain por tópico: un cliente con credenciales podría dejar una orden o una lectura retenida que se repetiría en cada reconexión de su consumidor."
     },
     {
         "id": "a1f0c0de00000031",
         "type": "comment",
         "z": "a1f0c0de00000030",
-        "name": "Limpia retenidos de */cmd, aula/camara/pir y aula/camara/energia en cada conexión al broker",
+        "name": "Limpia retenidos de */cmd, aula/camara/pir, aula/camara/energia y aula/vision/resultado en cada conexión al broker",
         "info": "Cada vez que el nodo \"Borrar retenido\" informa que está conectado al broker (al arrancar Node-RED y tras cada reconexión, por ejemplo al reiniciar Mosquitto), se publica un mensaje retenido de payload vacío en cada tópico de la lista, que es la forma de borrar un retenido en MQTT. Se usa el estado del nodo y no un inject temporizado porque mqtt out no publica nada si aún no hay conexión, y un inject no corre cuando solo se reinicia el broker. Esto provoca, en cada conexión, un mensaje vacío en vivo (sin bandera retain) en cada tópico de la lista: no es una orden ni una lectura válida y los consumidores lo ignoran (contrato, sección 1; el flujo de ingesta lo descarta en silencio). El broker y sus credenciales son los del nodo \"Mosquitto\": aquí no hay ninguna.",
         "x": 330,
         "y": 40,
@@ -322,7 +322,7 @@
         "type": "function",
         "z": "a1f0c0de00000030",
         "name": "Al conectar: un borrado por tópico",
-        "func": "// Llega el estado del nodo \"Borrar retenido\". Solo interesa \"conectado\" (verde, punto):\n// es el estado que mqtt out emite cuando ya puede publicar, al conectar y al reconectar.\nconst s = msg.status || {};\nif (s.fill !== \"green\" || s.shape !== \"dot\") {\n    return null;\n}\n// Un mensaje por tópico, con payload vacío y retain: borra el retenido.\nconst topicos = [\"aula/actuador/cmd\", \"aula/sesion/cmd\", \"aula/vision/cmd\", \"aula/camara/pir\", \"aula/camara/energia\"];\nnode.log(\"Conectado al broker: se piden borrar los retenidos de \" + topicos.join(\", \"));\nreturn [topicos.map((topic) => ({ topic: topic, payload: \"\", qos: 1, retain: true }))];",
+        "func": "// Llega el estado del nodo \"Borrar retenido\". Solo interesa \"conectado\" (verde, punto):\n// es el estado que mqtt out emite cuando ya puede publicar, al conectar y al reconectar.\nconst s = msg.status || {};\nif (s.fill !== \"green\" || s.shape !== \"dot\") {\n    return null;\n}\n// Un mensaje por tópico, con payload vacío y retain: borra el retenido.\nconst topicos = [\"aula/actuador/cmd\", \"aula/sesion/cmd\", \"aula/vision/cmd\", \"aula/camara/pir\", \"aula/camara/energia\", \"aula/vision/resultado\"];\nnode.log(\"Conectado al broker: se piden borrar los retenidos de \" + topicos.join(\", \"));\nreturn [topicos.map((topic) => ({ topic: topic, payload: \"\", qos: 1, retain: true }))];",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -2117,5 +2117,206 @@
         "x": 480,
         "y": 860,
         "wires": []
+    },
+    {
+        "id": "a1f0c0de000000b0",
+        "type": "tab",
+        "label": "Pase de lista",
+        "disabled": false,
+        "info": "Pase de lista (plan, secciones 5.1 y 6.4; contrato MQTT, secciones 3 y 4). Consume aula/vision/resultado (QoS 1): solo modo \"pase\" registra asistencia; modo \"prueba\" se ignora por ahora. Descarta retain, payload vacío, JSON inválido, campos inválidos y un ts a más de 60 s del reloj de Node-RED. Una sola sentencia de Postgres toma la sesión abierta de la base, valida que la cuenta sea del grupo y tenga consentimiento y rostro vigentes, inserta con ON CONFLICT DO NOTHING (presente o retardo con el reloj de la base) y deja en intentos los rechazos. Un límite de entrada (5 por segundo, 200 ms entre mensajes, descarta los que lleguen antes) protege la escritura. Después publica la retroalimentación en aula/actuador/cmd. Sin sesión abierta no registra ni manda nada. Las asistencias no se retienen ni se corrigen desde aquí: el marcado manual (marcar) queda fuera. La lista y el último registro de la pantalla quedan pendientes (necesitan un tópico nuevo y un cambio de ACL)."
+    },
+    {
+        "id": "a1f0c0de000000b1",
+        "type": "comment",
+        "z": "a1f0c0de000000b0",
+        "name": "MQTT: aula/vision/resultado (pase de lista → Postgres → aula/actuador/cmd)",
+        "info": "",
+        "x": 300,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000b2",
+        "type": "mqtt in",
+        "z": "a1f0c0de000000b0",
+        "name": "aula/vision/resultado",
+        "topic": "aula/vision/resultado",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 170,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000b3"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b3",
+        "type": "function",
+        "z": "a1f0c0de000000b0",
+        "name": "Validar resultado de visión",
+        "func": "// Resultado de la visión: aula/vision/resultado (QoS 1, sin retención; contrato MQTT, sección 4).\n//   {\"ts\":\"…\",\"modo\":\"pase\",\"decision\":\"reconocido\",\"cuenta\":\"320068234\",\"conf\":0.78,\"margen\":0.21,\"lat_ms\":{…}}\n// Solo `modo: \"pase\"` llega a la base. `modo: \"prueba\"` (la prueba inmediata del registro) se ignora\n// en esta versión: el reenvío al frontend está pendiente.\n// Salida 1: reconocido, dudoso, desconocido o imagen_insuficiente → la sentencia de Postgres, con\n//           msg.params = [decision, cuenta, conf] ya validados.\n// Salida 2: avisos y descartes (nodo debug de consola). Nunca repiten el contenido del mensaje: la\n//           cuenta y el nombre de un alumno no deben quedar en el log.\n// `sin_rostro` y `error` no llevan retroalimentación (casi siempre fue un disparo del PIR sin nadie\n// enfrente): solo dejan un aviso.\nconst MAX_CARACTERES = 2048; // un resultado real pesa unos 250 bytes\nconst VENTANA_TS_MS = 60 * 1000;\nconst DECISIONES = [\"reconocido\", \"dudoso\", \"desconocido\", \"sin_rostro\", \"imagen_insuficiente\", \"error\"];\nconst CUENTA = /^[0-9]{9}$/;\n// ISO 8601 con zona, como la estampa la visión: \"2026-11-04T09:12:33.120-06:00\" (también \"Z\").\nconst TS = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\n// Un resultado nunca se retiene (contrato MQTT, sección 1): un retenido repetiría en cada conexión un\n// reconocimiento que ya pasó. El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido\n// publicado en vivo llega con retain = false, y solo se ve retain = true en la entrega inicial al\n// (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5; lo que sí cubre\n// siempre es la ventana de `ts` de abajo.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": un resultado no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (un resultado no se retiene)\");\n}\n// Payload vacío: no es un resultado.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\n\nif (datos.modo !== \"pase\" && datos.modo !== \"prueba\") {\n    return descartar(\"modo debe ser pase o prueba\");\n}\nif (typeof datos.decision !== \"string\" || !DECISIONES.includes(datos.decision)) {\n    return descartar(\"decision desconocida\");\n}\n// `cuenta` y `conf` son obligatorios en el contrato, pero llevan null cuando no hubo candidato.\nif (datos.cuenta !== null && (typeof datos.cuenta !== \"string\" || !CUENTA.test(datos.cuenta))) {\n    return descartar(\"cuenta debe ser null o un texto de 9 dígitos\");\n}\n// La similitud coseno de un candidato sin parecido puede ser negativa: el contrato dice 0 a 1, pero\n// aquí se acepta de -1 a 1 para no perder un intento por un decimal de más.\nif (datos.conf !== null && (typeof datos.conf !== \"number\" || !Number.isFinite(datos.conf) || datos.conf < -1 || datos.conf > 1)) {\n    return descartar(\"conf debe ser null o un número de -1 a 1\");\n}\nif (datos.margen !== undefined && datos.margen !== null && (typeof datos.margen !== \"number\" || !Number.isFinite(datos.margen))) {\n    return descartar(\"margen debe ser null o un número\");\n}\nif (datos.lat_ms === null || typeof datos.lat_ms !== \"object\" || Array.isArray(datos.lat_ms)) {\n    return descartar(\"lat_ms debe ser un objeto\");\n}\nif (datos.decision === \"reconocido\" && (datos.cuenta === null || datos.conf === null)) {\n    return descartar(\"un reconocido exige cuenta y conf\");\n}\n\n// Mensaje vencido: `ts` es obligatorio y debe estar a menos de 60 s del reloj de Node-RED, hacia\n// atrás o hacia adelante. Así cae un retenido viejo, una reentrega tardía y el 1970 de reserva que\n// usa la visión cuando no tiene hora (contrato MQTT, sección 4). El reloj de la placa y el de la\n// visión son el mismo (la RTC); un reloj mal puesto descarta los reconocimientos con aviso.\nif (typeof datos.ts !== \"string\" || !TS.test(datos.ts)) {\n    return descartar(\"falta ts o no es ISO 8601 con zona\");\n}\nconst instante = Date.parse(datos.ts);\nif (Number.isNaN(instante)) {\n    return descartar(\"ts no se puede leer\");\n}\nif (Math.abs(Date.now() - instante) > VENTANA_TS_MS) {\n    return descartar(\"ts a más de 60 s del reloj de Node-RED\");\n}\n\nif (datos.modo === \"prueba\") {\n    return descartar(\"modo prueba ignorado (el reenvío al frontend está pendiente)\");\n}\nif (datos.decision === \"sin_rostro\" || datos.decision === \"error\") {\n    return [null, { payload: \"Sin retroalimentación: la visión informó \" + datos.decision }];\n}\nreturn [{ fuente: \"pase\", decision: datos.decision, params: [datos.decision, datos.cuenta, datos.conf], payload: null }, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000ba"
+            ],
+            [
+                "a1f0c0de000000b7"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000ba",
+        "type": "delay",
+        "z": "a1f0c0de000000b0",
+        "name": "Límite de entrada (5 por segundo, 200 ms entre mensajes, descarta)",
+        "info": "CWE-770: cada resultado válido es una escritura en la base (un intento por desconocido, imagen insuficiente o duplicado). Con las credenciales de `vision` o de `nodered` se podrían publicar miles de resultados por segundo y llenar `intentos`. Este límite deja pasar 1 mensaje cada 200 ms (5 por segundo) y DESCARTA los que lleguen antes (no los encola): a lo más unas 430 000 filas de `intentos` al día (unos 100 bytes por fila con su índice: unos 43 MB al día). 200 ms y no 500 ms porque la visión tarda unos 240 ms por ciclo: un reconocido legítimo justo después de un dudoso no debe perderse. Un resultado legítimo es uno por disparo del PIR.",
+        "pauseType": "rate",
+        "timeout": "5",
+        "timeoutUnits": "seconds",
+        "rate": "5",
+        "nbRateUnits": "1",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": true,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 560,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000b4"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b4",
+        "type": "postgresql",
+        "z": "a1f0c0de000000b0",
+        "name": "Registrar asistencia o intento",
+        "info": "Pase de lista en una sola sentencia (una transacción): $1 = decision, $2 = cuenta, $3 = conf.\n`s` es la sesión abierta (no hay contexto que se desincronice). Sin sesión abierta no devuelve filas\ny no escribe nada. `alumno` solo existe para `reconocido` y solo si la cuenta es del grupo de la\nsesión y tiene consentimiento y rostro vigentes (un rostro retirado cuya `baja` la visión aún no\nprocesó cae en `fuera_de_grupo`). `ins` guarda la asistencia con el reloj de la base: presente si now() <= inicio + tolerancia,\nretardo si no; la UNIQUE (no_cuenta, sesion_id) hace que un duplicado, o dos resultados seguidos a la\nvez, no inserten fila (el segundo espera al primero y no hace nada). `res` dice qué pasó. `intento`\ndeja en `intentos` los rechazos: desconocido, imagen_insuficiente, duplicado y, como desconocido,\nel reconocido que no es del grupo, o que es del grupo pero ya no tiene rostro o consentimiento vigentes (`resultado` `fuera_de_grupo` cubre los dos casos; el CHECK de `motivo` no admite otro y la tabla no guarda la cuenta).\n`dudoso` no se guarda: ese CHECK tampoco tiene motivo para la zona gris.",
+        "query": "WITH s AS (\n  SELECT id, grupo, inicio, tolerancia_min FROM sesiones WHERE fin IS NULL\n), alumno AS (\n  SELECT a.no_cuenta, s.id AS sesion_id, s.inicio, s.tolerancia_min\n  FROM alumnos a JOIN s ON a.grupo = s.grupo\n  WHERE $1::text = 'reconocido' AND a.no_cuenta = $2::text AND a.consentimiento AND a.embedding IS NOT NULL\n), ins AS (\n  INSERT INTO asistencias (no_cuenta, sesion_id, estado, confianza, metodo)\n  SELECT no_cuenta, sesion_id,\n         CASE WHEN now() <= inicio + tolerancia_min * interval '1 minute' THEN 'presente' ELSE 'retardo' END,\n         $3::real, 'rostro'\n  FROM alumno\n  ON CONFLICT (no_cuenta, sesion_id) DO NOTHING\n  RETURNING estado\n), res AS (\n  SELECT s.id AS sesion_id,\n         CASE WHEN $1::text <> 'reconocido' THEN $1::text\n              WHEN NOT EXISTS (SELECT 1 FROM alumno) THEN 'fuera_de_grupo'\n              WHEN EXISTS (SELECT 1 FROM ins) THEN (SELECT estado FROM ins)\n              ELSE 'duplicado' END AS resultado\n  FROM s\n), intento AS (\n  INSERT INTO intentos (sesion_id, confianza_max, motivo)\n  SELECT sesion_id, $3::real,\n         CASE resultado WHEN 'fuera_de_grupo' THEN 'desconocido' ELSE resultado END\n  FROM res\n  WHERE resultado IN ('desconocido', 'imagen_insuficiente', 'duplicado', 'fuera_de_grupo')\n  RETURNING 1\n)\nSELECT resultado FROM res",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 730,
+        "y": 60,
+        "wires": [
+            [
+                "a1f0c0de000000b5"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b5",
+        "type": "function",
+        "z": "a1f0c0de000000b0",
+        "name": "Retroalimentación del pase",
+        "func": "// Respuesta de \"Registrar asistencia o intento\": una fila { resultado } si había una sesión abierta,\n// ninguna si no. `resultado` lo decide la sentencia con el reloj de la base:\n//   presente, retardo   → asistencia guardada (verde, el servo abre, pitido corto)\n//   duplicado           → ya estaba en la sesión (rojo, doble pitido; intento `duplicado`)\n//   fuera_de_grupo      → reconocido, pero no es del grupo de la sesión (rojo, doble pitido; intento `desconocido`)\n//   desconocido         → rojo, doble pitido (intento `desconocido`)\n//   imagen_insuficiente → ámbar, se repite la captura (intento `imagen_insuficiente`)\n//   dudoso              → ámbar; no registra (el marcado manual queda fuera)\n// Sin sesión abierta no se registra ni se manda nada: solo un aviso. La retroalimentación sale\n// DESPUÉS de escribir en la base. Valores de buzzer: 1 pitido corto de éxito, 2 doble pitido de\n// error (contrato MQTT, sección 3).\n// Salida 1: aula/actuador/cmd (QoS 1, sin retain, fijados en el nodo `mqtt out`). Salida 2: avisos.\n// Ni los avisos ni el log llevan la cuenta ni el nombre del alumno.\nconst RETROALIMENTACION = {\n    presente: { servo: \"abrir\", led: \"verde\", buzzer: 1 },\n    retardo: { servo: \"abrir\", led: \"verde\", buzzer: 1 },\n    duplicado: { led: \"rojo\", buzzer: 2 },\n    fuera_de_grupo: { led: \"rojo\", buzzer: 2 },\n    desconocido: { led: \"rojo\", buzzer: 2 },\n    imagen_insuficiente: { led: \"ambar\" },\n    dudoso: { led: \"ambar\" }\n};\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"la sentencia del pase de lista no devolvió 0 o 1 filas\");\n}\nif (filas.length === 0) {\n    return [null, { payload: \"Sin sesión abierta: no se registra ni se manda retroalimentación (\" + msg.decision + \")\" }];\n}\nconst resultado = filas[0].resultado;\nif (typeof resultado !== \"string\" || !Object.prototype.hasOwnProperty.call(RETROALIMENTACION, resultado)) {\n    throw new Error(\"la sentencia del pase de lista no devolvió un resultado válido\");\n}\nnode.log(\"Pase de lista: \" + resultado);\nreturn [{ payload: JSON.stringify(RETROALIMENTACION[resultado]) }, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1000,
+        "y": 60,
+        "wires": [
+            [
+                "a1f0c0de000000b6"
+            ],
+            [
+                "a1f0c0de000000b7"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b6",
+        "type": "mqtt out",
+        "z": "a1f0c0de000000b0",
+        "name": "Publicar retroalimentación",
+        "topic": "aula/actuador/cmd",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 1260,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000b7",
+        "type": "debug",
+        "z": "a1f0c0de000000b0",
+        "name": "Avisos y descartes del pase de lista",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 760,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000b8",
+        "type": "catch",
+        "z": "a1f0c0de000000b0",
+        "name": "Errores del pase de lista",
+        "scope": [
+            "a1f0c0de000000b3",
+            "a1f0c0de000000b4",
+            "a1f0c0de000000b5"
+        ],
+        "uncaught": false,
+        "x": 170,
+        "y": 260,
+        "wires": [
+            [
+                "a1f0c0de000000b9"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b9",
+        "type": "function",
+        "z": "a1f0c0de000000b0",
+        "name": "Registrar error del pase",
+        "func": "// Error de ejecución (la base, sobre todo) en el flujo del pase de lista. Se registra solo el código\n// SQLSTATE (cinco caracteres), o un mensaje truncado y sin secuencias de 9 dígitos: nunca msg ni\n// msg.params (traen la cuenta del alumno). No se publica retroalimentación ni se reintenta: un\n// resultado que no se pudo guardar no debe abrir la puerta, y la persona puede volver a intentarlo.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nnode.warn(\"Pase de lista: falló\" + (typeof msg.decision === \"string\" ? \" (\" + msg.decision + \")\" : \"\") + \": \" + causa);\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 260,
+        "wires": [
+            []
+        ]
     }
 ]
