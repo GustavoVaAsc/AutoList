@@ -175,6 +175,19 @@ module.exports = {
     // global y bloquearía al servicio de visión en GET /api/galeria.
     httpNodeMiddleware: autenticarApi,
 
+    // Contexto de los flujos. El almacén por defecto sigue en memoria: la inscripción abierta, las
+    // marcas de arranque y el resto se pierden al reiniciar a propósito (plan, sección 5.4, paso 10).
+    // "persistente" (localfilesystem, en /data/context del volumen nodered_data) es solo para lo que
+    // debe sobrevivir a un reinicio: hoy, flow.retiros_pendientes de la pestaña Registro (rostros
+    // guardados tras cerrarse el registro cuyo retiro falló; contienen cuenta y fecha, no embeddings).
+    // Un flow.get/flow.set lo usa pasando "persistente" como último argumento. flushInterval de 1 s
+    // (el valor por defecto es 30 s) para perder lo mínimo si el proceso muere sin cerrar limpio;
+    // en un cierre normal Node-RED vacía la caché al disco. Cambiar esto exige reconstruir la imagen.
+    contextStorage: {
+        default: { module: "memory" },
+        persistente: { module: "localfilesystem", config: { dir: "/data", flushInterval: 1, cache: true } }
+    },
+
     // flows.json legible en los diffs de git.
     flowFilePretty: true,
 

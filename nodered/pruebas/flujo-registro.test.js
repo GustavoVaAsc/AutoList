@@ -44,11 +44,24 @@ function nodo(id) {
 
 // Contexto `flow` de mentira. Guarda una copia por JSON: así una función que mutara el
 // objeto sin llamar a flow.set no pasaría por un contexto que sí persiste.
+// Los almacenes de contexto van separados, como en Node-RED: sin nombre es el de memoria
+// (default) y "persistente" es el localfilesystem de settings.js.
 function nuevoFlow() {
-    const datos = new Map();
+    const almacenes = new Map();
+    const de = (almacen) => {
+        const nombre = almacen === undefined ? "default" : almacen;
+        if (!almacenes.has(nombre)) {
+            almacenes.set(nombre, new Map());
+        }
+        return almacenes.get(nombre);
+    };
     return {
-        get: (k) => (datos.has(k) ? JSON.parse(datos.get(k)) : undefined),
-        set: (k, v) => {
+        get: (k, almacen) => {
+            const datos = de(almacen);
+            return datos.has(k) ? JSON.parse(datos.get(k)) : undefined;
+        },
+        set: (k, v, almacen) => {
+            const datos = de(almacen);
             if (v === undefined) {
                 datos.delete(k);
             } else {
@@ -90,6 +103,15 @@ function ejecutar(id, msg, { flow = nuevoFlow(), ahora } = {}) {
 const CUENTA = "320068234";
 const OTRA = "320068235";
 const NOMBRE = "Ana López";
+// consentimiento_fecha que devuelve el UPDATE del embedding: UTC con microsegundos, como lo da to_char.
+const FECHA = "2026-11-05T15:30:12.123456Z";
+const OTRA_FECHA = "2026-11-05T15:41:07.654321Z";
+const FILA_GUARDADA = [{ no_cuenta: CUENTA, consentimiento_fecha: FECHA }];
+
+// retiros_pendientes vive en el almacén persistente: se lee y se escribe ahí, nunca en memoria.
+function retirosPendientes(flow) {
+    return flow.get("retiros_pendientes", "persistente");
+}
 
 function peticionPost(cuerpo, tipo = "application/json; charset=utf-8") {
     const headers = tipo === null ? {} : { "content-type": tipo };
@@ -641,9 +663,9 @@ test("embedding de R1 que se confirma tarde con R2 abierto para la misma cuenta:
     const r2 = flow.get("inscripcion");
     assert.notEqual(r2.id, r1);
     assert.equal(r2.abierto, true);
-    const g = trasGuardar(flow, [{ no_cuenta: CUENTA }], r1); // el UPDATE de R1 se confirma ahora
+    const g = trasGuardar(flow, FILA_GUARDADA, r1); // el UPDATE de R1 se confirma ahora
     assert.equal(g.salida[0], null, "sin alta: ese embedding no es de R2");
-    assert.deepEqual(g.salida[2], { params: [CUENTA], fuente: "retiro_tardio" });
+    assert.deepEqual(g.salida[2], { params: [CUENTA, FECHA], fuente: "retiro_tardio" });
     assert.equal(flow.get("inscripcion").abierto, true, "R2 sigue abierto");
     // R2 se quedó sin consentimiento: cuando llegue su embedding, la base no lo guarda y R2 falla cerrado.
     const f = trasGuardar(flow, [], r2.id);
@@ -664,58 +686,160 @@ test("embedding: un error al guardar el de R1 no cierra el registro R2 de la mis
 
 // ------------------------------------------------ retiro tardío que falla
 
-test("retiro tardío: si el UPDATE falla, la cuenta queda pendiente (sin duplicarse) y no se responde ni se revierte nada", () => {
+function retiroFallido(cuenta = CUENTA, fecha = FECHA, extra = {}) {
+    return { fuente: "retiro_tardio", params: [cuenta, fecha], error: { code: "57P01" }, ...extra };
+}
+
+test("retiro tardío: si el UPDATE falla, el par cuenta/fecha queda pendiente (sin duplicarse) y no se responde ni se revierte nada", () => {
     const flow = nuevoFlow();
-    const msgFallido = { fuente: "retiro_tardio", params: [CUENTA], error: { code: "57P01" } };
-    const a = ejecutar(ID.cerrar500, msgFallido, { flow });
-    ejecutar(ID.cerrar500, msgFallido, { flow });
+    const a = ejecutar(ID.cerrar500, retiroFallido(), { flow });
+    ejecutar(ID.cerrar500, retiroFallido(), { flow });
     assert.equal(a.salida[0], null);
     assert.equal(a.salida[1], null);
-    assert.deepEqual(flow.get("retiros_pendientes"), [CUENTA]);
+    assert.deepEqual(retirosPendientes(flow), [{ cuenta: CUENTA, fecha: FECHA }]);
     assert.ok(!a.avisos.join("\n").includes(CUENTA));
-    // Un retiro tardío de otra fuente, o con una cuenta que no es de 9 dígitos, no entra a la lista.
-    ejecutar(ID.cerrar500, { fuente: "retiro_tardio", params: ["abc"], error: { code: "57P01" } }, { flow });
-    assert.deepEqual(flow.get("retiros_pendientes"), [CUENTA]);
+    assert.ok(!a.avisos.join("\n").includes(FECHA));
+    // La misma cuenta con otro consentimiento es otro par; y una fecha o cuenta mal formada no entra.
+    ejecutar(ID.cerrar500, retiroFallido(CUENTA, OTRA_FECHA), { flow });
+    ejecutar(ID.cerrar500, retiroFallido("abc"), { flow });
+    ejecutar(ID.cerrar500, retiroFallido(CUENTA, "ayer"), { flow });
+    ejecutar(ID.cerrar500, retiroFallido(CUENTA, undefined), { flow });
+    ejecutar(ID.cerrar500, { fuente: "retiro_tardio", params: [CUENTA], error: { code: "57P01" } }, { flow });
+    assert.deepEqual(retirosPendientes(flow), [{ cuenta: CUENTA, fecha: FECHA }, { cuenta: CUENTA, fecha: OTRA_FECHA }]);
 });
 
-test("retiro tardío: cada tick de 15 s lo reintenta hasta que sale; entonces se publica la baja y deja de reintentarse", () => {
+test("retiro tardío: retiros_pendientes va al almacén persistente y nunca a memoria", () => {
     const flow = nuevoFlow();
-    ejecutar(ID.cerrar500, { fuente: "retiro_tardio", params: [CUENTA], error: { code: "57P01" } }, { flow });
+    ejecutar(ID.cerrar500, retiroFallido(), { flow });
+    assert.equal(flow.get("retiros_pendientes"), undefined, "no está en el almacén de memoria");
+    assert.equal(retirosPendientes(flow).length, 1);
+    ejecutar(ID.baja_tardia, { params: [CUENTA, FECHA], fuente: "retiro_tardio", payload: [{ no_cuenta: CUENTA }] }, { flow });
+    assert.equal(retirosPendientes(flow), undefined);
+    assert.equal(flow.get("retiros_pendientes"), undefined);
+    // El resto del contexto de la pestaña sigue en memoria (settings.js no cambia el almacén por defecto).
+    const abierto = abrirInscripcion();
+    assert.equal(abierto.get("inscripcion", "persistente"), undefined);
+    assert.ok(abierto.get("inscripcion"));
+});
+
+// Solo comprueba el texto de settings.js. Que Node-RED cargue el almacén y escriba en /data/context
+// se verifica en la placa (orangepi/AGENTS.md, Verificación).
+test("settings.js declara el almacén persistente (localfilesystem) que usa el flujo y deja memoria por defecto", () => {
+    const texto = fs.readFileSync(path.join(__dirname, "..", "settings.js"), "utf8");
+    assert.match(texto, /contextStorage:\s*\{/);
+    assert.match(texto, /default:\s*\{\s*module:\s*"memory"\s*\}/);
+    assert.match(texto, /persistente:\s*\{\s*module:\s*"localfilesystem"/);
+    // En /data (volumen nodered_data), con el directorio de contexto por defecto: /data/context.
+    assert.match(texto, /dir:\s*"\/data"/);
+    assert.match(texto, /flushInterval:\s*1\b/);
+});
+
+test("retiro tardío: cada tick de 15 s lo reintenta con cuenta y fecha hasta que sale; entonces se publica la baja y deja de reintentarse", () => {
+    const flow = nuevoFlow();
+    ejecutar(ID.cerrar500, retiroFallido(), { flow });
     for (let i = 0; i < 3; i++) {
         const r = ejecutar(ID.vencer, {}, { flow });
-        assert.deepEqual(r.salida[3], [{ params: [CUENTA], fuente: "retiro_tardio" }], "reintento " + i);
+        assert.deepEqual(r.salida[3], [{ params: [CUENTA, FECHA], fuente: "retiro_tardio" }], "reintento " + i);
         assert.equal(r.salida[0], null);
         assert.equal(r.salida[1], null);
     }
-    const ok = ejecutar(ID.baja_tardia, { params: [CUENTA], fuente: "retiro_tardio", payload: [] }, { flow });
+    const ok = ejecutar(ID.baja_tardia, { params: [CUENTA, FECHA], fuente: "retiro_tardio", payload: [{ no_cuenta: CUENTA }] }, { flow });
     assert.equal(ok.salida.topic, "aula/vision/galeria/baja");
     assert.equal(ok.salida.payload, JSON.stringify({ cuenta: CUENTA }));
-    assert.equal(flow.get("retiros_pendientes"), undefined);
+    assert.equal(retirosPendientes(flow), undefined);
     assert.equal(ejecutar(ID.vencer, {}, { flow }).salida, null);
+});
+
+test("retiro tardío: lo que quedó en el almacén con otra forma (cuentas sueltas, fechas ilegibles) no se reintenta ni rompe el tick", () => {
+    const flow = nuevoFlow();
+    flow.set("retiros_pendientes", [CUENTA, null, 7, { cuenta: CUENTA }, { cuenta: "abc", fecha: FECHA }, { cuenta: CUENTA, fecha: "ayer" }, { cuenta: OTRA, fecha: OTRA_FECHA }], "persistente");
+    const r = ejecutar(ID.vencer, {}, { flow });
+    assert.deepEqual(r.salida[3], [{ params: [OTRA, OTRA_FECHA], fuente: "retiro_tardio" }]);
 });
 
 test("retiro tardío: no se reintenta una cuenta con un registro abierto, y abrir un registro nuevo de esa cuenta lo cancela", () => {
     const flow = abrirInscripcion();
-    flow.set("retiros_pendientes", [CUENTA, OTRA]);
+    flow.set("retiros_pendientes", [{ cuenta: CUENTA, fecha: FECHA }, { cuenta: OTRA, fecha: OTRA_FECHA }], "persistente");
     const r = ejecutar(ID.vencer, {}, { flow });
-    assert.deepEqual(r.salida[3], [{ params: [OTRA], fuente: "retiro_tardio" }]);
+    assert.deepEqual(r.salida[3], [{ params: [OTRA, OTRA_FECHA], fuente: "retiro_tardio" }]);
     // Si el consentimiento se escribió es porque la cuenta no tenía rostro: el retiro pendiente ya no hace falta.
     const flow2 = nuevoFlow();
-    flow2.set("retiros_pendientes", [CUENTA]);
+    flow2.set("retiros_pendientes", [{ cuenta: CUENTA, fecha: FECHA }, { cuenta: CUENTA, fecha: OTRA_FECHA }, { cuenta: OTRA, fecha: OTRA_FECHA }], "persistente");
     const apartado = ejecutar(ID.validarApartar, peticionPost({ cuenta: CUENTA, consentimiento: true }), { flow: flow2 });
     ejecutar(ID.abrir, { ...apartado.salida[0], payload: [{ existe: 1, nombre: NOMBRE, tiene_rostro: false, actualizadas: 1 }] }, { flow: flow2 });
-    assert.equal(flow2.get("retiros_pendientes"), undefined);
+    assert.deepEqual(retirosPendientes(flow2), [{ cuenta: OTRA, fecha: OTRA_FECHA }]);
+    // Sin otros pendientes, la clave desaparece.
+    const flow3 = nuevoFlow();
+    flow3.set("retiros_pendientes", [{ cuenta: CUENTA, fecha: FECHA }], "persistente");
+    const apartado3 = ejecutar(ID.validarApartar, peticionPost({ cuenta: CUENTA, consentimiento: true }), { flow: flow3 });
+    ejecutar(ID.abrir, { ...apartado3.salida[0], payload: [{ existe: 1, nombre: NOMBRE, tiene_rostro: false, actualizadas: 1 }] }, { flow: flow3 });
+    assert.equal(retirosPendientes(flow3), undefined);
 });
 
 test("retiro tardío: el reintento sale junto con el vencimiento de un registro", () => {
     const flow = abrirInscripcion();
-    flow.set("retiros_pendientes", [OTRA]);
+    flow.set("retiros_pendientes", [{ cuenta: OTRA, fecha: OTRA_FECHA }], "persistente");
     let r;
     for (let i = 0; i < 20; i++) {
         r = ejecutar(ID.vencer, {}, { flow });
     }
     assert.ok(r.salida[0], "vence");
-    assert.deepEqual(r.salida[3], [{ params: [OTRA], fuente: "retiro_tardio" }]);
+    assert.deepEqual(r.salida[3], [{ params: [OTRA, OTRA_FECHA], fuente: "retiro_tardio" }]);
+});
+
+test("retiro tardío: tras un reinicio (el almacén persistente conserva el par) el primer tick lo reintenta", () => {
+    const antes = nuevoFlow();
+    ejecutar(ID.cerrar500, retiroFallido(), { flow: antes });
+    // Node-RED reinicia: la memoria se pierde, el almacén persistente no.
+    const despues = nuevoFlow();
+    despues.set("retiros_pendientes", antes.get("retiros_pendientes", "persistente"), "persistente");
+    const arranque = ejecutar(ID.arrancar, { payload: null }, { flow: despues });
+    assert.equal(arranque.flow.get("inscripcion"), undefined);
+    assert.deepEqual(retirosPendientes(despues), [{ cuenta: CUENTA, fecha: FECHA }], "el arranque no borra los retiros pendientes");
+    const r = ejecutar(ID.vencer, {}, { flow: despues });
+    assert.deepEqual(r.salida[3], [{ params: [CUENTA, FECHA], fuente: "retiro_tardio" }]);
+});
+
+// El retiro tardío solo actúa sobre el consentimiento que escribió el embedding: la consulta lo
+// condiciona a consentimiento_fecha y "Publicar baja tras retiro tardío" distingue si actuó.
+test("retiro tardío: el UPDATE del embedding devuelve la fecha del consentimiento y el retiro la exige igual", () => {
+    const guardar = nodo("a1f0c0de00000077").query;
+    assert.match(guardar, /RETURNING no_cuenta,\s*to_char\(consentimiento_fecha AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS\.US"Z"'\) AS consentimiento_fecha/);
+    const retirar = nodo("a1f0c0de00000088").query;
+    assert.match(retirar, /WHERE no_cuenta = \$1 AND consentimiento_fecha = \$2::timestamptz/);
+    assert.match(retirar, /RETURNING no_cuenta\s*$/);
+});
+
+test("retiro tardío: con 1 fila se publica la baja; con 0 filas, un alta de reconciliación; en ambos casos el par sale de pendientes", () => {
+    const flow = nuevoFlow();
+    flow.set("retiros_pendientes", [{ cuenta: CUENTA, fecha: FECHA }, { cuenta: CUENTA, fecha: OTRA_FECHA }, { cuenta: OTRA, fecha: FECHA }], "persistente");
+    // 0 filas: el retiro ya había actuado (Node-RED murió antes de publicar) o la fila tiene otro consentimiento.
+    // La alta hace que la visión recargue la galería completa y quede igual que la base, en cualquiera de los dos casos.
+    const sin = ejecutar(ID.baja_tardia, { params: [CUENTA, FECHA], fuente: "retiro_tardio", payload: [] }, { flow });
+    assert.equal(sin.salida.topic, "aula/vision/galeria/alta");
+    assert.equal(sin.salida.payload, JSON.stringify({ cuenta: CUENTA }));
+    assert.equal(sin.salida.qos, 1);
+    assert.equal(sin.salida.retain, false);
+    assert.equal(sin.avisos.length, 1);
+    assert.ok(!sin.avisos[0].includes(CUENTA));
+    assert.deepEqual(retirosPendientes(flow), [{ cuenta: CUENTA, fecha: OTRA_FECHA }, { cuenta: OTRA, fecha: FECHA }], "solo sale el par que se resolvió");
+    const con = ejecutar(ID.baja_tardia, { params: [CUENTA, OTRA_FECHA], fuente: "retiro_tardio", payload: [{ no_cuenta: CUENTA }] }, { flow });
+    assert.equal(con.salida.topic, "aula/vision/galeria/baja");
+    assert.equal(con.salida.payload, JSON.stringify({ cuenta: CUENTA }));
+    assert.equal(con.salida.qos, 1);
+    assert.equal(con.salida.retain, false);
+    assert.deepEqual(retirosPendientes(flow), [{ cuenta: OTRA, fecha: FECHA }]);
+});
+
+test("retiro tardío: una ejecución duplicada del mismo retiro publica baja una sola vez; la segunda solo reconcilia con un alta", () => {
+    const flow = nuevoFlow();
+    ejecutar(ID.cerrar500, retiroFallido(), { flow });
+    const primero = ejecutar(ID.baja_tardia, { params: [CUENTA, FECHA], fuente: "retiro_tardio", payload: [{ no_cuenta: CUENTA }] }, { flow });
+    assert.equal(primero.salida.topic, "aula/vision/galeria/baja");
+    // La segunda ejecución ya no encuentra el consentimiento (fecha NULL tras el primer retiro): 0 filas.
+    const segundo = ejecutar(ID.baja_tardia, { params: [CUENTA, FECHA], fuente: "retiro_tardio", payload: [] }, { flow });
+    assert.equal(segundo.salida.topic, "aula/vision/galeria/alta", "no hay segunda baja");
+    assert.equal(retirosPendientes(flow), undefined);
 });
 
 // ------------------------------------------------ ts inválido o del futuro
@@ -933,7 +1057,7 @@ function trasGuardar(flow, filas, inscripcionId = (flow.get("inscripcion") || {}
 
 test("guardado: cierra como completado y publica galeria/alta con el payload del contrato", () => {
     const flow = abrirInscripcion();
-    const r = trasGuardar(flow, [{ no_cuenta: CUENTA }]);
+    const r = trasGuardar(flow, FILA_GUARDADA);
     assert.equal(r.salida[1], null);
     assert.equal(r.salida[0].topic, "aula/vision/galeria/alta");
     assert.equal(r.salida[0].qos, 1);
@@ -978,15 +1102,15 @@ for (const como of ["cancelado", "error", "vencido"]) {
         const e = embedding(flow, mensajeEmbedding()); // el embedding pasa la validación con el registro abierto
         assert.ok(e.salida[0]);
         const estadoCerrado = cerrarComo(flow, como); // y el registro se cierra mientras el UPDATE está en vuelo
-        const g = trasGuardar(flow, [{ no_cuenta: CUENTA }]); // el UPDATE sí guardó el rostro
+        const g = trasGuardar(flow, FILA_GUARDADA); // el UPDATE sí guardó el rostro
         assert.equal(g.salida[0], null, "sin alta en la galería");
         assert.equal(g.salida[1], null);
-        assert.deepEqual(g.salida[2], { params: [CUENTA], fuente: "retiro_tardio" }, "se retira el rostro tardío");
+        assert.deepEqual(g.salida[2], { params: [CUENTA, FECHA], fuente: "retiro_tardio" }, "se retira el rostro tardío");
         assert.equal(g.avisos.length, 1);
         assert.ok(!g.avisos[0].includes(CUENTA));
         assert.equal(flow.get("inscripcion").estado, estadoCerrado, "el estado de la API sigue diciendo la verdad");
         // Y la baja se publica DESPUÉS del UPDATE que retira el rostro.
-        const b = ejecutar(ID.baja_tardia, { params: [CUENTA], payload: [] });
+        const b = ejecutar(ID.baja_tardia, { params: [CUENTA, FECHA], payload: [{ no_cuenta: CUENTA }] });
         assert.equal(b.salida.topic, "aula/vision/galeria/baja");
         assert.equal(b.salida.qos, 1);
         assert.equal(b.salida.retain, false);
@@ -994,11 +1118,24 @@ for (const como of ["cancelado", "error", "vencido"]) {
     });
 }
 
+test("guardado tardío: sin consentimiento_fecha en la fila no hay con qué condicionar el retiro: falla en lugar de retirar a ciegas", () => {
+    for (const fila of [{ no_cuenta: CUENTA }, { no_cuenta: CUENTA, consentimiento_fecha: null }, { no_cuenta: CUENTA, consentimiento_fecha: "ayer" }, { no_cuenta: CUENTA, consentimiento_fecha: new Date().toISOString() }]) {
+        const flow = abrirInscripcion();
+        cerrarComo(flow, "cancelado");
+        assert.throws(() => trasGuardar(flow, [fila]), /consentimiento_fecha/, JSON.stringify(fila));
+    }
+});
+
+test("guardado con el registro abierto: no necesita la fecha para dar de alta (solo el retiro tardío la usa)", () => {
+    const flow = abrirInscripcion();
+    assert.ok(trasGuardar(flow, [{ no_cuenta: CUENTA }]).salida[0]);
+});
+
 test("guardado tardío: el embedding de una cuenta cuando hay otro registro abierto tampoco se da de alta", () => {
     const flow = abrirInscripcion(OTRA, "Otra Persona");
-    const g = trasGuardar(flow, [{ no_cuenta: CUENTA }]);
+    const g = trasGuardar(flow, FILA_GUARDADA);
     assert.equal(g.salida[0], null);
-    assert.deepEqual(g.salida[2], { params: [CUENTA], fuente: "retiro_tardio" });
+    assert.deepEqual(g.salida[2], { params: [CUENTA, FECHA], fuente: "retiro_tardio" });
     assert.equal(flow.get("inscripcion").abierto, true, "no toca el registro abierto de la otra cuenta");
 });
 
@@ -1021,7 +1158,7 @@ test("recorrido: completado antes del embedding y alta final", () => {
     assert.equal(ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload.estado, "guardando");
     const e = embedding(flow, mensajeEmbedding());
     assert.ok(e.salida[0]);
-    const g = trasGuardar(flow, [{ no_cuenta: CUENTA }]);
+    const g = trasGuardar(flow, FILA_GUARDADA);
     assert.equal(g.salida[0].topic, "aula/vision/galeria/alta");
     const estado = ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload;
     assert.equal(estado.abierto, false);
@@ -1034,7 +1171,7 @@ test("recorrido: el embedding llega antes que 'completado': se guarda y el 'comp
     progreso(flow, mensajeProgreso({ pose: "frente_2", paso: 5, estado: "aceptada" }));
     const e = embedding(flow, mensajeEmbedding());
     assert.ok(e.salida[0]);
-    trasGuardar(flow, [{ no_cuenta: CUENTA }]);
+    trasGuardar(flow, FILA_GUARDADA);
     const tardio = progreso(flow, mensajeProgreso({ pose: "frente_2", paso: 5, estado: "completado" }));
     assert.equal(tardio.salida[0], null);
     assert.equal(flow.get("inscripcion").estado, "completado");

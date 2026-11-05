@@ -38,7 +38,12 @@ RUN npm ci --omit=dev --ignore-scripts --no-update-notifier --no-fund
 # (autenticacion-api.js, que settings.js carga desde el mismo directorio), el HTTPS
 # ni el bloqueo de módulos.
 # settings.js encuentra bcryptjs por el NODE_PATH de la imagen base.
-COPY settings.js autenticacion-api.js /etc/nodered/
+# reporte_csv.py es el programa de Python que ejecuta el nodo exec de la pestaña Sesiones (CSV de
+# asistencia, plan sección 6.4). Va aquí por el mismo motivo: lo que ejecuta exec no debe poder
+# reescribirlo el contenedor. Usa solo la biblioteca estándar y el /usr/bin/python3 de la imagen base:
+# se verificó en la placa el 5 de noviembre de 2026 (es Python 3.14.10, enlace a python3.14), y el
+# paso 27 de orangepi/AGENTS.md lo vuelve a comprobar. No hace falta instalar nada (sin apk add).
+COPY settings.js autenticacion-api.js reporte_csv.py /etc/nodered/
 
 # El frontend compilado va en /usr/share/nodered-web, también de root y sin
 # escritura para el usuario node-red (mismo criterio que settings.js): si el
