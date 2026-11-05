@@ -45,3 +45,6 @@ nodered/flows/*_cred.json
 # Entorno virtual de la pantalla
 orangepi/pantalla/.venv/
 __pycache__/
+
+# Secretos del firmware de la XIAO (Wi-Fi y clave MQTT de xiao): solo se versiona secrets.h.example
+firmware/**/secrets.h
