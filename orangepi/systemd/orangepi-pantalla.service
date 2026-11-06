@@ -1,0 +1,50 @@
+[Unit]
+Description=Pantalla ILI9341 de AutoList (pase de lista con reconocimiento facial)
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+# /dev/spidev* es del grupo spi y /dev/gpiochip* del grupo gpio, ambos con modo 0660
+# (regla udev /etc/udev/rules.d/99-gpio-spi.rules).
+SupplementaryGroups=spi gpio
+# El programa y su venv se ejecutan desde el repo, en el checkout de produccion
+# (rama main). El venv se crea alli: ver orangepi/pantalla/README.md.
+WorkingDirectory=/home/orangepi/ProyectoFinal/AutoList/orangepi/pantalla
+# Sin .pyc (el repo queda de solo lectura, ver ProtectHome) y con la salida sin
+# buffer, para que el journal la vea al momento.
+Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ExecStart=/home/orangepi/ProyectoFinal/AutoList/orangepi/pantalla/.venv/bin/python main.py
+# SIGTERM: el programa limpia la pantalla, libera el SPI y los GPIO y sale con
+# codigo 0. Tarda menos de un segundo; 10 s es margen de sobra.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+# Restart=always: el plan (secciones 6.3, 12.3 y 13) hace que Node-RED reinicie la
+# pantalla por MQTT y que el programa salga con sys.exit(0); systemd debe relanzarlo
+# tambien tras una salida con codigo 0. Un systemctl stop no lo relanza.
+Restart=always
+RestartSec=5
+# Codigo 78 (EX_CONFIG): una variable PANTALLA_* invalida. Es una configuracion
+# erronea, no un fallo transitorio: sin esta linea systemd lo relanzaria cada 5 s
+# para siempre. El 74 (no se pudo abrir el SPI o los GPIO) si se reintenta: el
+# dispositivo puede aparecer despues (arranque, overlay recien cargado).
+RestartPreventExitStatus=78
+# Endurecimiento moderado, como orangepi-vision.service, con dos diferencias:
+# - ProtectHome=read-only en lugar de yes: el programa y el venv estan en /home.
+# - DevicePolicy=closed con DeviceAllow: el proceso solo puede abrir los nodos SPI
+#   y gpiochip (y los dispositivos basicos, como /dev/null y /dev/urandom). No se
+#   usa PrivateDevices: ocultaria /dev/spidev* y /dev/gpiochip*. Los nombres son
+#   los de /proc/devices (153 spi, 254 gpiochip).
+# Todavia sin I2C ni RTC: eso es otro entregable.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=full
+DevicePolicy=closed
+DeviceAllow=char-spi rw
+DeviceAllow=char-gpiochip rw
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

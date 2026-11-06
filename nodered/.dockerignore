@@ -3,3 +3,5 @@
 !settings.js
 !package.json
 !package-lock.json
+!autenticacion-api.js
+!reporte_csv.py

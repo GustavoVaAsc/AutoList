@@ -621,7 +621,7 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 
 ## Lo que se completó en este hito
 
-- Modelos `.nb` en hardware NPU verificados: RetinaFace (`detector.nb`, ~22 ms) y MobileFaceNet ArcFace (`w600k_mbf-uint8-v1.nb`, ~3.5 ms), con preproceso en tensor, alineación afín y similitud coseno.
+- Modelos `.nb` en hardware NPU verificados: RetinaFace (`detector.nb`, ~22 ms) y MobileFaceNet ArcFace (`w600k_mbf-uint8-v1.nb`, ~3.5 ms), con preproceso en tensor, alineación afín y similitud coseno. Guía y scripts de conversión documentados en [conversion/README.md](conversion/README.md).
 - Validación de punta a punta documentada en `docs/RESULTADOS-PRUEBAS.md`: enrolamiento desde web (5 tomas), pase de lista, sincronización con pantalla física ILI9341, control de duplicados y reporte CSV al cerrar sesión.
 - Soporte de inyección de fotos fijas con `--imagen` en `camara_falsa`.
 - Endurecimiento del servicio en la unidad systemd (`LimitCORE=0` y `UMask=0077` aplicados en `orangepi/systemd/orangepi-vision.service`).

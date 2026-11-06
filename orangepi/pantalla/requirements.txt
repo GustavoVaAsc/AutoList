@@ -1,0 +1,9 @@
+# Dependencias de la pantalla. Versiones fijas: las mismas que ya se probaron
+# en ~/Documents/venv_embebidos (Python 3.11, arm64).
+python-periphery==2.4.3
+numpy==2.4.6
+Pillow==12.3.0
+# Cliente MQTT (no estaba en venv_embebidos). La serie 2.x cambio la API de
+# callbacks (CallbackAPIVersion.VERSION2, la que usa cliente_mqtt.py), asi que se
+# fija 2.1.0, la que se instalo y probo aqui. Sin dependencias propias.
+paho-mqtt==2.1.0

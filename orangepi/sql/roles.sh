@@ -4,9 +4,9 @@
 # como 01-schema.sql y 02-roles.sh). Usa NODERED_DB_USER y NODERED_DB_PASSWORD.
 #
 # Se puede repetir: crea el rol si falta, le pone la contraseña actual del .env
-# y reaplica los permisos. Revoca dos cosas: CREATE en el esquema public para
-# PUBLIC, y UPDATE a nivel de tabla sobre alumnos para el rol (antes de conceder
-# el UPDATE por columnas). Los permisos van en una sola transacción.
+# y reaplica los permisos. Revoca tres cosas: CREATE en el esquema public para
+# PUBLIC, y UPDATE a nivel de tabla sobre alumnos y sobre sesiones para el rol
+# (antes de conceder el UPDATE por columnas). Los permisos van en una sola transacción.
 # Requiere que las tablas de schema.sql ya existan: en un volumen creado antes
 # de agregarlas falla a mitad. El rol y su contraseña ya quedan aplicados (van
 # antes y fuera de la transacción), pero la transacción de permisos se revierte
@@ -47,8 +47,12 @@ REVOKE UPDATE ON alumnos FROM :"rol";
 GRANT SELECT, INSERT ON alumnos TO :"rol";
 GRANT UPDATE (nombre, grupo, embedding, consentimiento, consentimiento_fecha) ON alumnos TO :"rol";
 
--- Cerrar una sesión es un UPDATE de "fin".
-GRANT SELECT, INSERT, UPDATE ON sesiones TO :"rol";
+-- Iniciar una sesión es un INSERT, y cerrarla (terminar, o iniciar otra con una olvidada abierta)
+-- es un UPDATE de "fin" (plan, sección 5.3): solo esa columna. Como en alumnos, el REVOKE hace
+-- que una repetición converja si antes había UPDATE en toda la tabla.
+REVOKE UPDATE ON sesiones FROM :"rol";
+GRANT SELECT, INSERT ON sesiones TO :"rol";
+GRANT UPDATE (fin) ON sesiones TO :"rol";
 GRANT USAGE ON SEQUENCE sesiones_id_seq TO :"rol";
 
 GRANT SELECT, INSERT ON asistencias TO :"rol";

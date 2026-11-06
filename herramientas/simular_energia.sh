@@ -2,9 +2,14 @@
 # Simula lecturas del INA219 de la XIAO: publica N mensajes en
 # aula/camara/energia con el formato del plan (sección 7.1):
 #   {"v":12.1,"i":0.85,"p":10.3}
-# Se ejecuta dentro del contenedor de Mosquitto, que ya tiene MQTT_USER y
-# MQTT_PASSWORD, así que la contraseña no pasa por la línea de comandos del
-# host. Requiere el stack levantado (docker compose up -d).
+# Publica como el usuario "simulador" (solo puede escribir en aula/camara/energia;
+# docs/contrato-mqtt.md, sección 6). Se ejecuta dentro del contenedor de Mosquitto,
+# que ya tiene MQTT_SIMULADOR_PASSWORD, así que la contraseña no pasa por la línea
+# de comandos del host. Tampoco por la de mosquitto_pub (se vería en
+# /proc/<pid>/cmdline): va en el archivo de configuración del cliente, en un
+# directorio temporal de /run/mosquitto (tmpfs, en RAM) que se borra al salir.
+# Con use_username_as_clientid, dos simuladores a la vez se expulsan entre sí:
+# ejecutar uno solo. Requiere el stack levantado (docker compose up -d).
 #
 # Uso:
 #   herramientas/simular_energia.sh [N] [segundos_entre_mensajes]
@@ -43,6 +48,10 @@ docker compose -f "$COMPOSE" exec -T mosquitto sh -s -- "$N" "$PAUSA" <<'FIN'
 set -eu
 n=$1
 pausa=$2
+d=$(mktemp -d /run/mosquitto/xdg.XXXXXX)
+trap 'rm -rf "$d"' EXIT
+trap 'exit 1' INT TERM
+printf -- '-u simulador\n-P %s\n' "$MQTT_SIMULADOR_PASSWORD" > "$d/mosquitto_pub"
 # v ~ 12 V (±0.3), i entre 0.6 y 1.1 A, p = v * i
 awk -v n="$n" -v semilla="$(date +%s)" 'BEGIN {
     srand(semilla)
@@ -52,7 +61,7 @@ awk -v n="$n" -v semilla="$(date +%s)" 'BEGIN {
         printf "{\"v\":%.2f,\"i\":%.3f,\"p\":%.2f}\n", v, i, v * i
     }
 }' | while read -r payload; do
-    if ! mosquitto_pub -h localhost -u "$MQTT_USER" -P "$MQTT_PASSWORD" \
+    if ! XDG_CONFIG_HOME="$d" mosquitto_pub -h localhost \
             -t aula/camara/energia -q 1 -m "$payload"; then
         echo "error: no se pudo publicar en aula/camara/energia (¿broker caído o credenciales incorrectas?)" >&2
         exit 1

@@ -95,7 +95,7 @@
         "type": "function",
         "z": "a1f0c0de00000001",
         "name": "Validar v, i, p",
-        "func": "// Valida el payload de aula/camara/energia: {\"v\":12.1,\"i\":0.85,\"p\":10.3}\n// Salida 1: lectura válida (msg.params para el INSERT). Salida 2: descartada.\nconst MAX_CARACTERES = 1024;\nconst RANGOS = { v: [0, 30], i: [0, 10], p: [0, 300] }; // V, A, W\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nconst resumen = msg.payload.slice(0, 200);\n\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON: \" + resumen);\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON: \" + resumen);\n}\nfor (const campo of Object.keys(RANGOS)) {\n    const x = datos[campo];\n    if (typeof x !== \"number\" || !Number.isFinite(x)) {\n        return descartar(\"falta \" + campo + \" numérico: \" + resumen);\n    }\n    if (x < RANGOS[campo][0] || x > RANGOS[campo][1]) {\n        return descartar(campo + \" fuera de rango [\" + RANGOS[campo] + \"]: \" + resumen);\n    }\n}\nmsg.params = [datos.v, datos.i, datos.p];\nreturn [msg, null];",
+        "func": "// Valida el payload de aula/camara/energia: {\"v\":12.1,\"i\":0.85,\"p\":10.3}\n// Salida 1: lectura válida (msg.params para el INSERT). Salida 2: descartada.\nconst MAX_CARACTERES = 1024;\nconst RANGOS = { v: [0, 30], i: [0, 10], p: [0, 300] }; // V, A, W\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\n// Una lectura nunca se retiene (contrato MQTT, sección 1): un retenido sería una\n// lectura falsa que se repetiría en cada conexión. Se descarta y se avisa.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": las lecturas no se retienen\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (las lecturas no se retienen)\");\n}\n// Payload vacío: no es una lectura. Es el mensaje en vivo que provoca la limpieza de\n// retenidos en cada conexión al broker; se ignora en silencio.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nconst resumen = msg.payload.slice(0, 200);\n\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON: \" + resumen);\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON: \" + resumen);\n}\nfor (const campo of Object.keys(RANGOS)) {\n    const x = datos[campo];\n    if (typeof x !== \"number\" || !Number.isFinite(x)) {\n        return descartar(\"falta \" + campo + \" numérico: \" + resumen);\n    }\n    if (x < RANGOS[campo][0] || x > RANGOS[campo][1]) {\n        return descartar(campo + \" fuera de rango [\" + RANGOS[campo] + \"]: \" + resumen);\n    }\n}\nmsg.params = [datos.v, datos.i, datos.p];\nreturn [msg, null];",
         "outputs": 2,
         "timeout": 0,
         "noerr": 0,
@@ -298,6 +298,2025 @@
             [
                 "a1f0c0de00000025"
             ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000030",
+        "type": "tab",
+        "label": "Limpieza de retenidos",
+        "disabled": false,
+        "info": "En cada conexión de Node-RED al broker (también tras reiniciar Mosquitto), pide borrar los mensajes retenidos que hayan quedado en los tópicos de órdenes (*/cmd) y en los de eventos que nunca se retienen (aula/camara/pir, aula/camara/energia y aula/vision/resultado). Esos tópicos no se retienen (docs/contrato-mqtt.md, sección 1), pero la ACL de Mosquitto no puede impedir el retain por tópico: un cliente con credenciales podría dejar una orden o una lectura retenida que se repetiría en cada reconexión de su consumidor."
+    },
+    {
+        "id": "a1f0c0de00000031",
+        "type": "comment",
+        "z": "a1f0c0de00000030",
+        "name": "Limpia retenidos de */cmd, aula/camara/pir, aula/camara/energia y aula/vision/resultado en cada conexión al broker",
+        "info": "Cada vez que el nodo \"Borrar retenido\" informa que está conectado al broker (al arrancar Node-RED y tras cada reconexión, por ejemplo al reiniciar Mosquitto), se publica un mensaje retenido de payload vacío en cada tópico de la lista, que es la forma de borrar un retenido en MQTT. Se usa el estado del nodo y no un inject temporizado porque mqtt out no publica nada si aún no hay conexión, y un inject no corre cuando solo se reinicia el broker. Esto provoca, en cada conexión, un mensaje vacío en vivo (sin bandera retain) en cada tópico de la lista: no es una orden ni una lectura válida y los consumidores lo ignoran (contrato, sección 1; el flujo de ingesta lo descarta en silencio). El broker y sus credenciales son los del nodo \"Mosquitto\": aquí no hay ninguna.",
+        "x": 330,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000033",
+        "type": "function",
+        "z": "a1f0c0de00000030",
+        "name": "Al conectar: un borrado por tópico",
+        "func": "// Llega el estado del nodo \"Borrar retenido\". Solo interesa \"conectado\" (verde, punto):\n// es el estado que mqtt out emite cuando ya puede publicar, al conectar y al reconectar.\nconst s = msg.status || {};\nif (s.fill !== \"green\" || s.shape !== \"dot\") {\n    return null;\n}\n// Un mensaje por tópico, con payload vacío y retain: borra el retenido.\nconst topicos = [\"aula/actuador/cmd\", \"aula/sesion/cmd\", \"aula/vision/cmd\", \"aula/camara/pir\", \"aula/camara/energia\", \"aula/vision/resultado\"];\nnode.log(\"Conectado al broker: se piden borrar los retenidos de \" + topicos.join(\", \"));\nreturn [topicos.map((topic) => ({ topic: topic, payload: \"\", qos: 1, retain: true }))];",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000034"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000034",
+        "type": "mqtt out",
+        "z": "a1f0c0de00000030",
+        "name": "Borrar retenido",
+        "topic": "",
+        "qos": "1",
+        "retain": "true",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 700,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000035",
+        "type": "status",
+        "z": "a1f0c0de00000030",
+        "name": "Conexión de Borrar retenido",
+        "scope": [
+            "a1f0c0de00000034"
+        ],
+        "x": 170,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000033"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000040",
+        "type": "tab",
+        "label": "Alumnos",
+        "disabled": false,
+        "info": "API de alumnos (GET /api/alumnos, POST /api/alumnos/importar) y GET /api/galeria para el servicio de visión. La autenticación no está en los flujos: la hace el httpNodeMiddleware de settings.js (nodered/autenticacion-api.js), antes de cualquier http in."
+    },
+    {
+        "id": "a1f0c0de00000041",
+        "type": "comment",
+        "z": "a1f0c0de00000040",
+        "name": "API: GET /api/galeria",
+        "info": "Embeddings de los alumnos con consentimiento y rostro registrado, para el servicio de visión (no lo usa el frontend). Solo acepta el encabezado X-Galeria-Token (GALERIA_TOKEN); las credenciales del profesor no bastan (nodered/autenticacion-api.js). Respuesta: {\"embeddings\":[{\"cuenta\":\"320068234\",\"embedding\":[...512 números...]}]}, el formato que lee orangepi/vision/src/gallery_store.cpp. Los nodos de esta ruta nunca registran el payload ni el mensaje: son embeddings (datos biométricos).",
+        "x": 190,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000042",
+        "type": "http in",
+        "z": "a1f0c0de00000040",
+        "name": "",
+        "url": "/api/galeria",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 160,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000043"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000043",
+        "type": "postgresql",
+        "z": "a1f0c0de00000040",
+        "name": "SELECT galería",
+        "query": "SELECT no_cuenta AS cuenta, embedding::text AS embedding FROM alumnos\nWHERE consentimiento AND embedding IS NOT NULL\nORDER BY no_cuenta",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 380,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000044"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000044",
+        "type": "function",
+        "z": "a1f0c0de00000040",
+        "name": "Formatear galería",
+        "func": "// Respuesta de GET /api/galeria, en el formato que lee el servicio de visión\n// (orangepi/vision/src/gallery_store.cpp): {\"embeddings\":[{\"cuenta\":\"320068234\",\"embedding\":[...]}]}\n// Cada fila trae el embedding como texto de pgvector (\"[0.1,0.2,...]\"), que es JSON válido.\n// Nunca se registra ni se devuelve en un error el contenido del embedding: es un dato biométrico.\nconst filas = msg.payload;\nif (!Array.isArray(filas)) {\n    throw new Error(\"la consulta de la galería no devolvió filas\");\n}\nconst embeddings = filas.map((fila) => {\n    let valores;\n    try {\n        valores = JSON.parse(fila.embedding);\n    } catch (e) {\n        valores = null;\n    }\n    if (!Array.isArray(valores) || valores.length === 0 || !valores.every((x) => typeof x === \"number\" && Number.isFinite(x))) {\n        // Sin la cuenta en el mensaje: los errores terminan en el log.\n        throw new Error(\"un embedding de la galería no es un arreglo numérico\");\n    }\n    return { cuenta: fila.cuenta, embedding: valores };\n});\nmsg.statusCode = 200;\nmsg.payload = { embeddings: embeddings };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 620,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000050"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000045",
+        "type": "comment",
+        "z": "a1f0c0de00000040",
+        "name": "API: GET /api/alumnos",
+        "info": "Lista de alumnos con su estado de rostro: [{cuenta,nombre,grupo,rostro}], rostro = \"pendiente\" o \"registrado\". Parámetro opcional: grupo (1 a 40 caracteres). Nunca devuelve embeddings: la consulta ni siquiera los selecciona.",
+        "x": 190,
+        "y": 180,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000046",
+        "type": "http in",
+        "z": "a1f0c0de00000040",
+        "name": "",
+        "url": "/api/alumnos",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 160,
+        "y": 240,
+        "wires": [
+            [
+                "a1f0c0de00000047"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000047",
+        "type": "function",
+        "z": "a1f0c0de00000040",
+        "name": "Validar grupo",
+        "func": "// GET /api/alumnos?grupo=<grupo>\n// grupo (opcional): de 1 a 40 caracteres, sin caracteres de control ni de formato\n// invisibles (ancho cero, marca de orden de bytes...). Sin grupo se\n// listan todos los alumnos.\nconst MAX_GRUPO = 40;\nconst q = msg.req.query || {};\n\nfunction rechazar(texto) {\n    msg.statusCode = 400;\n    msg.payload = { error: texto };\n    return [null, msg];\n}\n\nlet grupo = null;\nif (q.grupo !== undefined) {\n    if (typeof q.grupo !== \"string\") {\n        return rechazar(\"grupo debe indicarse una sola vez, como texto\");\n    }\n    grupo = q.grupo.normalize(\"NFC\").trim();\n    if (grupo === \"\") {\n        return rechazar(\"grupo no puede estar vacío\");\n    }\n    if ([...grupo].length > MAX_GRUPO) {\n        return rechazar(\"grupo no puede tener más de \" + MAX_GRUPO + \" caracteres\");\n    }\n    if (/[\\p{Cc}\\p{Cf}]/u.test(grupo)) {\n        return rechazar(\"grupo no puede llevar caracteres de control ni invisibles\");\n    }\n}\nmsg.params = [grupo];\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 240,
+        "wires": [
+            [
+                "a1f0c0de00000048"
+            ],
+            [
+                "a1f0c0de00000050"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000048",
+        "type": "postgresql",
+        "z": "a1f0c0de00000040",
+        "name": "SELECT alumnos",
+        "query": "SELECT no_cuenta AS cuenta, nombre, grupo,\n       CASE WHEN embedding IS NULL THEN 'pendiente' ELSE 'registrado' END AS rostro\nFROM alumnos\nWHERE $1::text IS NULL OR grupo = $1::text\nORDER BY grupo, nombre, no_cuenta",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 620,
+        "y": 220,
+        "wires": [
+            [
+                "a1f0c0de00000050"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000049",
+        "type": "comment",
+        "z": "a1f0c0de00000040",
+        "name": "API: POST /api/alumnos/importar",
+        "info": "CSV de la lista maestra (no_cuenta,nombre,grupo), enviado como cuerpo crudo con Content-Type: text/csv (otro tipo: 415, primera capa contra CSRF; la segunda, la cabecera X-Pase-Lista: 1 que exige el middleware en todo POST, está en nodered/autenticacion-api.js). Se valida el archivo completo antes de escribir: 400 con las filas inválidas, o 413 si pesa más de 256 KiB. Si alguna cuenta ya existe y no se indicó ?existentes=, 409 sin escribir nada. Si, pese a eso, otra importación ganó la carrera por una cuenta (INSERT ... ON CONFLICT DO NOTHING), responde 409 con los conteos. ?existentes=actualizar cambia solo nombre y grupo; ?existentes=omitir inserta solo las nuevas. Nunca toca embedding ni consentimiento y nunca borra. La escritura es una sola sentencia SQL, es decir, una sola transacción.",
+        "x": 190,
+        "y": 320,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000004a",
+        "type": "http in",
+        "z": "a1f0c0de00000040",
+        "name": "",
+        "url": "/api/alumnos/importar",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 180,
+        "y": 380,
+        "wires": [
+            [
+                "a1f0c0de0000004b"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000004b",
+        "type": "function",
+        "z": "a1f0c0de00000040",
+        "name": "Validar CSV y existentes",
+        "func": "// POST /api/alumnos/importar[?existentes=actualizar|omitir]\n// Cuerpo: el CSV de la lista maestra, crudo (Content-Type: text/csv; charset=utf-8),\n// con el encabezado no_cuenta,nombre,grupo. Se valida el archivo completo antes de\n// tocar la base: si una fila es inválida, 400 con la lista de filas y nada se importa.\n// Salida 1: archivo válido (msg.csv = filas, msg.modo, msg.params = [cuentas]).\n// Salida 2: respuesta de error (400, 413 o 415).\nconst MAX_BYTES = 256 * 1024; // el mismo tope que LIMITE_CUERPO_BYTES de nodered/autenticacion-api.js\nconst MAX_FILAS = 500;\nconst MAX_NOMBRE = 120;\nconst MAX_GRUPO = 40;\nconst MAX_ERRORES = 100; // filas inválidas que se listan en la respuesta\nconst ENCABEZADO = [\"no_cuenta\", \"nombre\", \"grupo\"];\n// Caracteres de control (\\n incluido) e invisibles de formato (ancho cero, marca de\n// orden de bytes intermedia, inversión de texto...).\nconst CONTROL = /[\\p{Cc}\\p{Cf}]/u;\n\nfunction rechazar(codigo, cuerpo) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    return [null, msg];\n}\n\n// Solo text/csv (con parámetros como charset). Los tipos que un formulario HTML de\n// otro sitio puede enviar sin permiso (text/plain, urlencoded, multipart) se\n// rechazan: es la primera capa contra CSRF; la segunda está en autenticacion-api.js.\nconst tipo = String(msg.req.headers[\"content-type\"] || \"\").split(\";\")[0].trim().toLowerCase();\nif (tipo !== \"text/csv\") {\n    return rechazar(415, { error: \"El Content-Type debe ser text/csv (por ejemplo, text/csv; charset=utf-8)\" });\n}\n\nconst q = msg.req.query || {};\nlet modo = null;\nif (q.existentes !== undefined) {\n    if (q.existentes !== \"actualizar\" && q.existentes !== \"omitir\") {\n        return rechazar(400, { error: \"existentes debe ser actualizar u omitir\" });\n    }\n    modo = q.existentes;\n}\n\nlet texto;\nlet bytes;\nif (typeof msg.payload === \"string\") {\n    texto = msg.payload;\n    bytes = Buffer.byteLength(texto, \"utf8\");\n} else if (Buffer.isBuffer(msg.payload)) {\n    texto = msg.payload.toString(\"utf8\");\n    bytes = msg.payload.length;\n} else {\n    return rechazar(400, { error: \"El cuerpo debe ser el archivo CSV crudo, con Content-Type: text/csv\" });\n}\nif (bytes > MAX_BYTES) {\n    return rechazar(413, { error: \"El archivo pesa \" + bytes + \" bytes (máximo \" + MAX_BYTES + \")\" });\n}\nif (texto.includes(\"�\")) {\n    return rechazar(400, { error: \"El archivo no es UTF-8 válido: guárdalo como CSV UTF-8\" });\n}\nif (texto.charCodeAt(0) === 0xFEFF) {\n    texto = texto.slice(1); // BOM de UTF-8 (lo escribe Excel)\n}\n\n// Lector de CSV (RFC 4180): comas, campos entre comillas con \"\" para una comilla,\n// saltos de línea \\n, \\r\\n o \\r. Las líneas en blanco se ignoran. Cada registro\n// guarda la línea donde empieza (el encabezado es la línea 1).\nfunction leerRegistros(t) {\n    const registros = [];\n    let campos = [];\n    let campo = \"\";\n    let enComillas = false;\n    let cerradas = false; // el campo ya cerró sus comillas\n    let conComillas = false; // el registro abrió comillas alguna vez\n    let problema = null;\n    let linea = 1;\n    let lineaInicio = 1;\n\n    function cerrarRegistro() {\n        campos.push(campo);\n        const enBlanco = campos.length === 1 && campos[0].trim() === \"\" && !conComillas;\n        if (!enBlanco) {\n            registros.push({ linea: lineaInicio, campos: campos, problema: problema });\n        }\n        campos = [];\n        campo = \"\";\n        cerradas = false;\n        conComillas = false;\n        problema = null;\n        lineaInicio = linea;\n    }\n\n    for (let i = 0; i < t.length; i++) {\n        const c = t[i];\n        if (enComillas) {\n            if (c === '\"') {\n                if (t[i + 1] === '\"') {\n                    campo += '\"';\n                    i++;\n                } else {\n                    enComillas = false;\n                    cerradas = true;\n                }\n            } else {\n                // Un \\r\\n cuenta una vez (por su \\n); un \\r suelto también es un salto.\n                if (c === \"\\n\" || (c === \"\\r\" && t[i + 1] !== \"\\n\")) {\n                    linea++;\n                }\n                campo += c;\n            }\n        } else if (c === \",\") {\n            campos.push(campo);\n            campo = \"\";\n            cerradas = false;\n        } else if (c === \"\\r\" || c === \"\\n\") {\n            if (c === \"\\r\" && t[i + 1] === \"\\n\") {\n                i++;\n            }\n            linea++;\n            cerrarRegistro();\n        } else if (c === '\"') {\n            if (campo === \"\" && !cerradas) {\n                enComillas = true;\n                conComillas = true;\n            } else {\n                problema = problema || \"comilla inesperada: un campo con comillas debe empezar con ellas\";\n            }\n        } else if (cerradas) {\n            if (c !== \" \" && c !== \"\\t\") {\n                problema = problema || \"hay texto después de cerrar las comillas de un campo\";\n            }\n        } else {\n            campo += c;\n        }\n    }\n    if (enComillas) {\n        problema = problema || \"comillas sin cerrar\";\n    }\n    if (campo !== \"\" || campos.length > 0 || conComillas) {\n        cerrarRegistro();\n    }\n    return registros;\n}\n\nconst registros = leerRegistros(texto);\nif (registros.length === 0) {\n    return rechazar(400, { error: \"El archivo está vacío\" });\n}\nconst encabezado = registros[0].campos.map((x) => x.trim().toLowerCase());\nif (registros[0].problema !== null || encabezado.join(\",\") !== ENCABEZADO.join(\",\")) {\n    return rechazar(400, { error: \"La primera línea debe ser el encabezado \" + ENCABEZADO.join(\",\") + \", separado por comas. Guarda el archivo como CSV UTF-8 (delimitado por comas): Excel en español exporta con punto y coma\" });\n}\nconst datos = registros.slice(1);\nif (datos.length === 0) {\n    return rechazar(400, { error: \"El archivo no tiene filas de alumnos después del encabezado\" });\n}\nif (datos.length > MAX_FILAS) {\n    return rechazar(400, { error: \"El archivo tiene \" + datos.length + \" filas (máximo \" + MAX_FILAS + \")\" });\n}\n\nconst filas = [];\nconst errores = [];\nconst lineaDeCuenta = new Map();\nfor (const registro of datos) {\n    const problemas = [];\n    if (registro.problema !== null) {\n        problemas.push(registro.problema);\n    }\n    if (registro.campos.length !== ENCABEZADO.length) {\n        problemas.push(\"se esperaban \" + ENCABEZADO.length + \" columnas y hay \" + registro.campos.length);\n    } else {\n        // NFC: un acento escrito como letra + marca (macOS) queda como un solo carácter.\n        const [cuenta, nombre, grupo] = registro.campos.map((x) => x.normalize(\"NFC\").trim());\n        if (!/^[0-9]{9}$/.test(cuenta)) {\n            problemas.push(\"no_cuenta debe tener exactamente 9 dígitos\");\n        } else if (lineaDeCuenta.has(cuenta)) {\n            problemas.push(\"no_cuenta repetida (ya aparece en la fila \" + lineaDeCuenta.get(cuenta) + \")\");\n        } else {\n            lineaDeCuenta.set(cuenta, registro.linea);\n        }\n        if (nombre === \"\") {\n            problemas.push(\"nombre vacío\");\n        } else if ([...nombre].length > MAX_NOMBRE) {\n            problemas.push(\"nombre de más de \" + MAX_NOMBRE + \" caracteres\");\n        } else if (CONTROL.test(nombre)) {\n            problemas.push(\"nombre con saltos de línea o caracteres de control o invisibles\");\n        }\n        if (grupo === \"\") {\n            problemas.push(\"grupo vacío\");\n        } else if ([...grupo].length > MAX_GRUPO) {\n            problemas.push(\"grupo de más de \" + MAX_GRUPO + \" caracteres\");\n        } else if (CONTROL.test(grupo)) {\n            problemas.push(\"grupo con saltos de línea o caracteres de control o invisibles\");\n        }\n        if (problemas.length === 0) {\n            filas.push({ cuenta: cuenta, nombre: nombre, grupo: grupo });\n        }\n    }\n    if (problemas.length > 0) {\n        errores.push({ fila: registro.linea, error: problemas.join(\"; \") });\n    }\n}\nif (errores.length > 0) {\n    return rechazar(400, {\n        error: \"El archivo tiene filas inválidas: no se importó nada\",\n        total_errores: errores.length,\n        filas: errores.slice(0, MAX_ERRORES)\n    });\n}\n\nmsg.csv = filas;\nmsg.modo = modo;\nmsg.params = [filas.map((f) => f.cuenta)];\nmsg.payload = null;\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 380,
+        "wires": [
+            [
+                "a1f0c0de0000004c"
+            ],
+            [
+                "a1f0c0de00000050"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000004c",
+        "type": "postgresql",
+        "z": "a1f0c0de00000040",
+        "name": "SELECT cuentas existentes",
+        "query": "SELECT no_cuenta AS cuenta, nombre AS nombre_actual, grupo AS grupo_actual,\n       (embedding IS NOT NULL) AS tiene_rostro\nFROM alumnos\nWHERE no_cuenta = ANY($1::text[])\nORDER BY no_cuenta",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 680,
+        "y": 360,
+        "wires": [
+            [
+                "a1f0c0de0000004d"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000004d",
+        "type": "function",
+        "z": "a1f0c0de00000040",
+        "name": "Decidir importación",
+        "func": "// Llegan las cuentas del CSV que ya existen en alumnos (msg.payload) y el CSV ya\n// validado (msg.csv). La decisión sobre las existentes es del profesor:\n// sin ?existentes= y con alguna cuenta existente, 409 y no se escribe nada.\n// Salida 1: se escribe (msg.params para el INSERT/UPDATE). Salida 2: respuesta 409.\nconst existentes = msg.payload;\nif (!Array.isArray(existentes)) {\n    throw new Error(\"la consulta de cuentas existentes no devolvió filas\");\n}\nif (existentes.length > 0 && msg.modo === null) {\n    const delCsv = new Map(msg.csv.map((f) => [f.cuenta, f]));\n    msg.statusCode = 409;\n    msg.payload = {\n        escrito: false, // no se importó nada\n        error: \"Hay cuentas del archivo que ya existen: no se importó nada. Reenvía con ?existentes=actualizar (cambia solo nombre y grupo) o ?existentes=omitir (importa solo las nuevas)\",\n        existentes: existentes.map((e) => {\n            const f = delCsv.get(e.cuenta);\n            return {\n                cuenta: e.cuenta,\n                actual: { nombre: e.nombre_actual, grupo: e.grupo_actual },\n                csv: { nombre: f.nombre, grupo: f.grupo },\n                cambia: e.nombre_actual !== f.nombre || e.grupo_actual !== f.grupo,\n                tiene_rostro: e.tiene_rostro === true\n            };\n        }),\n        opciones: [\"actualizar\", \"omitir\"]\n    };\n    return [null, msg];\n}\nmsg.params = [\n    msg.csv.map((f) => f.cuenta),\n    msg.csv.map((f) => f.nombre),\n    msg.csv.map((f) => f.grupo),\n    msg.modo === \"actualizar\" ? \"actualizar\" : \"omitir\"\n];\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de0000004e"
+            ],
+            [
+                "a1f0c0de00000050"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000004e",
+        "type": "postgresql",
+        "z": "a1f0c0de00000040",
+        "name": "INSERT/UPDATE alumnos",
+        "query": "WITH csv AS (\n  SELECT * FROM unnest($1::text[], $2::text[], $3::text[]) AS t(no_cuenta, nombre, grupo)\n),\nactualizadas AS (\n  UPDATE alumnos a SET nombre = c.nombre, grupo = c.grupo\n  FROM csv c\n  WHERE $4::text = 'actualizar' AND a.no_cuenta = c.no_cuenta\n  RETURNING a.no_cuenta\n),\ninsertadas AS (\n  INSERT INTO alumnos (no_cuenta, nombre, grupo)\n  SELECT c.no_cuenta, c.nombre, c.grupo FROM csv c\n  WHERE NOT EXISTS (SELECT 1 FROM alumnos a WHERE a.no_cuenta = c.no_cuenta)\n  ON CONFLICT (no_cuenta) DO NOTHING\n  RETURNING no_cuenta\n)\nSELECT (SELECT count(*) FROM insertadas)::int AS insertadas,\n       (SELECT count(*) FROM actualizadas)::int AS actualizadas,\n       ((SELECT count(*) FROM csv) - (SELECT count(*) FROM insertadas) - (SELECT count(*) FROM actualizadas))::int AS omitidas",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 680,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de0000004f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000004f",
+        "type": "function",
+        "z": "a1f0c0de00000040",
+        "name": "Responder importación",
+        "func": "// Conteos de la importación (una sola sentencia, una sola transacción).\n// Sin ?existentes= (msg.modo null) la decisión sobre las existentes no se tomó, y\n// \"Decidir importación\" ya comprobó que no había ninguna. Si aun así hay omitidas, otra\n// importación insertó esa cuenta entre la comprobación y la escritura (el INSERT usa\n// ON CONFLICT DO NOTHING): no se responde 200 en silencio, sino 409 con los conteos. Las\n// filas nuevas del archivo sí quedaron escritas; reenviar con ?existentes= es seguro.\nconst conteo = Array.isArray(msg.payload) ? msg.payload[0] : undefined;\nif (!conteo) {\n    throw new Error(\"la importación no devolvió conteos\");\n}\nif (msg.modo === null && conteo.omitidas > 0) {\n    msg.statusCode = 409;\n    msg.payload = {\n        escrito: true, // las filas nuevas ya se escribieron\n        error: \"Otra importación agregó cuentas del archivo mientras tanto: se omitieron \" + conteo.omitidas + \" y se insertaron \" + conteo.insertadas + \". Reenvía el archivo con ?existentes=actualizar u omitir\",\n        insertadas: conteo.insertadas,\n        actualizadas: conteo.actualizadas,\n        omitidas: conteo.omitidas,\n        total: msg.csv.length\n    };\n    return msg;\n}\nmsg.statusCode = 200;\nmsg.payload = {\n    insertadas: conteo.insertadas,\n    actualizadas: conteo.actualizadas,\n    omitidas: conteo.omitidas,\n    total: msg.csv.length\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 540,
+        "wires": [
+            [
+                "a1f0c0de00000050"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000050",
+        "type": "http response",
+        "z": "a1f0c0de00000040",
+        "name": "",
+        "statusCode": "",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 960,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000051",
+        "type": "catch",
+        "z": "a1f0c0de00000040",
+        "name": "Errores de la API de alumnos",
+        "scope": [
+            "a1f0c0de00000043",
+            "a1f0c0de00000044",
+            "a1f0c0de00000047",
+            "a1f0c0de00000048",
+            "a1f0c0de0000004b",
+            "a1f0c0de0000004c",
+            "a1f0c0de0000004d",
+            "a1f0c0de0000004e",
+            "a1f0c0de0000004f"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 640,
+        "wires": [
+            [
+                "a1f0c0de00000052"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000052",
+        "type": "function",
+        "z": "a1f0c0de00000040",
+        "name": "Responder 500",
+        "func": "// Error al consultar o escribir en la base de datos: se registra solo el código\n// SQLSTATE del error (cinco caracteres). Nunca msg, msg.params, el detalle de Postgres\n// (\"Key (no_cuenta)=(...)\") ni el mensaje completo: pueden llevar números de cuenta,\n// nombres o embeddings. Sin SQLSTATE, un mensaje truncado y sin secuencias de 9 dígitos.\n// Se responde 500.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nnode.warn(msg.req.method + \" \" + msg.req.path + \" falló: \" + causa);\nmsg.statusCode = 500;\nmsg.payload = { error: \"No se pudo completar la operación en la base de datos\" };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 640,
+        "wires": [
+            [
+                "a1f0c0de00000050"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000060",
+        "type": "tab",
+        "label": "Registro",
+        "disabled": false,
+        "info": "Registro del rostro (enrolamiento) y retiro del consentimiento: POST /api/enrolamiento, POST /api/enrolamiento/cancelar, GET /api/enrolamiento/estado y DELETE /api/alumnos/:cuenta/rostro, más los manejadores de aula/vision/enrolamiento y aula/vision/embedding. La inscripción abierta vive en el contexto de este flujo (flow.inscripcion), en memoria: no sobrevive a un reinicio ni a un despliegue (plan, sección 5.4). La autenticación no está aquí: la hace el httpNodeMiddleware de settings.js, antes de cualquier http in."
+    },
+    {
+        "id": "a1f0c0de00000061",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: POST /api/enrolamiento",
+        "info": "Cuerpo JSON {\"cuenta\",\"consentimiento\":true}. Orden: aparta el lugar de la inscripción (409 si ya hay un registro abierto), escribe el consentimiento con su fecha en la base (404 si la cuenta no existe, 409 si el alumno ya tiene rostro), abre la inscripción, publica aula/vision/cmd {\"accion\":\"enrolar\",\"cuenta\",\"nombre\"} y responde 202. El embedding anterior de un alumno con rostro no se pisa: volver a registrarlo exige antes retirar el rostro (DELETE).",
+        "x": 190,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000062",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/enrolamiento",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 160,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000063"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000063",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Validar y apartar inscripción",
+        "func": "// POST /api/enrolamiento {\"cuenta\":\"320068234\",\"consentimiento\":true}\n// Cuerpo JSON (Content-Type: application/json). Valida la entrada, comprueba que no\n// haya otro registro abierto y aparta el lugar de la inscripción ANTES de tocar la\n// base: esta función corre sin interrupción, así que dos peticiones a la vez (doble\n// clic, segunda pestaña) no pueden pasar las dos, y la segunda no escribe nada.\n// Si la base falla o el alumno no sirve, el lugar se libera (\"Abrir inscripción y\n// ordenar enrolar\" y \"Cerrar y responder 500\").\n// Salida 1: sigue al UPDATE del consentimiento (msg.params, msg.reserva).\n// Salida 2: respuesta de error (400, 409 o 415).\nconst CUENTA = /^[0-9]{9}$/;\nconst POSES = [\"frente\", \"izquierda\", \"derecha\", \"arriba\", \"frente_2\"];\n\nfunction rechazar(codigo, cuerpo) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    return [null, msg];\n}\n\n// Solo application/json: los tipos que un formulario HTML de otro sitio puede enviar\n// sin permiso (text/plain, urlencoded) se rechazan; la segunda capa contra CSRF está\n// en autenticacion-api.js (X-Pase-Lista y el mismo origen).\nconst tipo = String(msg.req.headers[\"content-type\"] || \"\").split(\";\")[0].trim().toLowerCase();\nif (tipo !== \"application/json\") {\n    return rechazar(415, { error: \"El Content-Type debe ser application/json\" });\n}\nconst cuerpo = msg.payload;\nif (cuerpo === null || typeof cuerpo !== \"object\" || Array.isArray(cuerpo)) {\n    return rechazar(400, { error: \"El cuerpo debe ser un objeto JSON con cuenta y consentimiento\" });\n}\nif (typeof cuerpo.cuenta !== \"string\" || !CUENTA.test(cuerpo.cuenta)) {\n    return rechazar(400, { error: \"cuenta debe ser un texto de 9 dígitos\" });\n}\nif (cuerpo.consentimiento !== true) {\n    return rechazar(400, { error: \"Sin consentimiento no se registra el rostro: consentimiento debe ser true\" });\n}\nconst abierta = flow.get(\"inscripcion\");\nif (abierta && abierta.abierto === true) {\n    return rechazar(409, { error: \"Ya hay un registro abierto: termínalo o cancélalo antes de iniciar otro\", motivo: \"registro_abierto\" });\n}\n\nconst ahora = Date.now();\nconst id = \"r\" + ahora + \"-\" + Math.random().toString(36).slice(2, 8);\nflow.set(\"inscripcion\", {\n    id: id,\n    abierto: true,\n    apartada: true, // hasta que la base confirme el consentimiento y se publique la orden\n    cuenta: cuerpo.cuenta,\n    nombre: null,\n    estado: \"esperando_vision\",\n    motivo: null,\n    poses: POSES.map((pose) => ({ pose: pose, estado: \"pendiente\", motivo: null })),\n    advertencia: null,\n    inicio_ms: ahora,\n    actualizado_ms: ahora,\n    // Ticks de 15 s sin progreso (reloj monotónico de los temporizadores, ver \"Vencer inscripción\").\n    ticks: 0\n});\nmsg.reserva = id;\nmsg.params = [cuerpo.cuenta];\nmsg.payload = null;\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000064"
+            ],
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000064",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE consentimiento",
+        "query": "WITH antes AS (\n  SELECT nombre, (embedding IS NOT NULL) AS tiene_rostro FROM alumnos WHERE no_cuenta = $1\n),\nahora AS (\n  UPDATE alumnos SET consentimiento = true, consentimiento_fecha = now()\n  WHERE no_cuenta = $1 AND embedding IS NULL\n  RETURNING no_cuenta\n)\nSELECT (SELECT count(*) FROM antes)::int AS existe,\n       (SELECT nombre FROM antes) AS nombre,\n       COALESCE((SELECT tiene_rostro FROM antes), false) AS tiene_rostro,\n       (SELECT count(*) FROM ahora)::int AS actualizadas",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 660,
+        "y": 80,
+        "wires": [
+            [
+                "a1f0c0de00000065"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000065",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Abrir inscripción y ordenar enrolar",
+        "func": "// Respuesta del UPDATE del consentimiento: una fila {existe, nombre, tiene_rostro,\n// actualizadas}, leída y escrita en la misma sentencia. Aquí se decide:\n//   - la cuenta no existe: 404;\n//   - el alumno ya tiene rostro: 409. Volver a registrar a alguien con rostro exige\n//     antes retirarlo (plan, sección 5.4): el embedding anterior no se pisa nunca;\n//   - si no, el consentimiento ya quedó escrito: se abre la inscripción, se ordena\n//     enrolar a la visión y se responde 202.\n// Salida 1: respuesta HTTP. Salida 2: orden a aula/vision/cmd.\n// Salida 3: revertir el consentimiento (solo si el lugar se perdió mientras tanto).\nconst fila = Array.isArray(msg.payload) ? msg.payload[0] : undefined;\nif (!fila) {\n    throw new Error(\"la consulta del consentimiento no devolvió filas\");\n}\nconst cuenta = msg.params[0];\n\nfunction liberar() {\n    const i = flow.get(\"inscripcion\");\n    if (i && i.id === msg.reserva && i.apartada === true) {\n        flow.set(\"inscripcion\", undefined);\n    }\n}\n\nfunction responder(codigo, cuerpo) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    return msg;\n}\n\nif (fila.existe === 0) {\n    liberar();\n    return [responder(404, { error: \"No existe un alumno con esa cuenta\" }), null, null];\n}\nif (fila.tiene_rostro === true) {\n    liberar();\n    return [responder(409, {\n        error: \"El alumno ya tiene rostro registrado: retíralo antes de volver a registrarlo\",\n        motivo: \"tiene_rostro\"\n    }), null, null];\n}\nif (fila.actualizadas !== 1) {\n    liberar();\n    throw new Error(\"el consentimiento no se escribió\");\n}\n\nconst insc = flow.get(\"inscripcion\");\nif (!insc || insc.id !== msg.reserva || insc.abierto !== true) {\n    // Mientras se escribía, el lugar se cerró (cancelación, reinicio de los flujos):\n    // sin inscripción no hay quien reciba el progreso, y el consentimiento ya quedó escrito.\n    return [responder(409, { error: \"El registro se interrumpió antes de empezar: vuelve a intentarlo\", motivo: \"interrumpido\" }), null, { params: [cuenta] }];\n}\n// El consentimiento se escribió porque la cuenta no tenía rostro: un retiro tardío pendiente de\n// ella ya no hace falta (y borraría el rostro del registro nuevo).\nconst pendientes = flow.get(\"retiros_pendientes\", \"persistente\");\nif (Array.isArray(pendientes) && pendientes.some((p) => p && p.cuenta === cuenta)) {\n    const resto = pendientes.filter((p) => !(p && p.cuenta === cuenta));\n    flow.set(\"retiros_pendientes\", resto.length > 0 ? resto : undefined, \"persistente\");\n}\ninsc.nombre = fila.nombre;\ninsc.apartada = false;\ninsc.actualizado_ms = Date.now();\ninsc.ticks = 0;\nflow.set(\"inscripcion\", insc);\n\nconst orden = {\n    topic: \"aula/vision/cmd\",\n    payload: JSON.stringify({ accion: \"enrolar\", cuenta: cuenta, nombre: fila.nombre }),\n    qos: 1,\n    retain: false\n};\nreturn [responder(202, { cuenta: cuenta, nombre: fila.nombre, abierto: true }), orden, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 940,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ],
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000066",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: POST /api/enrolamiento/cancelar",
+        "info": "Sin cuerpo. Con un registro abierto: lo cierra, publica aula/vision/cmd {\"accion\":\"cancelar\",\"cuenta\"} y revierte el consentimiento; responde 200 {\"cancelado\":true,\"abierto\":false} cuando la base confirma. Sin registro abierto responde 200 {\"cancelado\":false,\"abierto\":false} y no publica nada (idempotente).",
+        "x": 190,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000067",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/enrolamiento/cancelar",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 180,
+        "y": 280,
+        "wires": [
+            [
+                "a1f0c0de00000068"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000068",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Cancelar inscripción",
+        "func": "// POST /api/enrolamiento/cancelar\n// Con un registro abierto: lo cierra en memoria (desde ese instante un embedding tardío\n// ya no se acepta), ordena cancelar a la visión y revierte el consentimiento (el alumno\n// no tiene rostro: solo se registra uno cuando no lo tiene). La respuesta sale cuando\n// la base confirma (\"Tras revertir\").\n// Sin registro abierto responde 200 con cancelado: false y no publica nada: es\n// idempotente. Un 409 haría fallar al frontend cuando el registro terminó justo antes\n// de pulsar \"Cancelar\", y lo que la persona quiere (que no haya registro abierto) ya\n// se cumple.\n// Salida 1: respuesta HTTP. Salida 2: orden a aula/vision/cmd. Salida 3: revertir el consentimiento.\nconst insc = flow.get(\"inscripcion\");\nif (!insc || insc.abierto !== true) {\n    msg.statusCode = 200;\n    msg.payload = { cancelado: false, abierto: false };\n    return [msg, null, null];\n}\ninsc.abierto = false;\ninsc.apartada = false;\ninsc.estado = \"cancelado\";\ninsc.motivo = null;\ninsc.actualizado_ms = Date.now();\nflow.set(\"inscripcion\", insc);\n\nmsg.params = [insc.cuenta];\nconst orden = {\n    topic: \"aula/vision/cmd\",\n    payload: JSON.stringify({ accion: \"cancelar\", cuenta: insc.cuenta }),\n    qos: 1,\n    retain: false\n};\nreturn [null, orden, msg];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 280,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ],
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000069",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: GET /api/enrolamiento/estado",
+        "info": "Solo lectura. {\"abierto\",\"cuenta\",\"nombre\",\"estado\",\"motivo\",\"poses\":[{\"pose\",\"estado\",\"motivo\"}],\"advertencia\":{\"parecido_a\"}|null,\"inicio\",\"actualizado\"}. Devuelve el último registro, abierto o recién cerrado, para que el frontend vea cómo terminó. Nunca incluye embeddings ni imágenes. El frontend lo consulta cada ~1 s mientras hay un registro abierto.",
+        "x": 190,
+        "y": 400,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000006a",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/enrolamiento/estado",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 190,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de0000006b"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000006b",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Estado de la inscripción",
+        "func": "// GET /api/enrolamiento/estado: solo lectura. Devuelve el estado del último registro\n// (abierto o recién cerrado, para que el frontend vea cómo terminó):\n// {abierto, cuenta, nombre, estado, motivo, poses:[{pose,estado,motivo}],\n//  advertencia:{parecido_a}|null, inicio, actualizado}\n// Sin ningún registro desde que arrancó Node-RED: abierto false, estado \"sin_registro\".\n// Cada campo se copia por su nombre: nunca sale de aquí un embedding ni una imagen\n// (la inscripción tampoco los guarda).\nconst insc = flow.get(\"inscripcion\");\nconst iso = (ms) => new Date(ms).toISOString();\n\nif (!insc) {\n    msg.payload = {\n        abierto: false,\n        cuenta: null,\n        nombre: null,\n        estado: \"sin_registro\",\n        motivo: null,\n        poses: [],\n        advertencia: null,\n        inicio: null,\n        actualizado: null\n    };\n} else {\n    msg.payload = {\n        abierto: insc.abierto === true,\n        cuenta: insc.cuenta,\n        nombre: insc.nombre,\n        estado: insc.estado,\n        motivo: insc.motivo,\n        poses: insc.poses.map((p) => ({ pose: p.pose, estado: p.estado, motivo: p.motivo })),\n        advertencia: insc.advertencia ? { parecido_a: insc.advertencia.parecido_a } : null,\n        inicio: iso(insc.inicio_ms),\n        actualizado: iso(insc.actualizado_ms)\n    };\n}\nmsg.statusCode = 200;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000006c",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: DELETE /api/alumnos/:cuenta/rostro",
+        "info": "Retira el consentimiento: embedding NULL, consentimiento false y fecha NULL en una sola sentencia. 400 con cuenta inválida, 404 si no existe, 409 si hay un registro abierto de esa cuenta. Idempotente: si el alumno ya estaba pendiente responde 200 sin publicar. Si tenía rostro, publica aula/vision/galeria/baja {\"cuenta\"} (QoS 1, sin retención) después de escribir en la base.",
+        "x": 200,
+        "y": 580,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000006d",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/alumnos/:cuenta/rostro",
+        "method": "delete",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 210,
+        "y": 640,
+        "wires": [
+            [
+                "a1f0c0de0000006e"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000006e",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Validar cuenta de la baja",
+        "func": "// DELETE /api/alumnos/:cuenta/rostro\n// La cuenta sale de la ruta: 9 dígitos, o 400. Con un registro abierto de esa cuenta\n// responde 409: retirar el consentimiento a media captura dejaría al registro sin\n// permiso; primero se cancela. Un registro abierto de otra cuenta no estorba.\n// Salida 1: sigue al UPDATE (msg.params). Salida 2: respuesta de error (400 o 409).\nconst cuenta = msg.req.params && msg.req.params.cuenta;\n\nfunction rechazar(codigo, texto, motivo) {\n    msg.statusCode = codigo;\n    msg.payload = motivo === undefined ? { error: texto } : { error: texto, motivo: motivo };\n    return [null, msg];\n}\n\nif (typeof cuenta !== \"string\" || !/^[0-9]{9}$/.test(cuenta)) {\n    return rechazar(400, \"cuenta debe ser de 9 dígitos\");\n}\nconst insc = flow.get(\"inscripcion\");\nif (insc && insc.abierto === true && insc.cuenta === cuenta) {\n    return rechazar(409, \"Hay un registro abierto de este alumno: cancélalo antes de retirar su rostro\", \"registro_abierto\");\n}\nmsg.params = [cuenta];\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 640,
+        "wires": [
+            [
+                "a1f0c0de0000006f"
+            ],
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000006f",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE retirar rostro",
+        "query": "WITH antes AS (\n  SELECT (embedding IS NOT NULL) AS tenia_rostro FROM alumnos WHERE no_cuenta = $1\n),\nretirado AS (\n  UPDATE alumnos SET embedding = NULL, consentimiento = false, consentimiento_fecha = NULL\n  WHERE no_cuenta = $1 AND (embedding IS NOT NULL OR consentimiento)\n  RETURNING no_cuenta\n)\nSELECT (SELECT count(*) FROM antes)::int AS existe,\n       COALESCE((SELECT tenia_rostro FROM antes), false) AS tenia_rostro,\n       (SELECT count(*) FROM retirado)::int AS actualizadas",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 740,
+        "y": 620,
+        "wires": [
+            [
+                "a1f0c0de00000070"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000070",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Decidir baja",
+        "func": "// Respuesta del UPDATE que retira el rostro: una fila {existe, tenia_rostro, actualizadas},\n// leída y escrita en la misma sentencia.\n//   - la cuenta no existe: 404;\n//   - responde 200 con el estado nuevo, siempre \"pendiente\". Es idempotente: si el\n//     alumno ya estaba pendiente, retirado es false y no se publica nada;\n//   - si tenía rostro, publica aula/vision/galeria/baja (QoS 1, sin retención), DESPUÉS\n//     de escribir en la base, para que la visión lo quite de su galería en RAM.\n// Salida 1: respuesta HTTP. Salida 2: baja a la visión.\nconst fila = Array.isArray(msg.payload) ? msg.payload[0] : undefined;\nif (!fila) {\n    throw new Error(\"la consulta de la baja no devolvió filas\");\n}\nconst cuenta = msg.params[0];\nif (fila.existe === 0) {\n    msg.statusCode = 404;\n    msg.payload = { error: \"No existe un alumno con esa cuenta\" };\n    return [msg, null];\n}\nconst teniaRostro = fila.tenia_rostro === true;\nmsg.statusCode = 200;\nmsg.payload = { cuenta: cuenta, rostro: \"pendiente\", retirado: teniaRostro };\nif (!teniaRostro) {\n    return [msg, null];\n}\nconst baja = {\n    topic: \"aula/vision/galeria/baja\",\n    payload: JSON.stringify({ cuenta: cuenta }),\n    qos: 1,\n    retain: false\n};\nreturn [msg, baja];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 970,
+        "y": 640,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ],
+            [
+                "a1f0c0de00000081"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000071",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "MQTT: aula/vision/enrolamiento (progreso del registro)",
+        "info": "QoS 0, sin retención. Actualiza la inscripción abierta si la cuenta coincide; completado no la cierra (falta el embedding, que llega por otro tópico); cancelado y error la cierran y revierten el consentimiento. Descarta retain (contrato MQTT, sección 1) y vacíos. La miniatura no se guarda ni se registra.",
+        "x": 200,
+        "y": 760,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000072",
+        "type": "mqtt in",
+        "z": "a1f0c0de00000060",
+        "name": "aula/vision/enrolamiento",
+        "topic": "aula/vision/enrolamiento",
+        "qos": "0",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 190,
+        "y": 820,
+        "wires": [
+            [
+                "a1f0c0de00000073"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000073",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Aplicar progreso del registro",
+        "func": "// Progreso del registro: aula/vision/enrolamiento (QoS 0, sin retención).\n// Solo actualiza la inscripción abierta, y solo si la cuenta del mensaje es la suya.\n//   - esperando_pose, capturando, aceptada, rechazada: actualizan la pose del mensaje.\n//   - advertencia: guarda la cuenta a la que se parece (informativa; no detiene nada).\n//   - completado: la visión aceptó las 5 poses, pero la inscripción SIGUE ABIERTA hasta\n//     que llegue el embedding (aula/vision/embedding, otro tópico y otra QoS: la visión\n//     publica \"completado\" antes, pero no hay garantía de orden en la entrega). Si\n//     \"completado\" la cerrara, el embedding que llega después se rechazaría y se\n//     perdería el registro. Cierra \"Tras guardar embedding\".\n//   - cancelado y error: cierran la inscripción y revierten el consentimiento.\n// Cada mensaje aceptado (de este registro: ver la guarda de `ts`) renueva el plazo de 5 minutos. La miniatura (base64) se ignora y\n// no se guarda ni se registra: el contrato no define cómo llega al navegador.\n// Salida 1: revertir el consentimiento. Salida 2: descarte (nunca lleva el contenido).\nconst MAX_CARACTERES = 32768; // un mensaje con miniatura de ~8 KB pesa unos 11 KB\nconst ESTADOS_POSE = [\"esperando_pose\", \"capturando\", \"aceptada\", \"rechazada\"];\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\n// El progreso nunca se retiene (contrato MQTT, sección 1): un retenido sería un\n// progreso falso que se repetiría en cada conexión.\n// El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido publicado en vivo llega\n// con retain = false (la opción rap no existe), y solo se ve retain = true en la entrega inicial\n// al (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": el progreso no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (el progreso no se retiene)\");\n}\n// Payload vacío: no es un progreso. Es el mensaje en vivo que provoca la limpieza en\n// cada conexión al broker.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\nconst insc = flow.get(\"inscripcion\");\nif (!insc || insc.abierto !== true) {\n    return descartar(\"no hay un registro abierto\");\n}\nif (datos.cuenta !== insc.cuenta) {\n    return descartar(\"la cuenta no coincide con el registro abierto\");\n}\nif (typeof datos.estado !== \"string\") {\n    return descartar(\"falta estado\");\n}\n\n// Sesión rezagada: el mensaje debe ser de este registro. `ts` es obligatorio (contrato MQTT,\n// sección 1); uno anterior al inicio (con 2 s de margen) es de una sesión pasada de la misma\n// cuenta, y sin `ts` legible no hay cómo saberlo: se descarta.\nconst MARGEN_TS_MS = 2000;\nconst instante = typeof datos.ts === \"string\" ? Date.parse(datos.ts) : NaN;\nif (Number.isNaN(instante)) {\n    return descartar(\"falta ts o no se puede leer\");\n}\nif (instante > Date.now() + 5 * 60 * 1000) {\n    return descartar(\"ts posterior a la hora actual\");\n}\nif (instante < insc.inicio_ms - MARGEN_TS_MS) {\n    return descartar(\"el mensaje es anterior al inicio del registro\");\n}\n\n// Un código del contrato (rostro_chico, ocupado...): solo minúsculas y guion bajo.\n// Texto libre de la red no llega al frontend.\nconst motivo = (typeof datos.motivo === \"string\" && /^[a-z_]{1,40}$/.test(datos.motivo)) ? datos.motivo : null;\nlet revertir = null;\n\nif (ESTADOS_POSE.includes(datos.estado)) {\n    const pose = insc.poses.find((p) => p.pose === datos.pose);\n    if (!pose) {\n        return descartar(\"pose desconocida\");\n    }\n    pose.estado = datos.estado;\n    pose.motivo = datos.estado === \"rechazada\" ? motivo : null;\n    if (insc.estado === \"esperando_vision\") {\n        insc.estado = \"en_curso\";\n    }\n} else if (datos.estado === \"advertencia\") {\n    const parecido = (typeof datos.parecido_a === \"string\" && /^[0-9]{9}$/.test(datos.parecido_a)) ? datos.parecido_a : null;\n    insc.advertencia = { parecido_a: parecido };\n} else if (datos.estado === \"completado\") {\n    insc.estado = \"guardando\";\n} else if (datos.estado === \"cancelado\" || datos.estado === \"error\") {\n    insc.abierto = false;\n    insc.estado = datos.estado;\n    insc.motivo = datos.estado === \"error\" ? (motivo || \"desconocido\") : null;\n    revertir = { params: [insc.cuenta] };\n} else {\n    return descartar(\"estado desconocido\");\n}\ninsc.actualizado_ms = Date.now();\ninsc.ticks = 0;\nflow.set(\"inscripcion\", insc);\nreturn [revertir, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 820,
+        "wires": [
+            [
+                "a1f0c0de0000007f"
+            ],
+            [
+                "a1f0c0de00000087"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000074",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "MQTT: aula/vision/embedding (guardar el rostro)",
+        "info": "QoS 1, sin retención. Solo se guarda si la cuenta es la de la inscripción abierta y dim es 512; el UPDATE exige consentimiento y rostro vacío. Después publica aula/vision/galeria/alta. Ningún nodo de esta ruta registra el payload ni el mensaje: es un embedding (dato biométrico).",
+        "x": 200,
+        "y": 920,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000075",
+        "type": "mqtt in",
+        "z": "a1f0c0de00000060",
+        "name": "aula/vision/embedding",
+        "topic": "aula/vision/embedding",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 190,
+        "y": 980,
+        "wires": [
+            [
+                "a1f0c0de00000076"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000076",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Validar embedding",
+        "func": "// Embedding final del registro: aula/vision/embedding (QoS 1, sin retención).\n// Se guarda solo si la cuenta del mensaje es la de la inscripción abierta; nunca para\n// otra cuenta. La cuenta que va al UPDATE sale de la inscripción, no del mensaje.\n// El consentimiento lo comprueba el propio UPDATE (AND consentimiento AND embedding IS\n// NULL): este flujo nunca lo escribe a favor de nadie (plan, sección 6.4).\n// Si el mensaje es de la cuenta abierta pero no sirve (dim distinta de 512, arreglo\n// que no son 512 números, sin modelo), el registro termina en error y el consentimiento\n// se revierte. Nunca se registra el contenido del mensaje: es un dato biométrico.\n// Salida 1: UPDATE del embedding (msg.params = [texto del vector, cuenta]).\n// Salida 2: descarte. Salida 3: revertir el consentimiento.\nconst MAX_CARACTERES = 65536; // 512 números con 4 decimales pesan unos 4 KB\nconst DIM = 512; // vector(512) en orangepi/sql/schema.sql\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }, null];\n}\n\n// El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido publicado en vivo llega\n// con retain = false (la opción rap no existe), y solo se ve retain = true en la entrega inicial\n// al (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": el embedding no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (el embedding no se retiene)\");\n}\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\nconst insc = flow.get(\"inscripcion\");\nif (!insc || insc.abierto !== true) {\n    return descartar(\"no hay un registro abierto\");\n}\nif (datos.cuenta !== insc.cuenta) {\n    return descartar(\"la cuenta no coincide con el registro abierto\");\n}\n\n// Sesión rezagada: el mensaje debe ser de este registro. `ts` es obligatorio (contrato MQTT,\n// sección 1). Un `ts` ilegible, vacío o de antes de 2000 (la visión usa 1970 como hora de reserva\n// si su reloj falla) en el embedding de la cuenta abierta no se descarta en silencio: el registro\n// termina en error y el consentimiento se revierte. Uno posterior a ahora + 5 min se descarta, y\n// uno anterior al inicio (con 2 s de margen) es de una sesión pasada de la misma cuenta: también.\nconst MARGEN_TS_MS = 2000;\nconst TS_MINIMO_MS = Date.UTC(2000, 0, 1);\nconst ADELANTO_MAXIMO_MS = 5 * 60 * 1000;\nconst instante = typeof datos.ts === \"string\" ? Date.parse(datos.ts) : NaN;\nif (Number.isNaN(instante) || instante < TS_MINIMO_MS) {\n    return fallar(\"ts ilegible, vacío o de antes de 2000\");\n}\nif (instante > Date.now() + ADELANTO_MAXIMO_MS) {\n    return descartar(\"ts posterior a la hora actual\");\n}\nif (instante < insc.inicio_ms - MARGEN_TS_MS) {\n    return descartar(\"el mensaje es anterior al inicio del registro\");\n}\n\nfunction fallar(texto) {\n    insc.abierto = false;\n    insc.estado = \"error\";\n    insc.motivo = \"embedding_invalido\";\n    insc.actualizado_ms = Date.now();\n    flow.set(\"inscripcion\", insc);\n    return [null, { payload: \"Descartado, \" + texto }, { params: [insc.cuenta] }];\n}\n\nif (datos.dim !== DIM) {\n    return fallar(\"dim distinto de \" + DIM);\n}\nif (!Array.isArray(datos.embedding) || datos.embedding.length !== DIM ||\n    !datos.embedding.every((x) => typeof x === \"number\" && Number.isFinite(x))) {\n    return fallar(\"el embedding no es un arreglo de \" + DIM + \" números\");\n}\nif (typeof datos.modelo !== \"string\" || datos.modelo.trim() === \"\") {\n    return fallar(\"falta modelo\");\n}\n// El contrato lo define \"Normalizado L2\" (sección 4, aula/vision/embedding) con 4 decimales: el\n// redondeo mueve la norma menos de 0.001, así que 0.01 de tolerancia no rechaza uno bueno. Un\n// vector de norma cero (o muy lejos de 1) no sirve para comparar por coseno.\nconst norma = Math.sqrt(datos.embedding.reduce((suma, x) => suma + x * x, 0));\nif (!(Math.abs(norma - 1) <= 0.01)) {\n    return fallar(\"el embedding no tiene norma L2 igual a 1\");\n}\nmsg.params = [\"[\" + datos.embedding.join(\",\") + \"]\", insc.cuenta];\nmsg.fuente = \"embedding\";\nmsg.inscripcion_id = insc.id; // \"Tras guardar embedding\" solo da de alta si sigue abierta ESTA inscripción\nmsg.payload = null;\nreturn [msg, null, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 980,
+        "wires": [
+            [
+                "a1f0c0de00000077"
+            ],
+            [
+                "a1f0c0de00000087"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000077",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE embedding",
+        "query": "UPDATE alumnos SET embedding = $1::vector\nWHERE no_cuenta = $2 AND consentimiento AND embedding IS NULL\nRETURNING no_cuenta,\n  to_char(consentimiento_fecha AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS consentimiento_fecha",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 700,
+        "y": 960,
+        "wires": [
+            [
+                "a1f0c0de00000078"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000078",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Tras guardar embedding",
+        "func": "// Respuesta del UPDATE del embedding (RETURNING no_cuenta, consentimiento_fecha): una fila si lo\n// guardó, ninguna si el alumno ya no tenía consentimiento o ya tenía rostro. consentimiento_fecha\n// es el texto UTC con microsegundos (to_char) del consentimiento bajo el cual quedó el embedding.\n//   - guardado: cierra la inscripción como \"completado\" y publica aula/vision/galeria/alta\n//     (QoS 1, sin retención), DESPUÉS de escribir en la base; la visión recarga entonces su\n//     galería con GET /api/galeria. Si la inscripción ya se había cerrado (se canceló\n//     mientras se escribía), el rostro quedó guardado de todos modos y el alta se publica:\n//     la galería sigue a la base.\n//   - guardado cuando la inscripción YA NO estaba abierta (se cerró como cancelado, error o\n//     vencido mientras el embedding estaba en vuelo): no se da de alta. Se retira el rostro y\n//     el consentimiento (esa cuenta no tenía rostro antes: si lo tuviera, no habría podido\n//     abrir el registro) y \"Publicar baja tras retiro tardío\" avisa a la visión. El retiro va\n//     condicionado a esa consentimiento_fecha: solo quita el consentimiento bajo el que se\n//     guardó este embedding, nunca uno posterior. El estado de la API sigue diciendo la verdad\n//     (cancelado, error...).\n//   - no guardado: el registro termina en error y se revierte el consentimiento.\n// Salida 1: alta a la visión. Salida 2: revertir el consentimiento. Salida 3: retirar el rostro tardío (msg.params = [cuenta, consentimiento_fecha], con fuente\n// \"retiro_tardio\": si falla, \"Cerrar y responder 500\" deja el par en retiros_pendientes).\nconst FECHA = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$/;\nconst filas = msg.payload;\nconst cuenta = msg.params[1];\nconst insc = flow.get(\"inscripcion\");\n// Solo cuenta la inscripción a la que se ligó este embedding al validarlo (`inscripcion_id`): si\n// el registro R1 se canceló y R2 se abrió para la misma cuenta, el embedding de R1 que se confirma\n// tarde NO es de R2 y se retira (R2 queda sin consentimiento y termina en no_guardado: falla cerrado).\nconst abierta = Boolean(insc) && insc.abierto === true && insc.cuenta === cuenta && insc.id === msg.inscripcion_id;\n\nif (!Array.isArray(filas) || filas.length !== 1) {\n    node.warn(\"Embedding rechazado por la base: sin consentimiento vigente o el alumno ya tiene rostro\");\n    if (!abierta) {\n        return null;\n    }\n    insc.abierto = false;\n    insc.estado = \"error\";\n    insc.motivo = \"no_guardado\";\n    insc.actualizado_ms = Date.now();\n    flow.set(\"inscripcion\", insc);\n    return [null, { params: [cuenta] }, null];\n}\n\nif (!abierta) {\n    node.warn(\"El embedding se guardó con el registro ya cerrado: se retira y no se da de alta\");\n    // Con el CHECK de la tabla, un embedding guardado siempre trae fecha. Sin ella no hay con qué\n    // condicionar el retiro, y retirar a ciegas podría borrar el rostro de un registro posterior.\n    const fecha = filas[0].consentimiento_fecha;\n    if (typeof fecha !== \"string\" || !FECHA.test(fecha)) {\n        throw new Error(\"el UPDATE del embedding no devolvió consentimiento_fecha con el formato esperado\");\n    }\n    return [null, null, { params: [cuenta, fecha], fuente: \"retiro_tardio\" }];\n}\ninsc.abierto = false;\ninsc.estado = \"completado\";\ninsc.motivo = null;\ninsc.actualizado_ms = Date.now();\nflow.set(\"inscripcion\", insc);\nconst alta = {\n    topic: \"aula/vision/galeria/alta\",\n    payload: JSON.stringify({ cuenta: cuenta }),\n    qos: 1,\n    retain: false\n};\nreturn [alta, null, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 940,
+        "y": 980,
+        "wires": [
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ],
+            [
+                "a1f0c0de00000088"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000088",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE retirar rostro tardío",
+        "query": "UPDATE alumnos SET embedding = NULL, consentimiento = false, consentimiento_fecha = NULL\nWHERE no_cuenta = $1 AND consentimiento_fecha = $2::timestamptz\nRETURNING no_cuenta",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 1200,
+        "y": 1060,
+        "wires": [
+            [
+                "a1f0c0de00000089"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000089",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Publicar baja tras retiro tardío",
+        "func": "// Tras el UPDATE que retira el rostro tardío (\"Tras guardar embedding\", o el reintento de\n// \"Vencer inscripción\"). msg.params = [cuenta, consentimiento_fecha]; el UPDATE solo actúa si la\n// fila sigue con ese consentimiento y devuelve la cuenta si actuó.\n//   - 1 fila (actuó): publica aula/vision/galeria/baja (QoS 1, sin retención), después de escribir\n//     en la base, para que la visión quite el rostro de su galería en RAM.\n//   - 0 filas: el retiro ya había actuado antes (Node-RED murió antes de publicar la baja o de\n//     quitar el par) o la fila tiene ya otro consentimiento. No se sabe cuál, y la visión pudo\n//     cargar el rostro tardío: publica aula/vision/galeria/alta (QoS 1, sin retención), que le\n//     hace recargar la galería completa desde la base. Queda igual que la base en los dos casos:\n//     el rostro retirado desaparece y el de un registro posterior se conserva.\n// En los dos casos el par sale de retiros_pendientes (almacén persistente).\nconst cuenta = msg.params[0];\nconst fecha = msg.params[1];\nconst pendientes = flow.get(\"retiros_pendientes\", \"persistente\");\nif (Array.isArray(pendientes)) {\n    const resto = pendientes.filter((p) => !(p && p.cuenta === cuenta && p.fecha === fecha));\n    flow.set(\"retiros_pendientes\", resto.length > 0 ? resto : undefined, \"persistente\");\n}\nconst actuo = Array.isArray(msg.payload) && msg.payload.length === 1;\nnode.warn(actuo\n    ? \"Rostro tardío retirado y baja publicada\"\n    : \"Retiro tardío sin efecto: se publica un alta para que la visión recargue la galería\");\nreturn {\n    topic: actuo ? \"aula/vision/galeria/baja\" : \"aula/vision/galeria/alta\",\n    payload: JSON.stringify({ cuenta: cuenta }),\n    qos: 1,\n    retain: false\n};",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1440,
+        "y": 1060,
+        "wires": [
+            [
+                "a1f0c0de00000081"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000079",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "Vencimiento y arranque",
+        "info": "Cada 15 s revisa si la inscripción abierta lleva 5 minutos sin progreso y, si es así, la cierra como vencida, ordena cancelar y revierte el consentimiento. Al arrancar o desplegar, borra la inscripción del contexto y quita los consentimientos sin rostro (plan, sección 5.4, pasos 9 y 10).",
+        "x": 200,
+        "y": 1080,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000007a",
+        "type": "inject",
+        "z": "a1f0c0de00000060",
+        "name": "Cada 15 s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "15",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 1140,
+        "wires": [
+            [
+                "a1f0c0de0000007b"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007b",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Vencer inscripción",
+        "func": "// Cada 15 s (\"Cada 15 s\"):\n// 1. Vencimiento: si la inscripción abierta lleva 5 minutos sin progreso (cada mensaje de\n//    aula/vision/enrolamiento de su cuenta renueva el plazo; plan, sección 5.4), la cierra\n//    como error \"vencido\", ordena cancelar a la visión (por si sigue capturando) y revierte\n//    el consentimiento. Con la visión apagada, es lo que cierra un registro que nadie atiende.\n//    El plazo se cuenta en ticks de este temporizador (20 x 15 s) y no con Date.now(): el\n//    reloj de la placa puede saltar (RTC, NTP) y un salto hacia adelante vencería un registro\n//    vivo. Los temporizadores de Node.js son monotónicos y la función no tiene performance ni\n//    process. Un tick tardío solo retrasa el vencimiento, nunca lo adelanta.\n// 2. Reintento de la limpieza de arranque: si el UPDATE de \"Al arrancar\" falló (la base aún no\n//    estaba lista), queda la marca `limpieza_pendiente` y se reintenta aquí, solo si no hay un\n//    registro abierto (el UPDATE quitaría su consentimiento).\n// 3. Reintento de los retiros tardíos que fallaron (flow.retiros_pendientes, pares cuenta/fecha\n//    del consentimiento, en el almacén persistente; ver \"Cerrar y responder 500\"): se reenvían al\n//    UPDATE de retiro, que solo actúa sobre esa fecha; la baja se publica cuando sale bien y\n//    actuó (\"Publicar baja tras retiro tardío\"). Una cuenta con un registro abierto no se\n//    reintenta. Una entrada con otra forma (cuenta suelta, fecha ilegible) se ignora.\n// Salida 1: orden a aula/vision/cmd. Salida 2: revertir el consentimiento.\n// Salida 3: limpieza de arranque. Salida 4: retiros tardíos (uno por cuenta pendiente).\nconst TICKS_PARA_VENCER = 20;\nconst insc = flow.get(\"inscripcion\");\nconst abierta = Boolean(insc) && insc.abierto === true;\n\nlet limpieza = null;\nif (flow.get(\"limpieza_pendiente\") === true && !abierta) {\n    node.log(\"Se reintenta la limpieza de arranque\");\n    limpieza = { payload: null };\n}\nconst pendientes = flow.get(\"retiros_pendientes\", \"persistente\");\nconst FECHA = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$/;\nconst retiros = Array.isArray(pendientes)\n    ? pendientes\n        .filter((p) => p && /^[0-9]{9}$/.test(String(p.cuenta)) && typeof p.fecha === \"string\" && FECHA.test(p.fecha))\n        .filter((p) => !(abierta && insc.cuenta === p.cuenta))\n        .map((p) => ({ params: [p.cuenta, p.fecha], fuente: \"retiro_tardio\" }))\n    : [];\nif (retiros.length > 0) {\n    node.log(\"Se reintenta el retiro de \" + retiros.length + \" rostro(s) tardío(s)\");\n}\nconst adicionales = [limpieza, retiros.length > 0 ? retiros : null];\n\nif (!abierta) {\n    return (limpieza === null && retiros.length === 0) ? null : [null, null, ...adicionales];\n}\ninsc.ticks = (Number.isInteger(insc.ticks) ? insc.ticks : 0) + 1;\nif (insc.ticks < TICKS_PARA_VENCER) {\n    flow.set(\"inscripcion\", insc);\n    return retiros.length === 0 ? null : [null, null, null, retiros];\n}\ninsc.abierto = false;\ninsc.apartada = false;\ninsc.estado = \"error\";\ninsc.motivo = \"vencido\";\ninsc.actualizado_ms = Date.now();\nflow.set(\"inscripcion\", insc);\nnode.warn(\"Registro vencido: 5 minutos sin progreso\");\nconst orden = {\n    topic: \"aula/vision/cmd\",\n    payload: JSON.stringify({ accion: \"cancelar\", cuenta: insc.cuenta }),\n    qos: 1,\n    retain: false\n};\nreturn [orden, { params: [insc.cuenta] }, null, retiros.length === 0 ? null : retiros];",
+        "outputs": 4,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 1140,
+        "wires": [
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ],
+            [
+                "a1f0c0de0000007e"
+            ],
+            [
+                "a1f0c0de00000088"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007c",
+        "type": "inject",
+        "z": "a1f0c0de00000060",
+        "name": "Al arrancar o desplegar",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 3,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 170,
+        "y": 1220,
+        "wires": [
+            [
+                "a1f0c0de0000007d"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007d",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Al arrancar: borrar inscripciones",
+        "func": "// Al arrancar Node-RED o desplegar los flujos (plan, sección 5.4, paso 10): las\n// inscripciones viven en memoria y no sobreviven. Primero se borra la inscripción del\n// contexto; el nodo siguiente ejecuta el UPDATE que quita los consentimientos que\n// quedaron sin rostro. Un registro que la visión siga atendiendo termina con un\n// embedding que ya no se acepta (no hay inscripción abierta).\n// La marca `limpieza_pendiente` queda puesta hasta que el UPDATE tenga éxito\n// (\"Limpieza de arranque lista\"): si falla (la base aún no estaba lista), \"Vencer\n// inscripción\" lo reintenta cada 15 s.\nflow.set(\"inscripcion\", undefined);\nflow.set(\"limpieza_pendiente\", true);\nnode.log(\"Arranque: se borran las inscripciones pendientes y los consentimientos sin rostro\");\nmsg.payload = null;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 1220,
+        "wires": [
+            [
+                "a1f0c0de0000007e"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007e",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE limpiar consentimientos sin rostro",
+        "query": "UPDATE alumnos SET consentimiento = false, consentimiento_fecha = NULL\nWHERE consentimiento AND embedding IS NULL",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 750,
+        "y": 1220,
+        "wires": [
+            [
+                "a1f0c0de0000008a"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000008a",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Limpieza de arranque lista",
+        "func": "// El UPDATE de limpieza de arranque tuvo éxito: ya no hace falta reintentarlo.\nflow.set(\"limpieza_pendiente\", undefined);\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1000,
+        "y": 1220,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de0000007f",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "UPDATE revertir consentimiento",
+        "query": "UPDATE alumnos SET consentimiento = false, consentimiento_fecha = NULL\nWHERE no_cuenta = $1 AND embedding IS NULL",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 1200,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de00000080"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000080",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Tras revertir",
+        "func": "// Respuesta del UPDATE que revierte el consentimiento. Solo POST /api/enrolamiento/cancelar\n// trae msg.req y espera respuesta; las demás rutas (progreso, embedding, vencimiento,\n// fallos) mandan un mensaje nuevo y terminan aquí sin responder.\nif (!msg.req) {\n    return null;\n}\nmsg.statusCode = 200;\nmsg.payload = { cancelado: true, abierto: false };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1420,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000081",
+        "type": "mqtt out",
+        "z": "a1f0c0de00000060",
+        "name": "Publicar (tópico en msg)",
+        "topic": "",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 1440,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000082",
+        "type": "http response",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "statusCode": "",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 1440,
+        "y": 620,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000083",
+        "type": "catch",
+        "z": "a1f0c0de00000060",
+        "name": "Errores del registro",
+        "scope": [
+            "a1f0c0de00000063",
+            "a1f0c0de00000064",
+            "a1f0c0de00000065",
+            "a1f0c0de00000068",
+            "a1f0c0de0000006e",
+            "a1f0c0de0000006f",
+            "a1f0c0de00000070",
+            "a1f0c0de00000073",
+            "a1f0c0de00000076",
+            "a1f0c0de00000077",
+            "a1f0c0de00000078",
+            "a1f0c0de0000007b",
+            "a1f0c0de0000007d",
+            "a1f0c0de0000007e",
+            "a1f0c0de0000007f",
+            "a1f0c0de00000080",
+            "a1f0c0de00000088",
+            "a1f0c0de00000089",
+            "a1f0c0de0000008a"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 1320,
+        "wires": [
+            [
+                "a1f0c0de00000084"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000084",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Cerrar y responder 500",
+        "func": "// Error de ejecución (la base, sobre todo) en cualquier ruta de este flujo.\n// Se registra solo el código SQLSTATE (cinco caracteres), o un mensaje truncado y sin\n// secuencias de 9 dígitos: nunca msg ni msg.params (traen embeddings y cuentas), el\n// detalle de Postgres, el mensaje completo ni la ruta con la cuenta (se registra la\n// plantilla de la ruta, /api/alumnos/:cuenta/rostro).\n// Además:\n//   - si la petición había apartado el lugar de la inscripción y no llegó a abrirla, lo libera;\n//   - si falla el UPDATE del embedding, el registro termina en error y se revierte el\n//     consentimiento (si esa reversión falla también, solo se registra);\n//   - si falla el retiro de un rostro tardío (fuente \"retiro_tardio\"), el par cuenta/fecha del\n//     consentimiento queda en flow.retiros_pendientes (almacén \"persistente\": sobrevive a un\n//     reinicio) y \"Vencer inscripción\" lo reintenta cada 15 s hasta que salga.\n// Se responde 500 si el mensaje viene de una petición HTTP (trae msg.req).\n// Salida 1: respuesta HTTP. Salida 2: revertir el consentimiento.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nlet ruta = \"\";\nif (msg.req) {\n    const plantilla = msg.req.route && typeof msg.req.route.path === \"string\" ? msg.req.route.path : \"(ruta)\";\n    ruta = msg.req.method + \" \" + plantilla.replace(/[0-9]{9}/g, \"*********\") + \" \";\n}\nnode.warn(\"Registro: \" + ruta + \"falló: \" + causa);\n\nif (msg.reserva) {\n    const i = flow.get(\"inscripcion\");\n    if (i && i.id === msg.reserva && i.apartada === true) {\n        flow.set(\"inscripcion\", undefined);\n    }\n}\nlet revertir = null;\nif (msg.fuente === \"retiro_tardio\" && Array.isArray(msg.params) && /^[0-9]{9}$/.test(String(msg.params[0])) &&\n    typeof msg.params[1] === \"string\" && /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$/.test(msg.params[1])) {\n    const guardados = flow.get(\"retiros_pendientes\", \"persistente\");\n    const pendientes = Array.isArray(guardados) ? guardados : [];\n    if (!pendientes.some((p) => p && p.cuenta === msg.params[0] && p.fecha === msg.params[1])) {\n        pendientes.push({ cuenta: msg.params[0], fecha: msg.params[1] });\n    }\n    flow.set(\"retiros_pendientes\", pendientes, \"persistente\");\n}\nif (msg.fuente === \"embedding\") {\n    const insc = flow.get(\"inscripcion\");\n    if (insc && insc.abierto === true && Array.isArray(msg.params) && insc.cuenta === msg.params[1] && insc.id === msg.inscripcion_id) {\n        insc.abierto = false;\n        insc.estado = \"error\";\n        insc.motivo = \"no_guardado\";\n        insc.actualizado_ms = Date.now();\n        flow.set(\"inscripcion\", insc);\n        revertir = { params: [insc.cuenta] };\n    }\n}\nlet respuesta = null;\nif (msg.req) {\n    msg.statusCode = 500;\n    msg.payload = { error: \"No se pudo completar la operación en la base de datos\" };\n    respuesta = msg;\n}\nreturn [respuesta, revertir];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 1320,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ],
+            [
+                "a1f0c0de0000007f"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000085",
+        "type": "catch",
+        "z": "a1f0c0de00000060",
+        "name": "Errores del estado",
+        "scope": [
+            "a1f0c0de0000006b"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 1400,
+        "wires": [
+            [
+                "a1f0c0de00000086"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000086",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Responder 500 de estado",
+        "func": "// Error al leer el estado del registro (GET, solo lectura): se registra el mensaje\n// truncado, sin secuencias de 9 dígitos, y se responde 500.\nconst error = msg.error || {};\nconst causa = (typeof error.message === \"string\" && error.message !== \"\")\n    ? error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120)\n    : \"error desconocido\";\nnode.warn(\"GET /api/enrolamiento/estado falló: \" + causa);\nmsg.statusCode = 500;\nmsg.payload = { error: \"No se pudo leer el estado del registro\" };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 1400,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000087",
+        "type": "debug",
+        "z": "a1f0c0de00000060",
+        "name": "Descartados del registro",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 760,
+        "y": 880,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000090",
+        "type": "tab",
+        "label": "Sesiones",
+        "disabled": false,
+        "info": "Sesiones de clase y reporte CSV (plan, secciones 5.3, 6.4 y 7.3; contrato MQTT, sección 5). Las órdenes entran solo por MQTT, por aula/sesion/cmd (la pantalla; no hay endpoints HTTP de sesiones). Iniciar cierra la sesión olvidada y crea la nueva en una sola sentencia; terminar la cierra. Después de escribir en la base se publica aula/sesion/estado (retenido, QoS 1) y, al cerrarse una sesión, el nodo exec ejecuta el programa de Python del reporte CSV (/etc/nodered/reporte_csv.py), que escribe /data/reportes/sesion-<id>.csv. Al conectar al broker se reconcilia aula/sesion/estado con la base. Incluye el inject \"Reiniciar pantalla\" (aula/pantalla/reinicio). `marcar` queda fuera."
+    },
+    {
+        "id": "a1f0c0de00000091",
+        "type": "comment",
+        "z": "a1f0c0de00000090",
+        "name": "MQTT: aula/sesion/cmd (iniciar y terminar; la pantalla)",
+        "info": "",
+        "x": 250,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000092",
+        "type": "mqtt in",
+        "z": "a1f0c0de00000090",
+        "name": "aula/sesion/cmd",
+        "topic": "aula/sesion/cmd",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 150,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000093"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000093",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Validar orden de sesión",
+        "func": "// Orden de sesión: aula/sesion/cmd (QoS 1, sin retención). La publica la pantalla (contrato MQTT,\n// sección 5):\n//   {\"accion\":\"iniciar\",\"materia\":\"FSE\",\"grupo\":\"1\",\"tol_min\":10}   |   {\"accion\":\"terminar\"}\n// `marcar` es solo una propuesta del contrato y no está implementada: se descarta con un aviso.\n// Salida 1: iniciar (msg.params = [materia, grupo, tol_min], ya validados).\n// Salida 2: terminar. Salida 3: descarte.\n// Un descarte o un aviso nunca repite el contenido del mensaje.\n// Límite (CWE-770): un `iniciar` es una escritura en la base y, si cierra una sesión olvidada, un\n// reporte con un proceso de Python. Se descarta un `iniciar` válido que llegue a menos de 5 s del\n// último aceptado; eso cubre también la reentrega duplicada de un QoS 1. El instante vive en el\n// contexto en memoria (`ultimo_iniciar_ms`). Limitación: se mide con Date.now(), que puede saltar\n// (RTC, NTP) y la función no tiene performance ni process (el vencimiento del registro lo resuelve\n// con ticks de un temporizador). Por eso solo se descarta si pasaron entre 0 y 5 s: un reloj que\n// salta hacia atrás o adelante acepta en vez de bloquear. Los descartados no renuevan la ventana.\nconst MAX_CARACTERES = 1024;\nconst MAX_MATERIA = 40;\nconst MAX_GRUPO = 40; // el mismo tope que el grupo de la importación de alumnos\nconst MAX_TOL_MIN = 600; // como valida la pantalla (orangepi/pantalla/estado.py)\nconst MIN_ENTRE_INICIOS_MS = 5000; // la pantalla ya pide doble toque para iniciar\n// aula/sesion/estado se lee en la XIAO con PubSubClient, de búfer 256 (contrato MQTT, sección 1): 3\n// bytes de cabecera fija, 2 de longitud del tópico, 18 del tópico y 2 del id de paquete dejan 231\n// para el payload; 220 deja margen. Se comprueba con el peor caso (id de 10 dígitos): un iniciar\n// cuyo estado no cabría se descarta, en vez de dejar a la XIAO sin enterarse de la sesión.\nconst MAX_ESTADO_BYTES = 220;\n// Caracteres de control (\\n incluido), invisibles de formato (ancho cero, inversión de texto...) y\n// separadores de línea y de párrafo.\nconst CONTROL = /[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]/u;\n\nfunction descartar(motivo) {\n    return [null, null, { payload: \"Descartado, \" + motivo }];\n}\n\n// Texto no vacío, en NFC y sin espacios en los extremos. Devuelve { valor } o { error }.\nfunction texto(valor, campo, max) {\n    if (typeof valor !== \"string\") {\n        return { error: campo + \" debe ser texto\" };\n    }\n    const t = valor.normalize(\"NFC\").trim();\n    if (t === \"\") {\n        return { error: campo + \" vacío\" };\n    }\n    if ([...t].length > max) {\n        return { error: campo + \" de más de \" + max + \" caracteres\" };\n    }\n    if (CONTROL.test(t)) {\n        return { error: campo + \" con caracteres de control o invisibles\" };\n    }\n    return { valor: t };\n}\n\n// Las órdenes nunca se retienen (contrato MQTT, sección 1): un retenido se volvería a ejecutar en\n// cada conexión. El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido publicado\n// en vivo llega con retain = false, y solo se ve retain = true en la entrega inicial al\n// (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5. Además, la\n// limpieza de retenidos borra el de este tópico en cada conexión.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": una orden de sesión no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (una orden no se retiene)\");\n}\n// Payload vacío: no es una orden. Es el mensaje en vivo que provoca la limpieza de retenidos en\n// cada conexión al broker.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\n\nif (datos.accion === \"terminar\") {\n    return [null, { fuente: \"terminar\", payload: null }, null];\n}\nif (datos.accion === \"marcar\") {\n    node.warn(\"Descartado: la acción marcar no está implementada (es una propuesta del contrato)\");\n    return descartar(\"la acción marcar no está implementada\");\n}\nif (datos.accion !== \"iniciar\") {\n    return descartar(\"accion debe ser iniciar o terminar\");\n}\n\nconst materia = texto(datos.materia, \"materia\", MAX_MATERIA);\nif (materia.error) {\n    return descartar(materia.error);\n}\nconst grupo = texto(datos.grupo, \"grupo\", MAX_GRUPO);\nif (grupo.error) {\n    return descartar(grupo.error);\n}\nif (!Number.isInteger(datos.tol_min) || datos.tol_min < 0 || datos.tol_min > MAX_TOL_MIN) {\n    return descartar(\"tol_min debe ser un entero de 0 a \" + MAX_TOL_MIN);\n}\nconst peor = {\n    activa: true, id: 2147483647, materia: materia.valor, grupo: grupo.valor,\n    inicio: \"2026-11-05T15:30:12+00:00\", tol_min: datos.tol_min\n};\nif (Buffer.byteLength(JSON.stringify(peor), \"utf8\") > MAX_ESTADO_BYTES) {\n    return descartar(\"el estado de la sesión no cabría en el búfer de la XIAO (materia y grupo muy largos)\");\n}\nconst ahora = Date.now();\nconst ultimo = flow.get(\"ultimo_iniciar_ms\");\nif (Number.isFinite(ultimo) && ahora - ultimo >= 0 && ahora - ultimo < MIN_ENTRE_INICIOS_MS) {\n    node.warn(\"Descartado: un iniciar llegó a menos de 5 s del anterior\");\n    return descartar(\"iniciar demasiado seguido (menos de 5 s desde el último aceptado)\");\n}\nflow.set(\"ultimo_iniciar_ms\", ahora);\nreturn [{ fuente: \"iniciar\", params: [materia.valor, grupo.valor, datos.tol_min], payload: null }, null, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000094"
+            ],
+            [
+                "a1f0c0de00000096"
+            ],
+            [
+                "a1f0c0de00000098"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000094",
+        "type": "postgresql",
+        "z": "a1f0c0de00000090",
+        "name": "INSERT sesión (cierra la olvidada)",
+        "query": "WITH cerrada AS (\n  UPDATE sesiones SET fin = now() WHERE fin IS NULL RETURNING id\n), previa AS (\n  SELECT max(id) AS id FROM cerrada\n), nueva AS (\n  INSERT INTO sesiones (materia, grupo, tolerancia_min)\n  SELECT $1::text, $2::text, $3::int FROM previa\n  RETURNING id, materia, grupo, inicio, tolerancia_min\n)\nSELECT nueva.id, nueva.materia, nueva.grupo,\n       to_char(nueva.inicio AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"') AS inicio,\n       nueva.tolerancia_min AS tol_min,\n       previa.id AS cerrada_id\nFROM nueva CROSS JOIN previa",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 700,
+        "y": 60,
+        "wires": [
+            [
+                "a1f0c0de00000095"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000095",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Estado tras iniciar",
+        "func": "// Respuesta del CTE de iniciar (una fila): la sesión nueva y, si había una abierta olvidada, su id\n// en `cerrada_id`. Se publica DESPUÉS de escribir en la base: el estado retenido nunca adelanta a\n// la base. El mqtt out \"Publicar estado de sesión\" fija el tópico, el QoS 1 y el retain.\n// Si la respuesta no es lo esperado, lanza: el catch reconcilia y publica lo que diga la base.\n// Salida 1: aula/sesion/estado. Salida 2: reporte de la sesión olvidada que se cerró.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length !== 1) {\n    throw new Error(\"el INSERT de la sesión no devolvió una fila\");\n}\nconst f = filas[0];\nif (!Number.isSafeInteger(f.id) || f.id < 1) {\n    throw new Error(\"el INSERT de la sesión no devolvió un id válido\");\n}\nconst estado = {\n    activa: true,\n    id: f.id,\n    materia: f.materia,\n    grupo: f.grupo,\n    inicio: f.inicio,\n    tol_min: f.tol_min\n};\nnode.log(\"Sesión \" + f.id + \" iniciada\");\nlet reporte = null;\nif (f.cerrada_id !== null && f.cerrada_id !== undefined) {\n    node.log(\"Iniciar cerró la sesión olvidada \" + f.cerrada_id + \": se genera su reporte\");\n    reporte = { sesion_id: f.cerrada_id };\n}\nreturn [{ payload: JSON.stringify(estado) }, reporte];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 960,
+        "y": 60,
+        "wires": [
+            [
+                "a1f0c0de0000009a"
+            ],
+            [
+                "a1f0c0de000000a2"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000096",
+        "type": "postgresql",
+        "z": "a1f0c0de00000090",
+        "name": "UPDATE cerrar sesión",
+        "query": "UPDATE sesiones SET fin = now() WHERE fin IS NULL RETURNING id",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 700,
+        "y": 140,
+        "wires": [
+            [
+                "a1f0c0de00000097"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000097",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Estado tras terminar",
+        "func": "// Respuesta de \"UPDATE cerrar sesión\" (RETURNING id): una fila si había una sesión abierta, ninguna\n// si no. Se publica DESPUÉS de escribir en la base.\n//   - Con sesión: publica {\"activa\":false,\"id\":N} (retenido, QoS 1) y pide el reporte.\n//   - Sin sesión: no cambia nada en la base, no hay reporte y no se publica un estado inventado:\n//     se pide el estado real a la base (mismo SELECT de la reconciliación), que corrige un\n//     retenido viejo si lo hubiera (por ejemplo, si el broker perdió el último).\n// Salida 1: aula/sesion/estado. Salida 2: reporte. Salida 3: reconciliar.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"el UPDATE de cerrar la sesión no devolvió 0 o 1 filas\");\n}\nif (filas.length === 0) {\n    node.log(\"Terminar sin sesión abierta: no cambia nada; se republica el estado real de la base\");\n    return [null, null, { fuente: \"reconciliar\", payload: null }];\n}\nconst id = filas[0].id;\nif (!Number.isSafeInteger(id) || id < 1) {\n    throw new Error(\"el UPDATE de cerrar la sesión no devolvió un id válido\");\n}\nnode.log(\"Sesión \" + id + \" terminada\");\nreturn [{ payload: JSON.stringify({ activa: false, id: id }) }, { sesion_id: id }, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 960,
+        "y": 140,
+        "wires": [
+            [
+                "a1f0c0de0000009a"
+            ],
+            [
+                "a1f0c0de000000a2"
+            ],
+            [
+                "a1f0c0de0000009d"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000098",
+        "type": "debug",
+        "z": "a1f0c0de00000090",
+        "name": "Descartados de sesión",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 700,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000099",
+        "type": "comment",
+        "z": "a1f0c0de00000090",
+        "name": "Estado: aula/sesion/estado y reconciliación con la base",
+        "info": "",
+        "x": 250,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000009a",
+        "type": "mqtt out",
+        "z": "a1f0c0de00000090",
+        "name": "Publicar estado de sesión",
+        "topic": "aula/sesion/estado",
+        "qos": "1",
+        "retain": "true",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 1260,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de0000009b",
+        "type": "status",
+        "z": "a1f0c0de00000090",
+        "name": "Conexión de Publicar estado",
+        "scope": [
+            "a1f0c0de0000009a"
+        ],
+        "x": 190,
+        "y": 360,
+        "wires": [
+            [
+                "a1f0c0de0000009c"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000009c",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Al conectar: reconciliar",
+        "func": "// Llega el estado del nodo \"Publicar estado de sesión\". Solo interesa \"conectado\" (verde, punto):\n// es el estado que mqtt out emite cuando ya puede publicar, al arrancar, al desplegar y al\n// reconectar (también tras reiniciar Mosquitto). Entonces se reconcilia aula/sesion/estado con la\n// base: se publica la sesión abierta o el estado inactivo, para que la XIAO y la pantalla vean la\n// verdad aunque el broker haya perdido el retenido.\n// `reconciliar_pendiente` queda puesta hasta que \"Estado de la base\" publique: si la consulta\n// falla (la base no responde), \"Reintentar reconciliación\" la repite cada 15 s.\nconst s = msg.status || {};\nif (s.fill !== \"green\" || s.shape !== \"dot\") {\n    return null;\n}\nflow.set(\"reconciliar_pendiente\", true);\nnode.log(\"Conectado al broker: se reconcilia aula/sesion/estado con la base\");\nreturn { fuente: \"reconciliar\", payload: null };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 360,
+        "wires": [
+            [
+                "a1f0c0de0000009d"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000009d",
+        "type": "postgresql",
+        "z": "a1f0c0de00000090",
+        "name": "SELECT sesión actual",
+        "query": "SELECT id, materia, grupo,\n       to_char(inicio AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"') AS inicio,\n       tolerancia_min AS tol_min,\n       (fin IS NULL) AS abierta\nFROM sesiones\nORDER BY (fin IS NULL) DESC, id DESC\nLIMIT 1",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 700,
+        "y": 360,
+        "wires": [
+            [
+                "a1f0c0de0000009e"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000009e",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Estado de la base",
+        "func": "// Respuesta de \"SELECT sesión actual\": a lo más una fila, la sesión abierta o, si no hay, la\n// última cerrada. Publica lo que dice la base (contrato MQTT, sección 5):\n//   - sesión abierta:  {\"activa\":true,\"id\",\"materia\",\"grupo\",\"inicio\",\"tol_min\"}\n//   - sin abierta:     {\"activa\":false,\"id\":<última>}\n//   - base sin sesiones: {\"activa\":false}\n// Quita la marca `reconciliar_pendiente` solo al publicar; si la respuesta es imposible, lanza y\n// la marca queda para el reintento.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"la consulta de la sesión actual no devolvió 0 o 1 filas\");\n}\nlet estado = { activa: false };\nif (filas.length === 1) {\n    const f = filas[0];\n    if (!Number.isSafeInteger(f.id) || f.id < 1) {\n        throw new Error(\"la consulta de la sesión actual no devolvió un id válido\");\n    }\n    estado = f.abierta === true\n        ? { activa: true, id: f.id, materia: f.materia, grupo: f.grupo, inicio: f.inicio, tol_min: f.tol_min }\n        : { activa: false, id: f.id };\n}\nflow.set(\"reconciliar_pendiente\", undefined);\nnode.log(\"Estado de la sesión reconciliado con la base: \" + (estado.activa ? \"activa \" + estado.id : \"inactiva\"));\nreturn { payload: JSON.stringify(estado) };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 940,
+        "y": 360,
+        "wires": [
+            [
+                "a1f0c0de0000009a"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000009f",
+        "type": "inject",
+        "z": "a1f0c0de00000090",
+        "name": "Cada 15 s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "15",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 420,
+        "wires": [
+            [
+                "a1f0c0de000000a0"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a0",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Reintentar reconciliación",
+        "func": "// Cada 15 s: si la reconciliación de aula/sesion/estado quedó pendiente (la consulta falló), la repite.\nif (flow.get(\"reconciliar_pendiente\") !== true) {\n    return null;\n}\nnode.log(\"Se reintenta reconciliar aula/sesion/estado con la base\");\nreturn { fuente: \"reconciliar\", payload: null };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 420,
+        "wires": [
+            [
+                "a1f0c0de0000009d"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a1",
+        "type": "comment",
+        "z": "a1f0c0de00000090",
+        "name": "Reporte CSV: consulta (plan, sección 7.3) → archivo JSON → nodo exec con Python",
+        "info": "",
+        "x": 270,
+        "y": 500,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000a2",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Pedir reporte",
+        "func": "// Pide el reporte de una sesión que se cerró. `sesion_id` lo puso una función de este flujo a\n// partir de lo que devolvió la base (nunca de un mensaje MQTT); aquí se vuelve a comprobar que sea\n// un entero positivo del tamaño de un INT, porque acabará en la línea de comandos del nodo exec.\n// Salida: msg.params = [id] para \"SELECT reporte de asistencia\" (plan, sección 7.3), que antes pasa\n// por \"Cola de reportes\": a lo más 1 mensaje cada 2 s, para que nunca haya dos python3 a la vez. Lo\n// que espera en la cola es solo el id y los parámetros, sin filas ni nombres.\nconst id = msg.sesion_id;\nif (!Number.isSafeInteger(id) || id < 1 || id > 2147483647) {\n    throw new Error(\"id de sesión inválido para el reporte\");\n}\nreturn { sesion_id: id, params: [id], payload: null };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 190,
+        "y": 560,
+        "wires": [
+            [
+                "a1f0c0de000000af"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000af",
+        "type": "delay",
+        "z": "a1f0c0de00000090",
+        "name": "Cola de reportes (1 cada 2 s)",
+        "pauseType": "rate",
+        "timeout": "5",
+        "timeoutUnits": "seconds",
+        "rate": "1",
+        "nbRateUnits": "2",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": false,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 330,
+        "y": 620,
+        "wires": [
+            [
+                "a1f0c0de000000a3"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a3",
+        "type": "postgresql",
+        "z": "a1f0c0de00000090",
+        "name": "SELECT reporte de asistencia",
+        "query": "SELECT a.no_cuenta, a.nombre,\n       COALESCE(s.estado, 'falta') AS estado,\n       to_char(s.hora AT TIME ZONE 'America/Mexico_City', 'YYYY-MM-DD HH24:MI:SS') AS hora\nFROM alumnos a\nLEFT JOIN asistencias s\n       ON s.no_cuenta = a.no_cuenta AND s.sesion_id = $1::int\nWHERE a.grupo = (SELECT grupo FROM sesiones WHERE id = $1::int)\nORDER BY a.no_cuenta",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 440,
+        "y": 560,
+        "wires": [
+            [
+                "a1f0c0de000000a4"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a4",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Preparar entrada del reporte",
+        "func": "// Filas del reporte (plan, sección 7.3): no_cuenta, nombre, estado (presente, retardo o falta) y\n// hora de la asistencia en hora de la Ciudad de México (o null en las faltas). Las filas pasan al\n// programa de Python por un archivo y no por la línea de comandos: el nodo \"file\" escribe el JSON\n// en /data/reportes/.entrada-<id>.json (ruta fija; el id es el entero ya validado) y el programa lo\n// lee, lo valida otra vez y escribe sesion-<id>.csv. Se copian solo los cuatro campos.\n// Un grupo sin alumnos da cero filas: el CSV queda con el encabezado.\nconst MAX_FILAS = 1000;\nconst id = msg.sesion_id;\nif (!Number.isSafeInteger(id) || id < 1 || id > 2147483647) {\n    throw new Error(\"id de sesión inválido para el reporte\");\n}\nif (!Array.isArray(msg.payload)) {\n    throw new Error(\"la consulta del reporte no devolvió un arreglo\");\n}\nif (msg.payload.length > MAX_FILAS) {\n    throw new Error(\"la consulta del reporte devolvió más de \" + MAX_FILAS + \" filas\");\n}\nconst filas = msg.payload.map((f) => ({\n    no_cuenta: f.no_cuenta,\n    nombre: f.nombre,\n    estado: f.estado,\n    hora: f.hora === undefined ? null : f.hora\n}));\nmsg.payload = JSON.stringify({ sesion: id, filas: filas });\nmsg.filename = \"/data/reportes/.entrada-\" + id + \".json\";\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 700,
+        "y": 560,
+        "wires": [
+            [
+                "a1f0c0de000000a5"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a5",
+        "type": "file",
+        "z": "a1f0c0de00000090",
+        "name": "Escribir entrada del reporte",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "true",
+        "encoding": "utf8",
+        "x": 960,
+        "y": 560,
+        "wires": [
+            [
+                "a1f0c0de000000a6"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a6",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Argumento del reporte",
+        "func": "// Último paso antes del nodo exec, que añade msg.payload a su comando fijo\n// (/usr/bin/python3 -I -B /etc/nodered/reporte_csv.py <payload>, sin shell). Aquí el payload deja de\n// ser el JSON de las filas y pasa a ser solo el id entero de la sesión, el que devolvió la base:\n// ningún dato de MQTT ni de HTTP llega a la línea de comandos. Si el id no es un entero positivo\n// del tamaño de un INT, lanza y el exec no corre.\nconst id = msg.sesion_id;\nif (!Number.isSafeInteger(id) || id < 1 || id > 2147483647) {\n    throw new Error(\"id de sesión inválido para el comando del reporte\");\n}\nmsg.payload = String(id);\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1200,
+        "y": 560,
+        "wires": [
+            [
+                "a1f0c0de000000a7"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a7",
+        "type": "exec",
+        "z": "a1f0c0de00000090",
+        "name": "Generar CSV (Python)",
+        "command": "/usr/bin/python3 -I -B /etc/nodered/reporte_csv.py",
+        "addpay": "payload",
+        "append": "",
+        "useSpawn": "true",
+        "timer": "30",
+        "winHide": false,
+        "oldrc": false,
+        "x": 1450,
+        "y": 560,
+        "wires": [
+            [],
+            [
+                "a1f0c0de000000a9"
+            ],
+            [
+                "a1f0c0de000000a8"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a8",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Resultado del reporte",
+        "func": "// Tercera salida del nodo exec: msg.payload.code es el código de salida del programa (0 = bien).\n// Solo se registra el id y el código: el programa no imprime datos de alumnos, y aquí tampoco se\n// copia nada de las filas.\nconst r = (msg.payload !== null && typeof msg.payload === \"object\") ? msg.payload : {};\nconst id = msg.sesion_id;\nif (r.code === 0) {\n    node.log(\"Reporte de la sesión \" + id + \" escrito en /data/reportes/sesion-\" + id + \".csv\");\n    return null;\n}\nconst codigo = Number.isInteger(r.code) ? String(r.code) : \"desconocido\";\nconst senal = (typeof r.signal === \"string\" && /^SIG[A-Z0-9]{1,10}$/.test(r.signal)) ? \" (señal \" + r.signal + \")\" : \"\";\nnode.warn(\"Reporte de la sesión \" + id + \" falló: código \" + codigo + senal);\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1700,
+        "y": 600,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de000000a9",
+        "type": "debug",
+        "z": "a1f0c0de00000090",
+        "name": "Error del programa del reporte",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1700,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000aa",
+        "type": "catch",
+        "z": "a1f0c0de00000090",
+        "name": "Errores de sesiones",
+        "scope": [
+            "a1f0c0de00000093",
+            "a1f0c0de00000094",
+            "a1f0c0de00000095",
+            "a1f0c0de00000096",
+            "a1f0c0de00000097",
+            "a1f0c0de0000009c",
+            "a1f0c0de0000009d",
+            "a1f0c0de0000009e",
+            "a1f0c0de000000a0",
+            "a1f0c0de000000a2",
+            "a1f0c0de000000a3",
+            "a1f0c0de000000a4",
+            "a1f0c0de000000a5",
+            "a1f0c0de000000a6",
+            "a1f0c0de000000a7",
+            "a1f0c0de000000a8"
+        ],
+        "uncaught": false,
+        "x": 170,
+        "y": 700,
+        "wires": [
+            [
+                "a1f0c0de000000ab"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000ab",
+        "type": "function",
+        "z": "a1f0c0de00000090",
+        "name": "Registrar error de sesión",
+        "func": "// Error de ejecución (la base, sobre todo) en cualquier nodo de este flujo. Se registra solo el\n// código SQLSTATE (cinco caracteres), o un mensaje truncado y sin secuencias de 9 dígitos: nunca\n// msg ni msg.params (traen la materia, el grupo y las filas con nombres de alumnos).\n//   - Falla iniciar o terminar (`fuente`): no se publica nada. Se reconcilia: el SELECT lleva al\n//     broker lo que dice la base, de modo que una carrera que viole sesiones_una_abierta_idx\n//     (23505) o un fallo a medias nunca deja un estado falso retenido.\n//   - Falla la reconciliación: queda `reconciliar_pendiente` y se reintenta cada 15 s. No vuelve\n//     a reconciliar por su cuenta (sería un bucle si la base está caída).\n//   - Falla el reporte: solo se registra; la sesión ya quedó cerrada y publicada.\n// Salida: pide la reconciliación.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nconst que = msg.fuente === \"iniciar\" || msg.fuente === \"terminar\" || msg.fuente === \"reconciliar\"\n    ? msg.fuente\n    : (msg.sesion_id !== undefined ? \"reporte\" : \"operación\");\nnode.warn(\"Sesiones: \" + que + \" falló: \" + causa);\nif (msg.fuente === \"reconciliar\") {\n    flow.set(\"reconciliar_pendiente\", true);\n    return null;\n}\nif (msg.fuente === \"iniciar\" || msg.fuente === \"terminar\") {\n    return { fuente: \"reconciliar\", payload: null };\n}\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 700,
+        "wires": [
+            [
+                "a1f0c0de0000009d"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000ac",
+        "type": "comment",
+        "z": "a1f0c0de00000090",
+        "name": "Pantalla: reinicio por MQTT (inject del editor; sin API)",
+        "info": "",
+        "x": 250,
+        "y": 800,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000ad",
+        "type": "inject",
+        "z": "a1f0c0de00000090",
+        "name": "Reiniciar pantalla",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "{\"reiniciar\":1}",
+        "payloadType": "str",
+        "x": 170,
+        "y": 860,
+        "wires": [
+            [
+                "a1f0c0de000000ae"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000ae",
+        "type": "mqtt out",
+        "z": "a1f0c0de00000090",
+        "name": "Publicar reinicio de la pantalla",
+        "topic": "aula/pantalla/reinicio",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 480,
+        "y": 860,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000b0",
+        "type": "tab",
+        "label": "Pase de lista",
+        "disabled": false,
+        "info": "Pase de lista (plan, secciones 5.1 y 6.4; contrato MQTT, secciones 3 y 4). Consume aula/vision/resultado (QoS 1): solo modo \"pase\" registra asistencia; modo \"prueba\" se ignora por ahora. Descarta retain, payload vacío, JSON inválido, campos inválidos y un ts a más de 60 s del reloj de Node-RED. Una sola sentencia de Postgres toma la sesión abierta de la base, valida que la cuenta sea del grupo y tenga consentimiento y rostro vigentes, inserta con ON CONFLICT DO NOTHING (presente o retardo con el reloj de la base) y deja en intentos los rechazos. Un límite de entrada (5 por segundo, 200 ms entre mensajes, descarta los que lleguen antes) protege la escritura. Después publica la retroalimentación en aula/actuador/cmd. Sin sesión abierta no registra ni manda nada. Las asistencias no se retienen ni se corrigen desde aquí: el marcado manual (marcar) queda fuera. La lista y el último registro de la pantalla quedan pendientes (necesitan un tópico nuevo y un cambio de ACL)."
+    },
+    {
+        "id": "a1f0c0de000000b1",
+        "type": "comment",
+        "z": "a1f0c0de000000b0",
+        "name": "MQTT: aula/vision/resultado (pase de lista → Postgres → aula/actuador/cmd)",
+        "info": "",
+        "x": 300,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000b2",
+        "type": "mqtt in",
+        "z": "a1f0c0de000000b0",
+        "name": "aula/vision/resultado",
+        "topic": "aula/vision/resultado",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 170,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000b3"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b3",
+        "type": "function",
+        "z": "a1f0c0de000000b0",
+        "name": "Validar resultado de visión",
+        "func": "// Resultado de la visión: aula/vision/resultado (QoS 1, sin retención; contrato MQTT, sección 4).\n//   {\"ts\":\"…\",\"modo\":\"pase\",\"decision\":\"reconocido\",\"cuenta\":\"320068234\",\"conf\":0.78,\"margen\":0.21,\"lat_ms\":{…}}\n// Solo `modo: \"pase\"` llega a la base. `modo: \"prueba\"` (la prueba inmediata del registro) se ignora\n// en esta versión: el reenvío al frontend está pendiente.\n// Salida 1: reconocido, dudoso, desconocido o imagen_insuficiente → la sentencia de Postgres, con\n//           msg.params = [decision, cuenta, conf] ya validados.\n// Salida 2: avisos y descartes (nodo debug de consola). Nunca repiten el contenido del mensaje: la\n//           cuenta y el nombre de un alumno no deben quedar en el log.\n// `sin_rostro` y `error` no llevan retroalimentación (casi siempre fue un disparo del PIR sin nadie\n// enfrente): solo dejan un aviso.\nconst MAX_CARACTERES = 2048; // un resultado real pesa unos 250 bytes\nconst VENTANA_TS_MS = 60 * 1000;\nconst DECISIONES = [\"reconocido\", \"dudoso\", \"desconocido\", \"sin_rostro\", \"imagen_insuficiente\", \"error\"];\nconst CUENTA = /^[0-9]{9}$/;\n// ISO 8601 con zona, como la estampa la visión: \"2026-11-04T09:12:33.120-06:00\" (también \"Z\").\nconst TS = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\n// Un resultado nunca se retiene (contrato MQTT, sección 1): un retenido repetiría en cada conexión un\n// reconocimiento que ya pasó. El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido\n// publicado en vivo llega con retain = false, y solo se ve retain = true en la entrega inicial al\n// (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5; lo que sí cubre\n// siempre es la ventana de `ts` de abajo.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": un resultado no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (un resultado no se retiene)\");\n}\n// Payload vacío: no es un resultado.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\n\nif (datos.modo !== \"pase\" && datos.modo !== \"prueba\") {\n    return descartar(\"modo debe ser pase o prueba\");\n}\nif (typeof datos.decision !== \"string\" || !DECISIONES.includes(datos.decision)) {\n    return descartar(\"decision desconocida\");\n}\n// `cuenta` y `conf` son obligatorios en el contrato, pero llevan null cuando no hubo candidato.\nif (datos.cuenta !== null && (typeof datos.cuenta !== \"string\" || !CUENTA.test(datos.cuenta))) {\n    return descartar(\"cuenta debe ser null o un texto de 9 dígitos\");\n}\n// La similitud coseno de un candidato sin parecido puede ser negativa: el contrato dice 0 a 1, pero\n// aquí se acepta de -1 a 1 para no perder un intento por un decimal de más.\nif (datos.conf !== null && (typeof datos.conf !== \"number\" || !Number.isFinite(datos.conf) || datos.conf < -1 || datos.conf > 1)) {\n    return descartar(\"conf debe ser null o un número de -1 a 1\");\n}\nif (datos.margen !== undefined && datos.margen !== null && (typeof datos.margen !== \"number\" || !Number.isFinite(datos.margen))) {\n    return descartar(\"margen debe ser null o un número\");\n}\nif (datos.lat_ms === null || typeof datos.lat_ms !== \"object\" || Array.isArray(datos.lat_ms)) {\n    return descartar(\"lat_ms debe ser un objeto\");\n}\nif (datos.decision === \"reconocido\" && (datos.cuenta === null || datos.conf === null)) {\n    return descartar(\"un reconocido exige cuenta y conf\");\n}\n\n// Mensaje vencido: `ts` es obligatorio y debe estar a menos de 60 s del reloj de Node-RED, hacia\n// atrás o hacia adelante. Así cae un retenido viejo, una reentrega tardía y el 1970 de reserva que\n// usa la visión cuando no tiene hora (contrato MQTT, sección 4). El reloj de la placa y el de la\n// visión son el mismo (la RTC); un reloj mal puesto descarta los reconocimientos con aviso.\nif (typeof datos.ts !== \"string\" || !TS.test(datos.ts)) {\n    return descartar(\"falta ts o no es ISO 8601 con zona\");\n}\nconst instante = Date.parse(datos.ts);\nif (Number.isNaN(instante)) {\n    return descartar(\"ts no se puede leer\");\n}\nif (Math.abs(Date.now() - instante) > VENTANA_TS_MS) {\n    return descartar(\"ts a más de 60 s del reloj de Node-RED\");\n}\n\nif (datos.modo === \"prueba\") {\n    return descartar(\"modo prueba ignorado (el reenvío al frontend está pendiente)\");\n}\nif (datos.decision === \"sin_rostro\" || datos.decision === \"error\") {\n    return [null, { payload: \"Sin retroalimentación: la visión informó \" + datos.decision }];\n}\nreturn [{ fuente: \"pase\", decision: datos.decision, params: [datos.decision, datos.cuenta, datos.conf], payload: null }, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000ba"
+            ],
+            [
+                "a1f0c0de000000b7"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000ba",
+        "type": "delay",
+        "z": "a1f0c0de000000b0",
+        "name": "Límite de entrada (5 por segundo, 200 ms entre mensajes, descarta)",
+        "info": "CWE-770: cada resultado válido es una escritura en la base (un intento por desconocido, imagen insuficiente o duplicado). Con las credenciales de `vision` o de `nodered` se podrían publicar miles de resultados por segundo y llenar `intentos`. Este límite deja pasar 1 mensaje cada 200 ms (5 por segundo) y DESCARTA los que lleguen antes (no los encola): a lo más unas 430 000 filas de `intentos` al día (unos 100 bytes por fila con su índice: unos 43 MB al día). 200 ms y no 500 ms porque la visión tarda unos 240 ms por ciclo: un reconocido legítimo justo después de un dudoso no debe perderse. Un resultado legítimo es uno por disparo del PIR.",
+        "pauseType": "rate",
+        "timeout": "5",
+        "timeoutUnits": "seconds",
+        "rate": "5",
+        "nbRateUnits": "1",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": true,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 560,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000b4"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b4",
+        "type": "postgresql",
+        "z": "a1f0c0de000000b0",
+        "name": "Registrar asistencia o intento",
+        "info": "Pase de lista en una sola sentencia (una transacción): $1 = decision, $2 = cuenta, $3 = conf.\n`s` es la sesión abierta (no hay contexto que se desincronice). Sin sesión abierta no devuelve filas\ny no escribe nada. `alumno` solo existe para `reconocido` y solo si la cuenta es del grupo de la\nsesión y tiene consentimiento y rostro vigentes (un rostro retirado cuya `baja` la visión aún no\nprocesó cae en `fuera_de_grupo`). `ins` guarda la asistencia con el reloj de la base: presente si now() <= inicio + tolerancia,\nretardo si no; la UNIQUE (no_cuenta, sesion_id) hace que un duplicado, o dos resultados seguidos a la\nvez, no inserten fila (el segundo espera al primero y no hace nada). `res` dice qué pasó. `intento`\ndeja en `intentos` los rechazos: desconocido, imagen_insuficiente, duplicado y, como desconocido,\nel reconocido que no es del grupo, o que es del grupo pero ya no tiene rostro o consentimiento vigentes (`resultado` `fuera_de_grupo` cubre los dos casos; el CHECK de `motivo` no admite otro y la tabla no guarda la cuenta).\n`dudoso` no se guarda: ese CHECK tampoco tiene motivo para la zona gris.",
+        "query": "WITH s AS (\n  SELECT id, grupo, inicio, tolerancia_min FROM sesiones WHERE fin IS NULL\n), alumno AS (\n  SELECT a.no_cuenta, s.id AS sesion_id, s.inicio, s.tolerancia_min\n  FROM alumnos a JOIN s ON a.grupo = s.grupo\n  WHERE $1::text = 'reconocido' AND a.no_cuenta = $2::text AND a.consentimiento AND a.embedding IS NOT NULL\n), ins AS (\n  INSERT INTO asistencias (no_cuenta, sesion_id, estado, confianza, metodo)\n  SELECT no_cuenta, sesion_id,\n         CASE WHEN now() <= inicio + tolerancia_min * interval '1 minute' THEN 'presente' ELSE 'retardo' END,\n         $3::real, 'rostro'\n  FROM alumno\n  ON CONFLICT (no_cuenta, sesion_id) DO NOTHING\n  RETURNING estado\n), res AS (\n  SELECT s.id AS sesion_id,\n         CASE WHEN $1::text <> 'reconocido' THEN $1::text\n              WHEN NOT EXISTS (SELECT 1 FROM alumno) THEN 'fuera_de_grupo'\n              WHEN EXISTS (SELECT 1 FROM ins) THEN (SELECT estado FROM ins)\n              ELSE 'duplicado' END AS resultado\n  FROM s\n), intento AS (\n  INSERT INTO intentos (sesion_id, confianza_max, motivo)\n  SELECT sesion_id, $3::real,\n         CASE resultado WHEN 'fuera_de_grupo' THEN 'desconocido' ELSE resultado END\n  FROM res\n  WHERE resultado IN ('desconocido', 'imagen_insuficiente', 'duplicado', 'fuera_de_grupo')\n  RETURNING 1\n)\nSELECT resultado FROM res",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 730,
+        "y": 60,
+        "wires": [
+            [
+                "a1f0c0de000000b5"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b5",
+        "type": "function",
+        "z": "a1f0c0de000000b0",
+        "name": "Retroalimentación del pase",
+        "func": "// Respuesta de \"Registrar asistencia o intento\": una fila { resultado } si había una sesión abierta,\n// ninguna si no. `resultado` lo decide la sentencia con el reloj de la base:\n//   presente, retardo   → asistencia guardada (verde, el servo abre, pitido corto)\n//   duplicado           → ya estaba en la sesión (rojo, doble pitido; intento `duplicado`)\n//   fuera_de_grupo      → reconocido, pero no es del grupo de la sesión (rojo, doble pitido; intento `desconocido`)\n//   desconocido         → rojo, doble pitido (intento `desconocido`)\n//   imagen_insuficiente → ámbar, se repite la captura (intento `imagen_insuficiente`)\n//   dudoso              → ámbar; no registra (el marcado manual queda fuera)\n// Sin sesión abierta no se registra ni se manda nada: solo un aviso. La retroalimentación sale\n// DESPUÉS de escribir en la base. Valores de buzzer: 1 pitido corto de éxito, 2 doble pitido de\n// error (contrato MQTT, sección 3).\n// Salida 1: aula/actuador/cmd (QoS 1, sin retain, fijados en el nodo `mqtt out`). Salida 2: avisos.\n// Ni los avisos ni el log llevan la cuenta ni el nombre del alumno.\nconst RETROALIMENTACION = {\n    presente: { servo: \"abrir\", led: \"verde\", buzzer: 1 },\n    retardo: { servo: \"abrir\", led: \"verde\", buzzer: 1 },\n    duplicado: { led: \"rojo\", buzzer: 2 },\n    fuera_de_grupo: { led: \"rojo\", buzzer: 2 },\n    desconocido: { led: \"rojo\", buzzer: 2 },\n    imagen_insuficiente: { led: \"ambar\" },\n    dudoso: { led: \"ambar\" }\n};\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"la sentencia del pase de lista no devolvió 0 o 1 filas\");\n}\nif (filas.length === 0) {\n    return [null, { payload: \"Sin sesión abierta: no se registra ni se manda retroalimentación (\" + msg.decision + \")\" }];\n}\nconst resultado = filas[0].resultado;\nif (typeof resultado !== \"string\" || !Object.prototype.hasOwnProperty.call(RETROALIMENTACION, resultado)) {\n    throw new Error(\"la sentencia del pase de lista no devolvió un resultado válido\");\n}\nnode.log(\"Pase de lista: \" + resultado);\nreturn [{ payload: JSON.stringify(RETROALIMENTACION[resultado]) }, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1000,
+        "y": 60,
+        "wires": [
+            [
+                "a1f0c0de000000b6"
+            ],
+            [
+                "a1f0c0de000000b7"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b6",
+        "type": "mqtt out",
+        "z": "a1f0c0de000000b0",
+        "name": "Publicar retroalimentación",
+        "topic": "aula/actuador/cmd",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 1260,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000b7",
+        "type": "debug",
+        "z": "a1f0c0de000000b0",
+        "name": "Avisos y descartes del pase de lista",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 760,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000b8",
+        "type": "catch",
+        "z": "a1f0c0de000000b0",
+        "name": "Errores del pase de lista",
+        "scope": [
+            "a1f0c0de000000b3",
+            "a1f0c0de000000b4",
+            "a1f0c0de000000b5"
+        ],
+        "uncaught": false,
+        "x": 170,
+        "y": 260,
+        "wires": [
+            [
+                "a1f0c0de000000b9"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000b9",
+        "type": "function",
+        "z": "a1f0c0de000000b0",
+        "name": "Registrar error del pase",
+        "func": "// Error de ejecución (la base, sobre todo) en el flujo del pase de lista. Se registra solo el código\n// SQLSTATE (cinco caracteres), o un mensaje truncado y sin secuencias de 9 dígitos: nunca msg ni\n// msg.params (traen la cuenta del alumno). No se publica retroalimentación ni se reintenta: un\n// resultado que no se pudo guardar no debe abrir la puerta, y la persona puede volver a intentarlo.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nnode.warn(\"Pase de lista: falló\" + (typeof msg.decision === \"string\" ? \" (\" + msg.decision + \")\" : \"\") + \": \" + causa);\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 260,
+        "wires": [
+            []
         ]
     }
 ]

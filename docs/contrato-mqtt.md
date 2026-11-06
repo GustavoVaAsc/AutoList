@@ -1,10 +1,10 @@
 # Contrato MQTT
 
-> **Borrador v0.4.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
+> **Borrador v0.12.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
 
 ## 1. Convenciones generales
 
-- **Broker:** Mosquitto en la Orange Pi. Listener `1883` (TCP, servicios del borde y XIAO) y `9001` (WebSocket, frontend). Usuario y contraseña por cliente (sección 6).
+- **Broker:** Mosquitto en la Orange Pi. Un solo listener, el `1883` (TCP, servicios del edge y XIAO). No hay listener WebSocket (el `9001` se quitó en v0.5): el frontend no habla MQTT y recibe todo por la API de Node-RED. Sin acceso anónimo; usuario y contraseña por rol (sección 6).
 - **Formato:** JSON en UTF-8, un objeto por mensaje. Nombres de campo en español, `snake_case`, sin acentos.
 - **Campos desconocidos se ignoran.** Un consumidor no debe fallar si llega un campo que no conoce; así se pueden agregar campos sin romper a nadie. Quitar o renombrar un campo sí es un cambio incompatible y se anota en la sección 7.
 - **Números de cuenta** siempre como *string* de 9 dígitos (`"320068234"`), nunca como número: un cero a la izquierda se perdería.
@@ -12,27 +12,30 @@
 - **Unidades** en el nombre o en la tabla: `lat_ms` en milisegundos, `v` en volts, `i` en amperes, `p` en watts, `temp` en °C.
 - **Tamaño en la XIAO:** PubSubClient trae un búfer de 256 bytes por defecto. Todo lo que la XIAO publica o recibe debe caber ahí, o el firmware debe llamar a `setBufferSize()`. Ningún mensaje hacia la XIAO lleva miniaturas ni embeddings.
 - **Retained:** solo para estados (lo último que se sabe de algo). Nunca para eventos ni órdenes: un `cmd` retenido se volvería a ejecutar al reconectar.
+- **Los consumidores ignoran los mensajes con la bandera retain y los de payload vacío, en todo tópico cuya columna Retain sea "no" en la tabla de la sección 2 (obligación nueva de v0.5).** La ACL de Mosquitto no puede impedir el retain por tópico, así que quien tenga credenciales de un publicador (o su Will) podría dejar retenida una orden o una lectura falsa, que se repetiría en cada reconexión del consumidor. Por eso todo consumidor de esos tópicos ignora cualquier mensaje con retain y cualquiera con payload vacío (no es una orden ni una lectura válida), y no solo en los `*/cmd`: la XIAO en `aula/actuador/cmd`, el servicio de visión en `aula/vision/cmd` y en `aula/camara/pir`, y Node-RED en `aula/sesion/cmd`, `aula/camara/energia` y los demás. **Afecta al firmware de la XIAO y al servicio de visión (en `aula/camara/pir` y en `aula/vision/cmd`, además de las órdenes de la XIAO), que son de Gustavo.** Además, Node-RED, en cada conexión al broker (al arrancar y tras reconectar, por ejemplo al reiniciar Mosquitto), borra los retenidos que haya en `aula/actuador/cmd`, `aula/sesion/cmd`, `aula/vision/cmd`, `aula/camara/pir`, `aula/camara/energia` y `aula/vision/resultado` (este último desde v0.11; flujo "Limpieza de retenidos" de `flows.json`). **Esa limpieza provoca, en cada conexión al broker, un mensaje vacío en vivo (sin bandera retain) en cada tópico de su lista**, que los suscriptores deben ignorar por vacío. El flujo de ingesta descarta `aula/camara/energia` con retain (con aviso) y en silencio con payload vacío. **Ya descartan retain y lo vacío** los manejadores de `aula/vision/enrolamiento` y `aula/vision/embedding` de Node-RED (pestaña `Registro`, v0.7) y el de `aula/sesion/cmd` (pestaña `Sesiones`, v0.10). **Limitación mientras el broker de Node-RED siga en MQTT 3.1.1** (`protocolVersion 4`): un retenido publicado en vivo llega a los suscriptores conectados con `retain = false` (la opción `rap` no existe en 3.1.1), y la bandera solo se ve en la entrega inicial al (re)conectar. El descarte por retain de esos dos manejadores solo aplica entonces; no se pasa a MQTT 5 antes de la demo. **Ya descarta retain y lo vacío** también el manejador de `aula/vision/resultado` (pestaña `Pase de lista`, v0.11), con la misma limitación de MQTT 3.1.1; lo que sí cubre siempre es la ventana de 60 s de `ts` de la sección 4. **Pendiente:** los demás tópicos con Retain = no que la limpieza no cubre (`aula/vision/galeria/alta`, `aula/vision/galeria/baja`, `aula/pantalla/reinicio` y `aula/sistema/metricas`) deben descartar retain en el flujo que los consuma. La alternativa es ampliar la lista de la limpieza; se prefiere descartar en el consumidor, porque la limpieza solo borra al conectar y no protege entre conexiones.
 
 ## 2. Resumen de tópicos
 
 | Tópico | Publica | Consume | QoS | Retain |
 |---|---|---|---|---|
 | `aula/camara/pir` | XIAO | visión | 0 | no |
-| `aula/camara/energia` | XIAO | Node-RED | 0 | no |
-| `aula/camara/estado` | XIAO (+ LWT) | Node-RED, frontend | 1 | sí |
-| `aula/actuador/cmd` | Node-RED, pantalla, visión | XIAO | 1 | no |
-| `aula/actuador/estado` | XIAO | Node-RED, pantalla, frontend | 1 | sí |
-| `aula/vision/resultado` | visión | Node-RED, frontend (solo `modo: prueba`) | 1 | no |
+| `aula/camara/energia` | XIAO (y `simulador`, solo pruebas) | Node-RED | 0 | no |
+| `aula/camara/estado` | XIAO (+ LWT) | Node-RED | 1 | sí |
+| `aula/actuador/cmd` | Node-RED (incluye las órdenes del frontend), pantalla, visión | XIAO | 1 | no |
+| `aula/actuador/estado` | XIAO | Node-RED, pantalla | 1 | sí |
+| `aula/vision/resultado` | visión | Node-RED (el frontend recibe por la API los de `modo: prueba`) | 1 | no |
 | `aula/vision/cmd` | Node-RED | visión | 1 | no |
-| `aula/vision/enrolamiento` | visión | frontend, pantalla | 0 | no |
+| `aula/vision/enrolamiento` | visión | pantalla, Node-RED (el frontend lo recibe por la API) | 0 | no |
 | `aula/vision/embedding` | visión | Node-RED | 1 | no |
-| `aula/vision/estado` | visión (+ LWT) | Node-RED, frontend | 1 | sí |
+| `aula/vision/estado` | visión (+ LWT) | Node-RED (el frontend lo recibe por la API) | 1 | sí |
 | `aula/vision/galeria/alta` | Node-RED | visión | 1 | no |
 | `aula/vision/galeria/baja` | Node-RED | visión | 1 | no |
-| `aula/sesion/cmd` | pantalla, frontend | Node-RED | 1 | no |
-| `aula/sesion/estado` | Node-RED | todos | 1 | sí |
+| `aula/sesion/cmd` | pantalla, Node-RED (a nombre del frontend) | Node-RED | 1 | no |
+| `aula/sesion/estado` | Node-RED | XIAO, pantalla | 1 | sí |
 | `aula/pantalla/reinicio` | Node-RED | pantalla | 1 | no |
-| `aula/sistema/metricas` | Orange Pi | Node-RED | 0 | no |
+| `aula/sistema/metricas` | Node-RED | Node-RED | 0 | no |
+
+**Nota (v0.8): la XIAO publica con QoS 0.** PubSubClient 2.8, la biblioteca del firmware (plan, sección 6.1), solo publica con QoS 0: `aula/actuador/estado` y `aula/camara/estado` en vivo salen con QoS 0 y retenidos, aunque la tabla diga 1. El LWT de `aula/camara/estado` sí se registra con QoS 1. Los consumidores no deben depender de la entrega QoS 1 de esos dos tópicos; el retenido deja el último valor en el broker. Si hace falta QoS 1 al publicar (o TLS), el firmware tendría que pasar a esp-mqtt.
 
 ## 3. Nodo de campo (XIAO ESP32S3)
 
@@ -85,10 +88,18 @@ Orden a los actuadores. Todos los campos son opcionales: solo se aplica lo que v
 |---|---|---|---|
 | `servo` | string | `abrir` | Abre 90°, espera 3 s y cierra solo. No hay `cerrar`. |
 | `led` | string | `azul`, `verde`, `rojo`, `ambar`, `apagado` | Patrones de la sección 6.1 del plan |
-| `buzzer` | int | `0`, `1`, `2` | **[decidir]** `1` = pitido corto de éxito, `2` = doble pitido de error |
+| `buzzer` | int | `0`, `1`, `2` | `0` = silencio, `1` = pitido corto de éxito, `2` = doble pitido de error (v0.11) |
 | `luz` | int | `0`, `1` | Tira LED de 12 V vía MOSFET |
 
-Publican: Node-RED (retroalimentación del pase de lista), la pantalla (botones "Abrir puerta" y "Probar luz LED") y el servicio de visión (solo `luz`, para la orquestación luz–captura).
+Publican: Node-RED (retroalimentación del pase de lista, con la tabla de la sección 4 en `aula/vision/resultado`, y las órdenes manuales que llegan del frontend por la API), la pantalla (botones "Abrir puerta" y "Probar luz LED") y el servicio de visión (solo `luz`, para la orquestación luz–captura).
+
+**Comportamiento de `luz` en la XIAO (v0.8; firmware de la tira en `firmware/xiao`).** Afecta al carril de Gustavo (visión): quien publique `luz:1` **no debe asumir que se aplicó**, y debe **reenviar `luz:1` antes de 360 s** si necesita la luz más tiempo.
+- **Apagado automático:** la tira se apaga sola a los 360 s del último `luz:1` y publica `aula/actuador/estado`. Cada `luz:1`, aunque ya esté encendida, reinicia el plazo. Los 360 s cubren con margen el vencimiento de 5 min del registro de 5 poses: la visión publica `luz:1` una sola vez al iniciar el registro y `luz:0` al terminar. Si la visión agrega un reenvío periódico de `luz:1`, el plazo se puede bajar.
+- **Apagado de seguridad:** si la XIAO pierde el Wi-Fi o el broker, apaga la tira; al reconectar publica el estado real. Una orden `luz:1` enviada mientras está desconectada (sesión limpia, QoS 1) se pierde.
+- **Descarte por ventana:** PubSubClient 2.8 no expone la bandera retain, así que la XIAO descarta todo mensaje de `aula/actuador/cmd` que llegue en los 1500 ms siguientes a suscribirse (donde llegaría un retenido). Es una heurística que aproxima la obligación de la sección 1, sin garantizarla: un retenido que llegue después de la ventana se aplicaría como una orden en vivo. A cambio se pierde una orden en vivo que coincida con la ventana, es decir, justo después de reconectar. Pendiente de medir en la placa.
+- **El firmware de la XIAO ya no ignora `servo`, `led` ni `buzzer`** (v0.12): los aplica. El estado que publica es completo.
+- **El LED azul y la sesión (v0.12).** La XIAO se suscribe a `aula/sesion/estado` (que es **retenido**) y enciende el LED azul mientras la sesión está activa. Ese retenido **sí se aplica**: es el estado de la sesión, no una orden, y su valor retenido es justo lo que hay que recuperar al reconectar. Con la sesión activa, el azul **manda sobre** el color de retroalimentación (verde, rojo o ámbar); al terminar la sesión, el LED vuelve al último color de retroalimentación pedido.
+- **Salud de la XIAO (v0.12):** el firmware publica `aula/camara/estado` solo al conectar (`{"en_linea":true}`, más el LWT `{"en_linea":false}`): **el latido de 30 s con `rssi`, `heap` y `temp` queda pendiente**.
 
 ### `aula/actuador/estado` (retenido)
 La XIAO lo publica cada vez que cambia un actuador.
@@ -96,6 +107,8 @@ La XIAO lo publica cada vez que cambia un actuador.
 ```json
 {"servo": "cerrado", "led": "azul", "luz": 0}
 ```
+
+**Estado completo (v0.12).** Desde el 4 nov el firmware de la XIAO controla el servo, el LED RGB y el buzzer, así que el estado lleva **los tres campos** (`servo`, `led` y `luz`), como en el ejemplo. Antes era parcial (`{"luz": N}`), porque la XIAO solo controlaba la tira: esa desviación queda cerrada. Cada publicación retenida **reemplaza** a la anterior, así que el estado siempre completo. La XIAO lo publica al cambiar cualquier actuador, al (re)conectar y como respuesta a toda orden válida.
 
 ## 4. Servicio de visión
 
@@ -127,6 +140,20 @@ Un mensaje por intento de reconocimiento, sea del pase de lista o de una prueba 
 
 **El umbral lo aplica el servicio de visión**, porque es el dueño del modelo y del umbral calibrado con LFW (los umbrales `reconocido` y `dudoso` viven en su configuración; Node-RED decide sobre `decision` y no compara números). Lo que Node-RED sí decide son las reglas de sesión: lista del grupo, duplicado y retardo. Los umbrales actuales son provisionales: la calibración con LFW es el hito del 18 de noviembre.
 
+**Consumo en Node-RED (v0.11; pestaña `Pase de lista`).** Se suscribe con QoS 1. Descarta, sin retroalimentación y con un aviso que nunca repite el contenido, el retain, el JSON inválido, los campos que no cumplan la tabla (`modo` distinto de `pase` y `prueba`; `decision` fuera de la lista; `cuenta` que no sea `null` ni 9 dígitos; `conf` que no sea `null` ni un número de -1 a 1, porque una similitud coseno sin parecido puede ser negativa; `lat_ms` que no sea un objeto; un `reconocido` sin `cuenta` o sin `conf`) y el payload vacío (en silencio). **`ts` es obligatorio** y debe estar a menos de 60 s del reloj de Node-RED, hacia atrás o hacia adelante: así cae un retenido viejo, una reentrega tardía y el `1970-01-01T00:00:00.000+00:00` de reserva de la visión (**afecta a la visión (Gustavo)**: sin una hora correcta, sus resultados no se registran). **Solo `modo: "pase"` registra asistencia;** `modo: "prueba"` se ignora por ahora (el reenvío al frontend con `POST /api/enrolamiento/probar` está pendiente). La sesión abierta y su tolerancia salen de la base; **sin sesión abierta no se registra ni se manda retroalimentación** (solo un aviso). La retroalimentación se publica en `aula/actuador/cmd` **después** de escribir en la base:
+
+| `decision` | Resultado | `aula/actuador/cmd` | Base |
+|---|---|---|---|
+| `reconocido`, `cuenta` del grupo de la sesión y aún no registrada | `presente` si `now()` ≤ `inicio` + `tol_min` minutos (reloj de la base), `retardo` si no | `{"servo":"abrir","led":"verde","buzzer":1}` | `asistencias` (`metodo = 'rostro'`, `confianza = conf`) |
+| `reconocido`, ya registrada en la sesión (también si llegan dos seguidos) | `duplicado` | `{"led":"rojo","buzzer":2}` | `intentos`, motivo `duplicado` |
+| `reconocido`, `cuenta` que no es del grupo de la sesión, o sin consentimiento o sin rostro vigentes en la base (por ejemplo, un rostro retirado cuya `baja` la visión aún no procesó) | `fuera_de_grupo` | `{"led":"rojo","buzzer":2}` | `intentos`, motivo `desconocido` (el `CHECK` de `motivo` no admite otro y la tabla no guarda la cuenta) |
+| `desconocido` | | `{"led":"rojo","buzzer":2}` | `intentos`, motivo `desconocido` |
+| `imagen_insuficiente` | | `{"led":"ambar"}` (se repite la captura) | `intentos`, motivo `imagen_insuficiente` |
+| `dudoso` | | `{"led":"ambar"}` | nada (el marcado manual, `marcar`, sigue como propuesta; el `CHECK` de `intentos.motivo` no tiene un motivo para la zona gris) |
+| `sin_rostro`, `error` | | nada (casi siempre fue un disparo del PIR sin nadie enfrente) | nada; solo un aviso |
+
+Un límite de entrada deja pasar a lo más 1 resultado cada 200 ms (5 por segundo) hacia la base y descarta los que lleguen antes (no los encola; la visión tarda unos 240 ms por ciclo, así que un resultado legítimo no se pierde): acota `intentos` a unas 430 000 filas al día (unos 43 MB). Si la escritura en la base falla no se publica retroalimentación: se registra el SQLSTATE y la persona puede volver a intentarlo. La lista de asistencia y el "último registro" de la pantalla necesitarían un tópico nuevo y un cambio de la ACL: quedan fuera de v0.11.
+
 ### `aula/vision/cmd`
 Órdenes de Node-RED al servicio de visión.
 
@@ -142,7 +169,7 @@ Un mensaje por intento de reconocimiento, sea del pase de lista o de una prueba 
 `nombre` va en `enrolar` para que la pantalla lo muestre en la guía de registro sin consultar la base. El servicio de visión lo copia al progreso del registro.
 
 ### `aula/vision/enrolamiento`
-Progreso del registro, un mensaje por cambio de estado. QoS 0: si se pierde uno, el siguiente lo corrige.
+Progreso del registro, un mensaje por cambio de estado. QoS 0: si se pierde uno, el siguiente lo corrige. Node-RED lo consume (v0.7): solo actualiza la inscripción abierta si la `cuenta` coincide y el `ts` no es anterior al inicio del registro (con 2 s de margen); descarta lo retenido y lo vacío. `completado` no cierra el registro en Node-RED, porque el embedding llega después y por otro tópico: lo cierra el embedding guardado, `cancelado` o `error`.
 
 ```json
 {
@@ -171,7 +198,7 @@ Progreso del registro, un mensaje por cambio de estado. QoS 0: si se pierde uno,
 | `miniatura` | string | no | JPEG en base64, como máximo 160×120 y unos 8 KB. Solo con `aceptada` o `rechazada`. La pantalla la ignora. El servicio de visión todavía no emite miniaturas. |
 
 ### `aula/vision/embedding`
-Embedding final de un registro. **El usuario MQTT del frontend no puede leer este tópico (ACL).**
+Embedding final de un registro. **Solo el usuario `nodered` puede leer este tópico (ACL, sección 6).** El frontend no es cliente MQTT y nunca lo recibe.
 
 ```json
 {"ts": "2026-11-04T09:12:33.120-06:00", "cuenta": "320068234", "dim": 512, "modelo": "w600k_mbf-uint8-v1", "embedding": [0.0123, -0.0456, "…"]}
@@ -186,7 +213,7 @@ Embedding final de un registro. **El usuario MQTT del frontend no puede leer est
 | `embedding` | float[] | sí | Normalizado L2, 4 decimales (unos 4 KB en JSON con 512 floats) |
 
 ### `aula/vision/estado` (retenido)
-Salud del servicio de visión, con LWT `{"en_linea": false}`. Le dice a Node-RED y al frontend si se puede registrar o pasar lista.
+Salud del servicio de visión, con LWT `{"en_linea": false}`. Le dice a Node-RED, y por la API al frontend, si se puede registrar o pasar lista.
 
 ```json
 {"ts": "2026-11-04T09:12:33.120-06:00", "en_linea": true, "modo": "inactivo", "galeria": 38, "modelo": "w600k_mbf-uint8-v1"}
@@ -213,12 +240,13 @@ La galería en RAM solo cambia por orden de Node-RED, que publica estos tópicos
 {"cuenta": "320068234"}
 ```
 
-- **`alta`:** Node-RED guardó el embedding de esa cuenta. La visión recarga la galería completa con `GET /api/galeria` (unas 40 entradas). El mensaje no lleva el embedding: así no viaja otra vez por MQTT y la galería siempre sale de la base.
+- **`alta`:** Node-RED guardó el embedding de esa cuenta; también la publica para forzar una recarga de reconciliación cuando un retiro tardío (embedding guardado con el registro ya cerrado) no afectó ninguna fila, porque ya se había retirado o porque la cuenta tiene otro consentimiento. En ese caso la cuenta puede no tener rostro: la visión no debe suponer que existe. La visión recarga la galería completa con `GET /api/galeria` (unas 40 entradas). El mensaje no lleva el embedding: así no viaja otra vez por MQTT y la galería siempre sale de la base.
 - **`baja`:** se retiró el consentimiento de esa cuenta. La visión borra su entrada de la galería en RAM.
 - **Recarga completa** con `GET /api/galeria` también al arrancar y en cada reconexión al broker; cubre una `baja` perdida mientras la visión estaba desconectada.
-- Desde el 11 nov, `GET /api/galeria` exige `httpNodeAuth` y el encabezado `X-Galeria-Token` (`GALERIA_TOKEN`), que solo tienen Node-RED y la visión (plan, secciones 6.2 y 6.7).
+- `GET /api/galeria` exige el encabezado `X-Galeria-Token` igual a `GALERIA_TOKEN`, que solo tienen Node-RED y la visión, y **no** acepta las credenciales HTTP Basic del profesor (el resto de `/api/*` sí las exige; Node-RED lo resuelve con un `httpNodeMiddleware` propio y no con `httpNodeAuth`, que bloquearía a la visión). Sin token o con uno erróneo, 401. Es de solo lectura (`GET`): la cabecera `X-Pase-Lista: 1`, que el resto de la API exige en todo método que cambia datos (defensa contra CSRF, v0.6), no afecta a la visión. Implementado desde v0.6, desplegado y verificado en la placa el 2 de noviembre de 2026 (plan, secciones 6.2 y 6.7).
+- **Respuesta (200, `application/json`):** `{"embeddings":[{"cuenta":"320068234","embedding":[...]}]}`, un elemento por alumno con consentimiento y embedding no nulo, ordenado por cuenta; sin ninguno, `{"embeddings":[]}`. `cuenta` es el string de 9 dígitos y `embedding` es un arreglo de 512 números JSON. Es la primera de las formas que acepta `orangepi/vision/src/gallery_store.cpp`, así que la visión no necesita cambios.
 
-## 5. Borde (Node-RED, pantalla, Orange Pi)
+## 5. Edge (Node-RED, pantalla, Orange Pi)
 
 ### `aula/sesion/cmd`
 ```json
@@ -226,22 +254,35 @@ La galería en RAM solo cambia por orden de Node-RED, que publica estos tópicos
 {"accion": "terminar"}
 {"accion": "marcar", "cuenta": "320068234"}
 ```
-`marcar` **[propuesta]** es el registro manual del profesor desde la pantalla para la zona gris (paso 7 de la sección 5.1 del plan); se guarda con `metodo: "manual"`.
+`marcar` **[propuesta]** es el registro manual del profesor desde la pantalla para la zona gris (paso 7 de la sección 5.1 del plan); se guarda con `metodo: "manual"`. **Node-RED todavía no lo implementa (v0.10): lo descarta con un aviso.**
+
+**Validación en Node-RED (v0.10).** Se descartan, sin publicar nada, los mensajes con retain, con payload vacío, con JSON inválido o que no sean un objeto, y los de una `accion` que no sea `iniciar` ni `terminar` (en minúsculas). `iniciar` exige `materia` y `grupo` como texto no vacío de hasta 40 caracteres (cuentan los caracteres, no los bytes), sin caracteres de control ni invisibles (se normaliza a NFC y se recortan los espacios de los extremos), y `tol_min` como entero de 0 a 600; todos son obligatorios. Si el estado resultante no cupiera en el búfer de 256 bytes de la XIAO (sección 1), también se descarta: con materia y grupo ASCII de 40 caracteres cabe. **Un segundo `iniciar` válido que llegue a menos de 5 s del último aceptado se descarta** (con aviso en el log de Node-RED; lo mide con el reloj de la placa, así que un salto de reloj solo puede dejarlo pasar). El límite frena un goteo de órdenes y cubre la reentrega duplicada de un QoS 1; la pantalla ya pide doble toque para iniciar. `terminar` no tiene ese límite y ignora los campos de más. Quien publica (la pantalla) no recibe respuesta: el resultado se ve en `aula/sesion/estado`.
 
 ### `aula/sesion/estado` (retenido)
 ```json
 {"activa": true, "id": 12, "materia": "FSE", "grupo": "1", "inicio": "…", "tol_min": 10}
 {"activa": false, "id": 12}
 ```
-Va retenido para que la XIAO y la pantalla recuperen el estado al reconectar (LED azul). Al publicarse `activa: false` se genera el reporte.
+Va retenido, con QoS 1, para que la XIAO y la pantalla recuperen el estado al reconectar (LED azul). Al publicarse `activa: false` se genera el reporte.
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `activa` | bool | `true` con una sesión abierta |
+| `id` | int | `sesiones.id`. Con `activa: false` es el de la última sesión cerrada; se omite si la base no tiene ninguna |
+| `materia`, `grupo` | string | Solo con `activa: true` |
+| `inicio` | string | Solo con `activa: true`. ISO 8601 en UTC con desfase explícito, sin fracción de segundo (`"2026-11-04T15:10:00+00:00"`) |
+| `tol_min` | int | Solo con `activa: true`. Tolerancia en minutos (`sesiones.tolerancia_min`) |
+
+Node-RED lo publica **después** de escribir en la base, así que el retenido nunca adelanta a la base. Se publica `{"activa": true, ...}` al iniciar y `{"activa": false, "id": N}` al terminar (el reporte se genera de la sesión cerrada `N`). Si `iniciar` cierra una sesión olvidada, también se genera el reporte de esa. **`terminar` sin sesión abierta** no cambia la base ni genera reporte; Node-RED lee el estado real de la base y lo vuelve a publicar (inactivo con el `id` de la última sesión), lo que corrige un retenido viejo. Si una escritura falla (por ejemplo, dos `iniciar` simultáneos que violan el índice de una sola sesión abierta), no se publica el estado que se esperaba: se publica el que dice la base. **Reconciliación:** en cada conexión de Node-RED al broker (al arrancar, al desplegar y al reconectar, por ejemplo tras reiniciar Mosquitto) y mientras la consulta falle (cada 15 s), Node-RED publica el estado de la base: la sesión abierta, o el inactivo.
 
 ### `aula/pantalla/reinicio`
 ```json
 {"reiniciar": 1}
 ```
+QoS 1, sin retain. Lo publica Node-RED a mano, con el nodo `inject` "Reiniciar pantalla" del editor (pestaña `Sesiones`); no hay API. La pantalla descarta todo reinicio con retain (sección 1).
 
 ### `aula/sistema/metricas`
-Cada 10 s.
+Cada 10 s. Lo publica Node-RED con el usuario `nodered`, que ya tiene escritura en `aula/#`, con la temperatura, la CPU y la RAM de la placa. El flujo que lo publica aún no existe. Condición futura: si lo publica otro proceso del host, ese proceso necesita un usuario MQTT propio, y eso es un cambio de este contrato (sección 6) y de la ACL.
 ```json
 {"ts": "…", "temp": 52.1, "cpu": 34, "ram": 61}
 ```
@@ -249,15 +290,26 @@ Cada 10 s.
 
 ## 6. Control de acceso (ACL de Mosquitto)
 
+La aplica `orangepi/mosquitto/acl` (versionado, sin secretos) con `acl_file`, y los usuarios salen del archivo de contraseñas que genera el entrypoint del broker. Los nombres de usuario son fijos; cada uno tiene su propia contraseña en `orangepi/.env` (`MQTT_<USUARIO>_PASSWORD`).
+
 | Usuario | Lee | Escribe |
 |---|---|---|
-| `xiao` | `aula/actuador/cmd`, `aula/sesion/estado` | `aula/camara/#`, `aula/actuador/estado` |
+| `xiao` | `aula/actuador/cmd`, `aula/sesion/estado` | `aula/camara/pir`, `aula/camara/energia`, `aula/camara/estado`, `aula/actuador/estado` |
 | `vision` | `aula/camara/pir`, `aula/vision/cmd`, `aula/vision/galeria/#` | `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/embedding`, `aula/vision/estado`, `aula/actuador/cmd` |
 | `nodered` | `aula/#` | `aula/#` |
 | `pantalla` | `aula/sesion/estado`, `aula/vision/enrolamiento`, `aula/actuador/estado`, `aula/pantalla/reinicio` | `aula/sesion/cmd`, `aula/actuador/cmd` |
-| `frontend` (WS) | `aula/vision/enrolamiento`, `aula/vision/resultado`, `aula/vision/estado`, `aula/sesion/estado`, `aula/actuador/estado`, `aula/camara/estado` | `aula/actuador/cmd`, `aula/sesion/cmd` |
+| `simulador` | nada | `aula/camara/energia` |
 
-El `frontend` nunca lee `aula/vision/embedding` ni `aula/vision/galeria/#`. Solo `nodered` publica en `aula/vision/galeria/#`: por eso `vision` escribe sus tópicos uno por uno y no `aula/vision/#`. **[decidir]** ¿El frontend publica directo en `aula/actuador/cmd`, o pasa por la API de Node-RED? Pasar por la API deja un solo punto de control y de registro.
+Notas:
+
+- **No hay usuario `frontend`.** El navegador no habla MQTT (decisión de Yordi, v0.5): todo pasa por la API HTTP de Node-RED, que publica en `aula/actuador/cmd` y `aula/sesion/cmd` con el usuario `nodered`. Eso deja un solo punto de control y de registro de las órdenes manuales, y resuelve el **[decidir]** de v0.4. El progreso en vivo del registro llega al frontend por sondeo: Node-RED guarda el último estado de `aula/vision/enrolamiento` y el frontend consulta `GET /api/enrolamiento/estado` (decidido en v0.7; los endpoints están en el plan, sección 6.7, no en este contrato).
+- `xiao` escribe los tres tópicos de cámara uno por uno y no `aula/camara/#`: es la clave que viaja en claro por la LAN, y así no sirve para publicar en tópicos que se añadan después bajo `aula/camara/`.
+- `simulador` lo usa solo `herramientas/simular_energia.sh`, para publicar lecturas falsas de energía. No lee nada.
+- Solo `nodered` publica en `aula/vision/galeria/#` y en `aula/vision/cmd`: por eso `vision` escribe sus tópicos uno por uno y no `aula/vision/#`. Solo `nodered` lee `aula/vision/embedding`.
+- **`use_username_as_clientid true`.** El broker usa el nombre de usuario como client id e ignora el que traiga el cliente (el `client_id` de `vision.conf`, el `clientid` del nodo MQTT de Node-RED). Consecuencia: dos clientes con el mismo usuario se expulsan entre sí (el segundo desconecta al primero, y si ambos reconectan solos se desconectan en bucle). Cada rol tiene una sola instancia; para depurar no se usa el usuario de un servicio en marcha.
+- Mosquitto descarta **en silencio** la publicación que la ACL deniega: el publicador no recibe error. Para comprobar un permiso, verificar con un suscriptor autorizado, no con el código de salida del publicador. Una suscripción denegada tampoco recibe mensajes.
+- El Will (LWT) también pasa por la ACL: el de `xiao` va en `aula/camara/estado` y el de `vision` en `aula/vision/estado`.
+- La ACL no impide el retain por tópico: los consumidores descartan lo retenido en los tópicos con Retain = no (sección 1).
 
 ## 7. Historial de cambios
 
@@ -267,3 +319,11 @@ El `frontend` nunca lee `aula/vision/embedding` ni `aula/vision/galeria/#`. Solo
 | v0.2 | `aula/galeria/cambio` se reemplaza por `aula/vision/galeria/alta` y `aula/vision/galeria/baja` (solo `cuenta`; la visión recarga con `GET /api/galeria`), acordado entre Gustavo y Yordi. En la ACL, `vision` escribe sus tópicos uno por uno y lee `aula/vision/galeria/#`; solo `nodered` publica en la galería. Se retira la acción `confirmar` de `aula/vision/cmd`: la advertencia de parecido es informativa |
 | v0.3 | El servicio de visión implementa el contrato: `decision` sustituye a `motivo` en `aula/vision/resultado` (el servicio es quien aplica los dos umbrales, `reconocido` y `dudoso`) y se añade `motivo` como detalle fino de la `decision`; `decision: "error"` con `motivo: "error_interno"` para el fallo interno; `ts` en los cuatro mensajes que publica el servicio (`resultado`, `enrolamiento`, `embedding` y `estado`); `aula/vision/estado` con `en_linea`, `modo`, `galeria` y `modelo`; `dim` y `modelo` en `aula/vision/embedding`; el nombre del comando `enrolar` se copia al progreso del registro; la quinta pose es `frente_2`; `cuenta_invalida` como motivo de `error` (extensión). El vocabulario de `motivo` del enrolamiento es el de este documento: una captura fallida es `fallo_captura` y un fallo interno del pipeline es `error` con `npu` |
 | v0.4 | Se fija la forma del estado de `aula/vision/estado`: el Will del broker lleva la forma **mínima** `{"en_linea": false}` (no puede llevar `ts` ni el resto, porque el Will se registra al conectar), mientras que el estado que publica el servicio y el estado final de la salida ordenada llevan el **esquema completo** (`ts`, `en_linea`, `modo`, `galeria`, `modelo`). `en_linea` es el único campo obligatorio del estado: el resto es opcional cuando `en_linea` es `false`, así que la forma mínima es válida para los consumidores. Se documenta que el servicio publica el estado en cada cambio de modo y que, en la salida ordenada, publica el estado final con `en_linea: false` **antes** de cerrar la conexión (la publicación es asíncrona y la desconexión es limpia, así que el Will no salta: sin eso quedaría retenido un "en línea" fantasma) |
+| v0.5 | Se activa la ACL de Mosquitto (sección 6) con un usuario por rol: `xiao`, `vision`, `nodered`, `pantalla` y `simulador` (nuevo, solo escribe `aula/camara/energia`). **Sin usuario `frontend`:** el navegador no habla MQTT y todo pasa por la API de Node-RED, que publica `aula/actuador/cmd` y `aula/sesion/cmd`; se resuelve así el **[decidir]** de v0.4. Se quita el listener WebSocket `9001` (sección 1). Los tópicos que listaban al frontend como consumidor directo (`aula/camara/estado`, `aula/actuador/estado`, `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/estado`) y como publicador (`aula/sesion/cmd`) pasan a la API; el mecanismo del progreso en vivo se decide el 11 nov. Se fija `use_username_as_clientid true` (el client id es el usuario; dos clientes con el mismo usuario se expulsan). Los consumidores de todo tópico con Retain = no ignoran los mensajes con retain y los de payload vacío (sección 1; afecta al firmware de la XIAO y al servicio de visión, incluidos `aula/camara/pir` y `aula/vision/cmd`). Node-RED borra los retenidos de los `*/cmd`, `aula/camara/pir` y `aula/camara/energia` en cada conexión al broker, lo que provoca un mensaje vacío en vivo en cada uno de esos tópicos. `xiao` escribe `aula/camara/pir`, `aula/camara/energia` y `aula/camara/estado` en vez de `aula/camara/#`. `aula/camara/energia` la publica también `simulador` (solo pruebas). El publicador de `aula/sistema/metricas` es Node-RED (usuario `nodered`, con la temperatura, la CPU y la RAM de la placa); el flujo que lo publica aún no existe, y no lleva usuario MQTT propio. Sin cambios en los payloads |
+| v0.6 | Se fija la forma de `GET /api/galeria` (sección 4): `{"embeddings":[{"cuenta","embedding"}]}`, que ya aceptaba el parser de la visión, y su autenticación: solo el encabezado `X-Galeria-Token`, sin HTTP Basic, mientras el resto de `/api/*` exige Basic del profesor (`httpNodeMiddleware` propio de Node-RED, no `httpNodeAuth`). Todo método que no sea `GET` ni `HEAD` exige además la cabecera `X-Pase-Lista: 1` (defensa contra CSRF; la visión solo hace `GET`). Sin cambios en los tópicos, los payloads MQTT ni la ACL. **Afecta a la visión (Gustavo)** solo en su documentación: `orangepi/vision/README.md` sigue llamando provisional al formato y menciona `httpNodeAuth` |
+| v0.7 | Node-RED consume `aula/vision/enrolamiento` y `aula/vision/embedding` (pestaña `Registro`). **El progreso en vivo llega al frontend por sondeo** (`GET /api/enrolamiento/estado`, cada ~1 s con un registro abierto): se cierra el "se decide el 11 nov" de v0.5. Los dos tópicos se descartan si traen retain (solo al (re)conectar, mientras el broker de Node-RED siga en MQTT 3.1.1: en vivo el retenido llega sin la bandera) o payload vacío. Se descartan también los mensajes cuyo `ts` falte o sea anterior al inicio del registro (con 2 s de margen) o posterior a la hora actual más 5 minutos; con una excepción: un embedding de la cuenta abierta cuyo `ts` sea ilegible, vacío o de antes de 2000 (la visión usa 1970 como hora de reserva) no se descarta en silencio, sino que cierra el registro como `embedding_invalido` y revierte el consentimiento, para que un `cancelado`, un `error` o un embedding de una sesión anterior de la misma cuenta no afecte al registro nuevo (**afecta a la visión (Gustavo)**: `ts` es obligatorio en ambos, y debe venir de un reloj correcto). **`completado` no cierra el registro en Node-RED**: la visión lo publica antes que el embedding y por otro tópico y otra QoS, sin garantía de orden, así que el registro lo cierra el embedding guardado, `cancelado`, `error`, la cancelación del profesor o el vencimiento. Al vencer el registro (5 minutos sin progreso) Node-RED publica `{"accion":"cancelar","cuenta"}` en `aula/vision/cmd`. Node-RED también valida el embedding: `dim` 512, 512 números, `modelo` y norma L2 igual a 1 con tolerancia de 0.01 (el contrato ya lo define normalizado), y publica `galeria/alta` solo si lo guardó con el registro aún abierto; si el registro ya estaba cerrado, retira el rostro y publica `galeria/baja`. Los códigos `vencido`, `no_guardado`, `embedding_invalido` y `desconocido` son solo de la API HTTP (el `motivo` de `GET /api/enrolamiento/estado`) y no viajan por MQTT. Sin cambios en los tópicos, los payloads ni la ACL |
+| v0.12 | La XIAO ya tiene el firmware completo del nodo de campo: tira LED, cámara con endpoint `/capture` firmado, PIR, servo, LED RGB y buzzer. **Sin cambios en los tópicos, la ACL ni los nombres de los campos**; lo que cambia es qué hace la XIAO con ellos: (1) `servo`, `led` y `buzzer` ya no se ignoran y el estado de `aula/actuador/estado` pasa de parcial (`{"luz": N}`) a completo (`{"servo", "led", "luz"}`), lo que cierra la desviación 3 anotada en v0.8; (2) la XIAO se suscribe a `aula/sesion/estado` (retenido) y enciende el LED azul con la sesión activa, y ese azul manda sobre el color de retroalimentación mientras dure; (3) el estado del buzzer queda aclarado: `0` = silencio (la semántica de `1` y `2` ya la fijó la v0.11). La firma HMAC-SHA256 de la petición de captura **no es un cambio de este contrato**: es HTTP, entre la XIAO y el servicio de visión (plan, sección 6.1) |
+| v0.8 | La XIAO ya tiene firmware de la tira LED (`firmware/xiao`; Yordi, con el acuerdo de Gustavo). **Sin cambios en los tópicos, la ACL ni la forma de los payloads de la tabla.** Se documentan sus límites: (1) la XIAO publica `aula/actuador/estado` y `aula/camara/estado` en vivo con QoS 0 por la limitación de PubSubClient 2.8 (el LWT va con QoS 1); (2) el estado es parcial, `{"luz": N}`, hasta que entren el servo y los LEDs; (3) descarta los mensajes de `aula/actuador/cmd` que llegan en los 1500 ms siguientes a suscribirse, porque la biblioteca no expone la bandera retain; (4) la tira se apaga sola a los 360 s del último `luz:1` (cubre con margen el vencimiento de 5 min del registro; la visión publica `luz:1` una sola vez) y también al perder el enlace con el broker; (5) hasta que entre el firmware de Gustavo, `aula/camara/estado` se publica solo al conectar, sin latido de 30 s ni `rssi`, `heap` ni `temp`. **Afecta al carril de Gustavo (visión y orquestación luz–captura):** no asumir que `luz:1` se aplicó y reenviarlo antes de 360 s si hace falta más tiempo |
+| v0.9 | **Sin cambios en los tópicos, la ACL ni la forma de los payloads.** Cambia la semántica de `aula/vision/galeria/alta` (sección 4): además de "se guardó el embedding de esa cuenta", Node-RED la publica tras un retiro tardío que no afectó ninguna fila, para que la visión recargue la galería completa desde la base y quede igual que ella (si el rostro se retiró, desaparece; si hay un registro posterior válido, se conserva). La visión ya recarga con cualquier `alta` y no necesita cambios (`gallery_store.cpp`, `apply_add`). Con una fila afectada se sigue publicando `baja`. Se corrige además el estado de `GET /api/galeria` con token: desplegado y verificado en la placa el 2 de noviembre de 2026. |
+| v0.10 | **Sin cambios en los tópicos, la ACL ni la forma de los payloads de la tabla.** Node-RED implementa las sesiones (pestaña `Sesiones`) y precisa el contrato de la sección 5: (1) `aula/sesion/cmd` solo trae `iniciar` y `terminar`; `marcar` sigue como propuesta y se descarta con un aviso; la validación de `iniciar` (`materia` y `grupo` de 1 a 40 caracteres sin caracteres de control, `tol_min` entero de 0 a 600, todo obligatorio, y que el estado quepa en el búfer de 256 bytes de la XIAO); (2) la forma de `aula/sesion/estado` (`materia`, `grupo`, `inicio` y `tol_min` con la sesión activa; `id` de la última cerrada con la inactiva, omitido si no hay ninguna; `inicio` en UTC con `+00:00`); (3) `terminar` sin sesión abierta no genera reporte y republica el estado real; (4) la reconciliación de `aula/sesion/estado` con la base en cada conexión al broker; (5) un segundo `iniciar` válido a menos de 5 s del último aceptado se descarta; (6) `aula/pantalla/reinicio` lo publica un `inject` del editor, con QoS 1 y sin retain. Los consumidores de `aula/pantalla/reinicio` y `aula/sesion/cmd` ya descartaban lo retenido (sección 1); Node-RED descarta retain y lo vacío en `aula/sesion/cmd` |
+| v0.11 | **Sin cambios en los tópicos, la ACL ni la forma de los payloads de la tabla.** Node-RED implementa el pase de lista (pestaña `Pase de lista`): consume `aula/vision/resultado` y publica la retroalimentación en `aula/actuador/cmd` (sección 4). (1) Se cierra el **[decidir]** de `buzzer`: `1` = pitido corto de éxito, `2` = doble pitido de error. (2) `ts` es obligatorio en `aula/vision/resultado` y debe estar a menos de 60 s del reloj de Node-RED, hacia atrás o hacia adelante: con el `1970` de reserva de la visión el resultado se descarta (**afecta a la visión (Gustavo)**). (3) Solo `modo: "pase"` registra asistencia; `modo: "prueba"` se ignora (el reenvío al frontend queda pendiente). (4) La retroalimentación sigue la tabla de la sección 4; sin sesión abierta no se registra ni se manda nada. (5) Node-RED descarta retain y lo vacío también en `aula/vision/resultado`, y la limpieza de retenidos agrega ese tópico a su lista (el mensaje vacío en vivo que provoca en cada conexión lo descarta la validación, en silencio; ningún otro consumidor lee ese tópico). (6) `reconocido` exige que la cuenta tenga consentimiento y rostro vigentes en la base, además de ser del grupo de la sesión. (7) Límite de entrada de 5 resultados por segundo (200 ms entre mensajes), con descarte. La lista y el "último registro" de la pantalla quedan pendientes: necesitan un tópico nuevo y un cambio de ACL |

@@ -20,6 +20,8 @@
 #   docker compose exec postgres sh /docker-entrypoint-initdb.d/02-roles.sh
 #   docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "CREATE INDEX IF NOT EXISTS metricas_energia_origen_hora_idx ON metricas_energia (origen, hora DESC, id DESC)"'
 # (02-roles.sh se puede repetir: crea el rol si falta y actualiza su contraseña.)
+# La zona horaria de la base (America/Mexico_City) también se fija en schema.sql: en
+# un volumen existente, ver "Volúmenes existentes" en README.md.
 # La alternativa es "docker compose down -v", que borra TODOS los datos.
 #
 # Falla con un mensaje claro si falta PORTAINER_ADMIN_PASSWORD (un secreto con
@@ -29,8 +31,8 @@ x-portainer-clave-obligatoria: ${PORTAINER_ADMIN_PASSWORD:?falta PORTAINER_ADMIN
 #
 # Imágenes fijadas por digest. Para actualizar una, cambiar etiqueta y digest.
 # La de Node-RED se construye aquí: tras cambiar nodered/settings.js,
-# nodered/Dockerfile o el lock, subir el sufijo de la etiqueta (5.0.9-1, -2...)
-# y ejecutar "docker compose up -d --build".
+# nodered/Dockerfile, el lock o algo de web/, subir el sufijo de la etiqueta
+# (5.0.9-1, -2...) y ejecutar "docker compose up -d --build".
 name: pase-lista
 
 # Rotación de logs de Docker para todos los servicios: 3 archivos de 1 MiB por
@@ -47,22 +49,35 @@ services:
     restart: unless-stopped
     logging: *logging
     environment:
-      MQTT_USER: ${MQTT_USER:?falta MQTT_USER en orangepi/.env}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:?falta MQTT_PASSWORD en orangepi/.env}
-    # entrypoint.sh crea el archivo de contraseñas desde MQTT_USER y
-    # MQTT_PASSWORD y luego arranca el broker (command).
+      MQTT_XIAO_PASSWORD: ${MQTT_XIAO_PASSWORD:?falta MQTT_XIAO_PASSWORD en orangepi/.env}
+      MQTT_VISION_PASSWORD: ${MQTT_VISION_PASSWORD:?falta MQTT_VISION_PASSWORD en orangepi/.env}
+      MQTT_NODERED_PASSWORD: ${MQTT_NODERED_PASSWORD:?falta MQTT_NODERED_PASSWORD en orangepi/.env}
+      MQTT_PANTALLA_PASSWORD: ${MQTT_PANTALLA_PASSWORD:?falta MQTT_PANTALLA_PASSWORD en orangepi/.env}
+      MQTT_SIMULADOR_PASSWORD: ${MQTT_SIMULADOR_PASSWORD:?falta MQTT_SIMULADOR_PASSWORD en orangepi/.env}
+    # entrypoint.sh crea el archivo de contraseñas con los cinco usuarios del
+    # contrato (xiao, vision, nodered, pantalla y simulador), copia el archivo de
+    # ACL y luego arranca el broker (command).
     entrypoint: ["/bin/sh", "/mosquitto/entrypoint.sh"]
     command: ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
     ports:
       - "1883:1883"   # MQTT
-      - "9001:9001"   # MQTT sobre WebSocket (frontend)
+    # El archivo de contraseñas, su temporal en texto plano y la copia de la ACL
+    # viven en RAM: nada de esto llega a la microSD. uid/gid 1883 es el usuario
+    # "mosquitto" de la imagen, que lee estos archivos tras soltar privilegios.
+    tmpfs:
+      - /run/mosquitto:mode=0700,uid=1883,gid=1883
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./mosquitto/entrypoint.sh:/mosquitto/entrypoint.sh:ro
+      - ./mosquitto/acl:/mosquitto/acl:ro
       - mosquitto_data:/mosquitto/data
     healthcheck:
+      # Sin credenciales: con use_username_as_clientid, un cliente con el usuario
+      # de un servicio lo expulsaría cada 60 s. Un cliente anónimo debe ser
+      # rechazado (código 5, "not authorised"): eso prueba que el broker contesta
+      # y que sigue sin admitir anónimos. Cualquier otro código es un fallo.
       # Cliente "healthcheck" para reconocerlo en el log del broker.
-      test: ["CMD-SHELL", "mosquitto_sub -i healthcheck -h localhost -u \"$$MQTT_USER\" -P \"$$MQTT_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 5 >/dev/null"]
+      test: ["CMD-SHELL", "mosquitto_pub -i healthcheck -h localhost -t healthcheck -n >/dev/null 2>&1; [ $$? -eq 5 ]"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -104,21 +119,32 @@ services:
     mem_limit: 384m
 
   nodered:
-    # Imagen propia con node-red-contrib-postgresql (nodered/Dockerfile).
-    build: ../nodered
-    image: pase-lista/nodered:5.0.9-3
+    # Imagen propia con node-red-contrib-postgresql y el frontend compilado
+    # (nodered/Dockerfile). El contexto sigue siendo nodered/: poner la raíz del
+    # repo metería orangepi/.env en el contexto. web/ entra como contexto
+    # adicional, que solo trae esa carpeta.
+    build:
+      context: ../nodered
+      additional_contexts:
+        web: ../web
+    image: pase-lista/nodered:5.0.9-20
     restart: unless-stopped
     logging: *logging
-    # Solo recibe lo que usa: MQTT, el rol de Node-RED en Postgres (no el
-    # superusuario) y las credenciales del editor.
+    # Solo recibe lo que usa: la contraseña de su usuario MQTT (nodered), el rol
+    # de Node-RED en Postgres (no el superusuario), las credenciales del editor y
+    # las de la API: el usuario del profesor (HTTP Basic) y el token de
+    # GET /api/galeria, que usa el servicio de visión (nodered/autenticacion-api.js).
+    # Sin ellas Node-RED no arranca: la API no se sirve sin autenticar.
     environment:
-      MQTT_USER: ${MQTT_USER:?falta MQTT_USER en orangepi/.env}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:?falta MQTT_PASSWORD en orangepi/.env}
+      MQTT_NODERED_PASSWORD: ${MQTT_NODERED_PASSWORD:?falta MQTT_NODERED_PASSWORD en orangepi/.env}
       POSTGRES_DB: ${POSTGRES_DB:?falta POSTGRES_DB en orangepi/.env}
       NODERED_DB_USER: ${NODERED_DB_USER:?falta NODERED_DB_USER en orangepi/.env}
       NODERED_DB_PASSWORD: ${NODERED_DB_PASSWORD:?falta NODERED_DB_PASSWORD en orangepi/.env}
       NODERED_ADMIN_USER: ${NODERED_ADMIN_USER:?falta NODERED_ADMIN_USER en orangepi/.env}
       NODERED_ADMIN_PASSWORD: ${NODERED_ADMIN_PASSWORD:?falta NODERED_ADMIN_PASSWORD en orangepi/.env}
+      NODERED_PROFESOR_USER: ${NODERED_PROFESOR_USER:?falta NODERED_PROFESOR_USER en orangepi/.env}
+      NODERED_PROFESOR_PASSWORD: ${NODERED_PROFESOR_PASSWORD:?falta NODERED_PROFESOR_PASSWORD en orangepi/.env}
+      GALERIA_TOKEN: ${GALERIA_TOKEN:?falta GALERIA_TOKEN en orangepi/.env}
       # Nombres y direcciones del certificado HTTPS (subjectAltName). Si cambia,
       # settings.js regenera el certificado al reiniciar.
       NODERED_TLS_SAN: ${NODERED_TLS_SAN:-DNS:localhost,IP:127.0.0.1}
@@ -137,8 +163,8 @@ services:
       TZ: America/Mexico_City
     ports:
       # HTTPS con certificado autofirmado (se genera al primer arranque): el
-      # navegador avisa una vez; con curl usar -k. Editor (con adminAuth), API
-      # y archivos estáticos van todos por este puerto.
+      # navegador avisa una vez; con curl usar -k. Editor (con adminAuth, en /),
+      # API (/api/...) y frontend (/app/) van todos por este puerto.
       - "1880:1880"
     volumes:
       - ../nodered/flows:/flows
@@ -156,6 +182,11 @@ services:
       retries: 3
       start_period: 60s
     mem_limit: 384m
+    # Defensa en profundidad del nodo exec (plan, sección 13): si algo desbocara procesos o hilos
+    # dentro del contenedor (un bucle que lanzara python3, una bomba de forks), el tope evita que
+    # agote la tabla de procesos de la placa. Node-RED con sus hilos (libuv, V8, el pool de
+    # Postgres) y un python3 a la vez usa unas decenas; 256 deja holgura sin dejar de ser un tope.
+    pids_limit: 256
 
   portainer:
     image: portainer/portainer-ce:2.45.3@sha256:3609c307943bca8e5c492f69ddd6965df177208b50678a4cff28391c8dd4e96e

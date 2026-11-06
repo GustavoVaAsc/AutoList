@@ -30,6 +30,19 @@ web/dist/
 web/build/
 orangepi/vision/build/
 
+# Artefactos del firmware de la XIAO: el .bin, el .elf y los .cpp
+# preprocesados llevan el SSID y las claves en claro, como secrets.h. El build
+# del firmware va a un directorio temporal, pero esto cubre que alguien use
+# --build-path dentro del repo.
+firmware/**/build/
+firmware/**/build*/
+firmware/**/out/
+firmware/**/sketch/
+firmware/**/*.bin
+firmware/**/*.elf
+firmware/**/*.ino.cpp
+firmware/**/*.merged.cpp
+
 # Sistema
 .DS_Store
 Thumbs.db
@@ -41,3 +54,10 @@ nodered/flows/.flows*.backup
 nodered/flows/*.$$$
 # Red de seguridad: las credenciales de Node-RED viven en el volumen /data, no aquí
 nodered/flows/*_cred.json
+
+# Entorno virtual de la pantalla
+orangepi/pantalla/.venv/
+__pycache__/
+
+# Secretos del firmware de la XIAO (Wi-Fi y clave MQTT de xiao): solo se versiona secrets.h.example
+firmware/**/secrets.h
