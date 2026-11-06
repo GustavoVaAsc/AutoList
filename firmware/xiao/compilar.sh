@@ -17,6 +17,9 @@
 set -euo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Los scripts de Python que hacen de puente con el JSON de la CLI viven en
+# herramientas/, cada uno en su archivo (no en linea dentro de este script).
+HERRAMIENTAS="$RAIZ/herramientas"
 
 ARDUINO_CLI="${ARDUINO_CLI:-arduino-cli}"
 VERSION_CLI="1.5.1"
@@ -38,8 +41,7 @@ URL_ESPRESSIF="https://espressif.github.io/arduino-esp32/package_esp32_index.jso
 # Espressif. La firma GPG del índice no se verifica (limitación asumida, ver el
 # README), así que al menos se comprueba que el índice sirve este paquete y no
 # otro. Para re-derivar el valor:
-#   curl -fsSL "$URL_ESPRESSIF" | python3 -c "import json,sys; d=json.load(sys.stdin); \
-#     print([p for p in d['packages'] if p['name']=='esp32'][0]['platforms'][0]['checksum'])"
+#   curl -fsSL "$URL_ESPRESSIF" | herramientas/sha256_del_core.py esp32 3.3.12
 SHA256_CORE="87401004f279a206781e368b66098a8383b7cf87cce7811a6afd0163503fa78f"
 # Identidad USB de la placa, según el modo USB con el que se flashea:
 #   303a:1001  USB Serial/JTAG del ROM (USBMode=hwcdc, el que fijan los scripts)
@@ -134,50 +136,16 @@ fi
 # toolchain, anotada en el README). La lista de URLs se lee en JSON, porque
 # `config get` la devuelve en YAML y la salida se colaría como si fuera una URL.
 URLS="$("$ARDUINO_CLI" --json config get board_manager.additional_urls 2>/dev/null || echo '[]')"
-if ! printf '%s' "$URLS" | python3 -c '
-import json, sys
-url = sys.argv[1]
-try:
-    urls = json.load(sys.stdin)
-except ValueError:
-    sys.exit(1)
-sys.exit(0 if isinstance(urls, list) and url in urls else 1)
-' "$URL_ESPRESSIF"; then
+if ! printf '%s' "$URLS" | "$HERRAMIENTAS/config_tiene_url.py" "$URL_ESPRESSIF"; then
   "$ARDUINO_CLI" config add board_manager.additional_urls "$URL_ESPRESSIF" >/dev/null
 fi
 
 version_core() {
-  "$ARDUINO_CLI" --json core list 2>/dev/null | python3 -c '
-import json, sys
-try:
-    datos = json.load(sys.stdin)
-except ValueError:
-    sys.exit(1)
-for plataforma in datos.get("platforms", []):
-    if plataforma.get("id") == sys.argv[1]:
-        print(plataforma.get("installed_version", ""))
-        break
-' "$CORE_ID"
+  "$ARDUINO_CLI" --json core list 2>/dev/null | "$HERRAMIENTAS/version_core.py" "$CORE_ID"
 }
 
 version_biblioteca() {
-  "$ARDUINO_CLI" --json lib list 2>/dev/null | python3 -c '
-import json, sys
-try:
-    datos = json.load(sys.stdin)
-except ValueError:
-    sys.exit(1)
-nombre = sys.argv[1]
-versiones = [
-    entrada.get("library", {}).get("version", "")
-    for entrada in datos.get("installed_libraries", [])
-    if entrada.get("library", {}).get("name") == nombre
-]
-# Con dos versiones instaladas de la misma biblioteca, vale cualquiera de las
-# dos: la que se busca es la que se acaba de instalar.
-for version in versiones:
-    print(version)
-' "$1"
+  "$ARDUINO_CLI" --json lib list 2>/dev/null | "$HERRAMIENTAS/version_bibliotecas.py" "$1"
 }
 
 tiene_version() {
@@ -206,22 +174,8 @@ if [ "$(version_core || true)" != "$CORE_VERSION" ]; then
 
   # Ancla del paquete: el índice debe servir este sha256 para el core
   # fijado. Si no, el índice fue sustituido (o cambió el paquete).
-  CHECKSUM_INDICE="$(curl -fsSL --proto '=https' --proto-redir '=https' "$URL_ESPRESSIF" | python3 -c '
-import json, sys
-nombre, version = sys.argv[1], sys.argv[2]
-try:
-    datos = json.load(sys.stdin)
-except ValueError:
-    sys.exit(1)
-for paquete in datos.get("packages", []):
-    if paquete.get("name") != nombre:
-        continue
-    for plataforma in paquete.get("platforms", []):
-        if plataforma.get("version") == version:
-            print(plataforma.get("checksum", "").split(":")[-1].strip())
-            sys.exit(0)
-sys.exit(1)
-' esp32 "$CORE_VERSION" || true)"
+  CHECKSUM_INDICE="$(curl -fsSL --proto '=https' --proto-redir '=https' "$URL_ESPRESSIF" \
+    | "$HERRAMIENTAS/sha256_del_core.py" esp32 "$CORE_VERSION" || true)"
   if [ "$CHECKSUM_INDICE" != "$SHA256_CORE" ]; then
     echo "El índice de Espressif no sirve el core $CORE_VERSION esperado." >&2
     echo "  Sha256 del índice: ${CHECKSUM_INDICE:-desconocido}" >&2
@@ -293,52 +247,8 @@ fi
 # el nivel superior, y depende del modo USB (ver IDENTIDADES). Imprime un
 # puerto por línea; el shell decide qué hacer con la lista.
 puertos_de_la_placa() {
-  "$ARDUINO_CLI" board list --format json 2>/dev/null | python3 -c '
-import json, sys
-
-identidades = {i.lower() for i in sys.argv[1:]}
-try:
-    puertos = json.load(sys.stdin).get("detected_ports", [])
-except ValueError:
-    sys.exit(5)
-
-def normaliza(valor):
-    texto = str(valor or "").lower()
-    return texto[2:] if texto.startswith("0x") else texto
-
-coincidencias = []
-for puerto in puertos:
-    propiedades = puerto.get("properties", {}) or {}
-    identidad = normaliza(propiedades.get("vid")) + ":" + normaliza(propiedades.get("pid"))
-    nombre = str(puerto.get("board_name", "") or "")
-    direccion = puerto.get("address", "")
-    if direccion and (identidad in identidades or "XIAO_ESP32S3" in nombre.upper()):
-        coincidencias.append((
-            direccion,
-            identidad,
-            str(propiedades.get("serial_number", "") or ""),
-            "XIAO_ESP32S3" in nombre.upper(),
-        ))
-
-# Preferencia: los puertos que la CLI identificó como XIAO_ESP32S3. Si no hay
-# ninguno, vale cualquiera que coincida por VID:PID (el USB Serial/JTAG del
-# ROM, 303a:1001, lo comparten todas las ESP32-S3 de la familia).
-identificadas = [c for c in coincidencias if c[3]]
-if identificadas:
-    coincidencias = identificadas
-
-# Una sola placa física puede exponer varios puertos (consola y JTAG). Si
-# todos los que coinciden tienen el mismo número de serie, es una placa, y se
-# elige el puerto de la consola.
-seriales = {c[2] for c in coincidencias if c[2]}
-if len(seriales) == 1:
-    preferidos = [c for c in coincidencias if c[1] in ("303a:1001", "2886:0056")]
-    if preferidos:
-        coincidencias = preferidos
-
-for direccion in sorted({c[0] for c in coincidencias}):
-    print(direccion)
-' "${IDENTIDADES[@]}"
+  "$ARDUINO_CLI" board list --format json 2>/dev/null \
+    | "$HERRAMIENTAS/puertos_de_la_placa.py" "${IDENTIDADES[@]}"
 }
 
 PUERTOS_PLACA=""

@@ -40,6 +40,7 @@ Primera versión: controla la **tira LED de 12 V** por MQTT (campo `luz` de `aul
 | `logica_camara.h`, `logica_camara.cpp` | Lógica de la petición de captura: cabeceras, cadena canónica, firma, frescura y anti-replay. |
 | `captura.h`, `captura.cpp` | La parte con Arduino: la cámara y el endpoint HTTP `/capture` con su servidor en su propia tarea. |
 | `pruebas/test_logica_pir.cpp`, `pruebas/test_logica_actuadores.cpp`, `pruebas/test_hmac_sha256.cpp`, `pruebas/test_logica_camara.cpp` | Pruebas de host de cada módulo (`g++`, sin dependencias). |
+| `herramientas/*.py` | Los scripts de Python que hacen de puente con el JSON de `arduino-cli` (versiones instaladas, sha256 del core, puertos de la placa, URLs del índice). Cada uno en su archivo, con su uso en la cabecera. |
 | `compilar.sh` | Compila el sketch con `arduino-cli` y las versiones fijadas (core, bibliotecas y placa). |
 | `flashear.sh` | Compila y flashea por USB (busca la placa por su VID:PID). |
 | `instalar-arduino-cli.sh` | Instala `arduino-cli` en el usuario, sin `sudo`, en la versión fijada y con el sha256 comprobado. |
@@ -230,6 +231,8 @@ El toolchain va en el equipo que compila, nunca en la Orange Pi: en la placa no 
    ```bash
    ./compilar.sh
    ```
+
+   Los scripts de Python que usa están en `herramientas/` (uno por cosa: leer el JSON de la CLI, el sha256 del core, los puertos de la placa). No hay Python escrito dentro de los scripts de bash.
 
    El script comprueba que el core y las bibliotecas sean **exactamente** las versiones fijadas (y los instala o reemplaza si no lo son), avisa si `secrets.h` conserva los valores de ejemplo y compila con `PSRAM=opi`, `USBMode=hwcdc` y `PartitionScheme=default_8MB`. Se puede pasar la ruta a `arduino-cli` con la variable de entorno `ARDUINO_CLI`.
 
