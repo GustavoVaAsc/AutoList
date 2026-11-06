@@ -182,7 +182,7 @@ class Estado:
 
     Hueco de datos: `asistencia` (presentes, retardos y faltantes) y
     `ultimo_registro` (nombre y estado) no tienen fuente todavia: el contrato
-    no define un tópico para ellos y Node-RED no tiene flujos de sesiones. Las
+    no define un tópico para ellos (la sesión sí llega por aula/sesion/estado). Las
     vistas muestran "sin datos" mientras valgan None. Para conectarlos, agrega
     el tópico a SUSCRIPCIONES, un lector a _LECTORES y un caso en `aplicar`
     que los asigne (y cambia el contrato y la ACL si hace falta).
