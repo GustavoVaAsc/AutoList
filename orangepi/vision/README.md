@@ -596,6 +596,7 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 ## Lo que falta
 
 - Los modelos `.nb` (RetinaFace y `w600k_mbf`). Los adaptadores sobre la NPU ya existen (`NpuFaceDetector` y `NpuFaceEmbedder`, con el preproceso de imagen y el decodificador de RetinaFace en CPU), pero los supuestos sobre el `.nb` (disposición de la salida del detector, convenciones de decodificación, color y normalización de la entrada) están **PROVISIONALES** en los comentarios: hay que confirmarlos contra el modelo real en cuanto exista. Sin los modelos, el proceso de producción no arranca: solo arranca en `--dry-run`.
+- La conversión de los dos modelos a `.nb` (variantes, comandos, calibración y verificación con `nbinfo`): ver [conversion/README.md](conversion/README.md).
 - Scripts de prueba en la placa (broker de pruebas propio, arranque y parada del servicio) más allá de `tools/humo.sh` y `mqtt_probe`.
 - Miniaturas en el progreso del registro.
 - Chequeo antifraude.
