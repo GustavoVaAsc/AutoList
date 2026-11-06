@@ -4,7 +4,13 @@ Programa de la pantalla ILI9341 de AutoList (plan, sección 6.5). Corre en el ho
 
 **Estado.** El 4 nov se probó por primera vez la versión mínima (la pantalla de arranque con la hora) con la pantalla conectada: Yordi confirmó que se ve bien (texto, colores, orientación vertical y la hora avanza) y que, al recibir SIGTERM, el programa suelta las líneas DC (139) y RST (33). Esa prueba también dio por buena, de forma implícita, la hipótesis del CS0: la imagen se vio, así que el chip select que baja el kernel basta para la pantalla.
 
-Esta versión es el **menú base** del plan (sección 6.5): las vistas Sesión, Lista y Guía de registro, navegación con el táctil XPT2046 y un cliente MQTT con el usuario `pantalla`. Está verificada **sin la pantalla delante**: las pruebas unitarias (sin hardware ni broker), una corrida de 20 s sobre los dispositivos reales con una clave ficticia (abrió el SPI de la pantalla y del táctil y los GPIO, mostró "sin conexión" sin caerse, salió con 0 al recibir SIGTERM y soltó las líneas 32, 33 y 139) y el cliente MQTT contra un broker de pruebas mínimo. **Nadie ha visto aún cómo se ven las vistas ni ha tocado la pantalla**: el táctil y su calibración siguen sin probar. Ver [Sin verificar](#sin-verificar).
+Esta versión es el **menú base** del plan (sección 6.5): las vistas Sesión, Lista y Guía de registro, navegación con el táctil XPT2046 y un cliente MQTT con el usuario `pantalla`. Se verificó primero **sin la pantalla delante** (las pruebas unitarias, sin hardware ni broker; una corrida de 20 s sobre los dispositivos reales con una clave ficticia, que abrió el SPI de la pantalla y del táctil y los GPIO, mostró "sin conexión" sin caerse, salió con 0 al recibir SIGTERM y soltó las líneas 32, 33 y 139; y el cliente MQTT contra un broker de pruebas mínimo).
+
+El **5 nov se validó con la pantalla delante**: el táctil responde (TP_IRQ, la línea 32, baja al tocar; las lecturas son estables y no hay toques fantasma en reposo), la calibración quedó medida y se fijó como valores por defecto de `CONFIG`, las tres vistas se ven, los botones responden donde se tocan y el dibujo va fluido. Con el broker y la clave reales, el programa conecta y se suscribe: "Iniciar sesión" creó la sesión 17 en Node-RED y "Terminar" la cerró con su `sesion-17.csv` (comprobado en los logs de Node-RED), y el botón "Reiniciar pantalla" del editor de Node-RED cerró el programa limpio (pantalla en negro, código 0). Con una clave equivocada se muestra "Credenciales rechazadas", sin caerse, y el programa sale con 0.
+
+La **Guía de registro se validó con mensajes simulados** de `aula/vision/enrolamiento`, publicados como el usuario `vision`: **no** con un registro real de la visión. Se comprobó el nombre largo con corte limpio por elipsis, las instrucciones de pose, el mensaje de rechazo con su motivo, el desenlace "registro completado" (se muestra 4 s y cierra sola), el botón "Salir de la guía" (funciona y no la reabre con los mensajes del mismo registro) y el aviso de orden rechazada.
+
+Ese día se corrigieron **dos defectos de maquetación**: el mensaje de rechazo de la Guía quedaba pegado al botón "Salir de la guía" (se subió 10 px; ahora deja de 10 a 13 px de aire) y el aviso "Registro rechazado por la visión" se cortaba con "..." en la línea de avisos (se acortó a "Registro rechazado"). Ver [Sin verificar](#sin-verificar).
 
 Aún no hay I²C ni RTC. La vista Lista y el "último registro" y el contador de presentes de Sesión no tienen fuente de datos (el contrato no define un tópico para ellos; la pestaña `Sesiones` de Node-RED ya publica `aula/sesion/estado`, verificada en la placa el 5 nov): muestran "sin datos". Ver [Huecos de datos](#huecos-de-datos).
 
@@ -187,7 +193,7 @@ Los valores por defecto están en la tabla `CONFIG` de `main.py`, el único luga
 | `PANTALLA_TACTIL_DISPOSITIVO` | `1` | `/dev/spidev3.1` |
 | `PANTALLA_TACTIL_IRQ` | `32` | Línea de TP_IRQ (pin 11); baja al tocar |
 | `PANTALLA_TACTIL_BAUDRATE` | `2000000` | Hz |
-| `PANTALLA_TACTIL_X_MIN`, `_X_MAX`, `_Y_MIN`, `_Y_MAX` | `200`, `3900`, `200`, `3900` | Calibración: el valor crudo del XPT2046 (0 a 4095) en los bordes de la pantalla, **después** de aplicar `CAMBIAR_EJES`. Valores de partida **sin calibrar** |
+| `PANTALLA_TACTIL_X_MIN`, `_X_MAX`, `_Y_MIN`, `_Y_MAX` | `228`, `3830`, `153`, `3742` | Calibración: el valor crudo del XPT2046 (0 a 4095) en los bordes de la pantalla, **después** de aplicar `CAMBIAR_EJES`. Medidos en esta placa el 5 nov con `calibrar_tactil.py`; valen con `PANTALLA_ROTACION=0` y hay que repetirlos si cambia la rotación o se remonta el panel |
 | `PANTALLA_TACTIL_CAMBIAR_EJES` | `0` | `1` si el eje X de la pantalla lo da el canal Y crudo del táctil |
 | `PANTALLA_TACTIL_INVERTIR_X`, `_INVERTIR_Y` | `0`, `0` | `1` si el crudo crece hacia la izquierda o hacia arriba |
 
@@ -195,7 +201,7 @@ La clave MQTT no está en esta tabla: llega por la credencial `mqtt_pantalla` o 
 
 ## Calibrar el táctil
 
-Los valores de partida son genéricos: cada panel y cada montaje dan otros. Se calibra con la pantalla delante y la unidad detenida (usan los mismos GPIO y el mismo bus). Desde `orangepi/pantalla/`:
+Los valores por defecto de `CONFIG` ya están medidos en esta placa (el 5 nov), así que no hace falta calibrar para usarla: recalibrar solo hace falta para otro panel u otro montaje, o si cambia `PANTALLA_ROTACION`. La calibración se hace con la pantalla delante y la unidad detenida (usan los mismos GPIO y el mismo bus). Desde `orangepi/pantalla/`:
 
 ```bash
 .venv/bin/python calibrar_tactil.py --crudo   # solo imprime el crudo mientras tocas; Ctrl+C sale
@@ -205,7 +211,7 @@ Los valores de partida son genéricos: cada panel y cada montaje dan otros. Se c
 - **`--crudo`** no usa la pantalla: imprime `x=... y=...` cada 100 ms mientras haya un dedo puesto. Sin tocar no debe imprimir nada (si imprime sin tocar, TP_IRQ está bajo todo el tiempo: revisa el cableado). Sirve para ver el rango de cada canal y qué eje corresponde a cuál tocando las esquinas.
 - **La guiada** dibuja una cruz verde en cada esquina (arriba a la izquierda, arriba a la derecha, abajo a la derecha, abajo a la izquierda), a 20 px del borde, y pide tocarla. Con las cuatro toma el crudo, deduce si hay que cambiar o invertir ejes, extrapola a los bordes e imprime las siete líneas `PANTALLA_TACTIL_*=valor`. Si las esquinas no son coherentes (por ejemplo, tocaste dos veces la misma), lo dice y no calibra. Después dibuja un punto verde donde detecta cada toque con esa calibración, para comprobarla: el punto debe aparecer bajo el dedo, también en los bordes.
 
-Las siete líneas se pegan en el archivo de entorno de la unidad (o en `Environment=`), o, cuando estén verificadas, como valores por defecto de `CONFIG` en `main.py` (hay una sola pantalla). Hay que repetirla si cambia `PANTALLA_ROTACION` o se remonta el panel.
+Las siete líneas se pegan en el archivo de entorno de la unidad (o en `Environment=`), o, cuando estén verificadas, como valores por defecto de `CONFIG` en `main.py` (hay una sola pantalla): aquí ya están fijadas en `CONFIG` con los valores medidos el 5 nov, y el archivo de entorno solo hace falta para cambiarlas. Hay que repetirla si cambia `PANTALLA_ROTACION` o se remonta el panel.
 
 ## Pruebas
 
@@ -220,7 +226,7 @@ Las siete líneas se pegan en el archivo de entorno de la unidad (o en `Environm
 |---|---|
 | `test_estado.py` | Lectura y descarte de los mensajes (vacíos, retenidos, JSON inválido, fuera de contrato), cambio de vista, la Guía (activación, desenlace, vencimiento, rechazo de órdenes), y cada botón con el payload que publica (iniciar y terminar con confirmación, abrir puerta, luz de prueba y su apagado), sin conexión incluido; el bloqueo del botón de sesión, la Guía (otra cuenta, techo, salir), el enfriamiento, `sucio` solo si cambia, la validación de `inicio`, `tol_min` e `id` y la limpieza de textos hostiles |
 | `test_cliente_mqtt.py` | Credenciales y suscripciones, reconexión, descarte de mensajes, no publicar sin conexión, que la clave no salga en el log y el cierre limpio; las credenciales rechazadas, la cola acotada, `detener()` con confirmación y un cliente de paho real contra un puerto cerrado |
-| `test_vistas.py` | Geometría de los botones (dentro de la pantalla, sin solaparse, blancos de al menos 38 px), textos de cada vista y que el dibujo funcione con textos largos o raros; `ajustar_texto` sin costo cuadrático, textos hostiles de punta a punta y el cuadro de error |
+| `test_vistas.py` | Geometría de los botones (dentro de la pantalla, sin solaparse, blancos de al menos 38 px), textos de cada vista, que el mensaje de la Guía no se pegue al botón "Salir de la guía" y que el aviso de una línea quepa entero en la línea de avisos, sin recortarse (el texto literal del aviso lo comprueba `test_estado.py`), y que el dibujo funcione con textos largos o raros; `ajustar_texto` sin costo cuadrático, textos hostiles de punta a punta y el cuadro de error |
 | `test_tactil.py` | Calibración (ida y vuelta), conversión a píxeles y detección del toque (rebotes, ruido, lecturas inválidas) |
 | `test_calibrar_tactil.py` | La herramienta de calibración con un usuario simulado |
 | `test_main.py` | Configuración (rangos, 78), falta de clave, el bucle (redibuja solo cuando cambia algo o cada segundo), toques que llegan a los botones, apagado por señal y por reinicio (limpia, libera, sale con 0) y los fallos de apertura o escritura (74); la clave (credencial de systemd, reserva, placeholder), el aviso de la luz de prueba al cerrar, el dibujo defensivo y el aviso del broker no local |
@@ -267,7 +273,7 @@ Si `status` muestra `Permission denied` al abrir un dispositivo, la causa más p
    sudoedit /etc/pase-lista/pantalla.clave      # pega la clave y guarda
    ```
 
-   `/etc/pase-lista` ya lo usa la unidad de visión (`vision.env`), así que el `install -d` solo hace falta si no existe. `EnvironmentFile` queda **solo para las variables `PANTALLA_*`** (calibración del táctil, materia y grupo; sin secretos, a partir de `pantalla.env.example`, `sudo install -m 644 -o root -g root pantalla.env.example /etc/pase-lista/pantalla.env`); lleva `-` para que su ausencia no impida arrancar. Sin `pantalla.clave`, systemd no arranca la unidad; con el archivo vacío o con el placeholder, el programa sale con 78 y no se relanza. La calibración del táctil es de esta placa, no del repo: el archivo de entorno es su lugar natural hasta que se fije en `CONFIG`.
+   `/etc/pase-lista` ya lo usa la unidad de visión (`vision.env`), así que el `install -d` solo hace falta si no existe. `EnvironmentFile` queda **solo para las variables `PANTALLA_*`** (materia, grupo y, solo si hay que cambiarla, la calibración del táctil; sin secretos, a partir de `pantalla.env.example`, `sudo install -m 644 -o root -g root pantalla.env.example /etc/pase-lista/pantalla.env`); lleva `-` para que su ausencia no impida arrancar. Sin `pantalla.clave`, systemd no arranca la unidad; con el archivo vacío o con el placeholder, el programa sale con 78 y no se relanza. La calibración del táctil ya está fijada en `CONFIG` con los valores medidos en esta placa el 5 nov: el archivo de entorno solo haría falta para cambiarla.
 
    **Opción para un aislamiento real:** correr la unidad con un usuario de sistema propio (por ejemplo `User=pantalla`, creado con `sudo useradd --system --no-create-home --shell /usr/sbin/nologin pantalla`, con `SupplementaryGroups=spi gpio`) y un checkout legible por él. Así la clave, el proceso y su entorno ya no son del uid `orangepi` (el del equipo y de Docker), y `pantalla.clave` se puede dejar legible solo por root. Cuesta: otro usuario que mantener, que el venv y el checkout de producción sean legibles por `pantalla`, y revisar `ProtectHome=read-only`. La decisión es de Arnau.
 2. **Red.** Nada: la unidad no restringe la red (`RestrictAddressFamilies`, `IPAddressDeny` ni `PrivateNetwork`), así que el TCP a `127.0.0.1:1883` ya funciona. Si se endurece, el cliente necesita `AF_INET` y también `AF_UNIX` (paho crea un `socketpair` para despertar su hilo de red).
@@ -277,13 +283,10 @@ Si `status` muestra `Permission denied` al abrir un dispositivo, la causa más p
 
 ## Sin verificar
 
-Falta la prueba con la pantalla delante. Lo que Yordi debe comprobar:
+Lo que falta comprobar:
 
-- **Cómo se ve cada vista** (Sesión con y sin sesión, y sin conexión; Lista; Guía de registro, incluidos un nombre largo y los mensajes de rechazo): legibilidad del texto a 240x320, que nada se corte ni se solape, el contraste, y que los blancos de los botones (de 38 a 42 px) se puedan pulsar con el dedo.
-- **El táctil**: que el TP_IRQ (línea 32) baje al tocar y que las lecturas sean estables; la calibración (ver [Calibrar el táctil](#calibrar-el-táctil)); que cada botón responda donde se ve, que un toque cuente una sola vez y que no haya toques fantasma con la pantalla en reposo.
-- **La fluidez**: el bucle redibuja la pantalla completa cada segundo y en cada cambio (unos 150 KB por el SPI a 40 MHz). Si al tocar se nota lento, es lo primero a medir.
-- **"Credenciales rechazadas"**: con una clave equivocada contra el broker real debe salir ese texto (con la clave ficticia, el CONNACK de Mosquitto es "Not authorized"; no se vio en pantalla).
-- **Guía**: que "Salir de la guía" quepa y responda, y qué hace un registro real si el último mensaje se pierde.
-- **Con un broker real y la clave real** (el 11 nov o cuando la unidad esté instalada): que conecte y se suscriba, que la Guía siga un registro real, que "Abrir puerta" y "Probar luz LED" lleguen a la XIAO, que "Iniciar sesión" publique (lo consume la pestaña `Sesiones` de Node-RED, verificada en la placa el 5 nov), que la vista Sesión muestre el `aula/sesion/estado` que publica Node-RED y que el reinicio por MQTT relance el programa.
-- **Convención de las poses**: si "izquierda" en el contrato es la izquierda del alumno o la de la imagen de la cámara. La guía dice "gira un poco la cabeza a la izquierda" sin flechas; si la visión usa la otra convención, hay que invertir el texto.
-- **Bajo systemd**: que la unidad arranque con `DevicePolicy=closed`, con `ProtectHome=read-only` y con los grupos `spi` y `gpio`, con el archivo de entorno de la propuesta. Con `Restart=always`, un `systemctl stop` no relanza el servicio y el código 78 tampoco, por `RestartPreventExitStatus=78`.
+- **La Guía de registro con un registro real**: el 5 nov se validó con mensajes simulados de `aula/vision/enrolamiento`, no con un registro real de la visión. Falta ver el ciclo completo con la visión.
+- **Convención de las poses**: si "izquierda" en el contrato es la izquierda del alumno o la de la imagen de la cámara (con la visión). La guía dice "gira un poco la cabeza a la izquierda" sin flechas; si la visión usa la otra convención, hay que invertir el texto.
+- **Con la XIAO en campo**: que "Abrir puerta" y "Probar luz LED" lleguen al nodo de campo, y que "Probar luz LED" se apague sola a los ~3 s (el 5 nov no se confirmó visualmente).
+- **Bajo systemd**: que la unidad con los cambios propuestos (`LoadCredential=`) arranque con `DevicePolicy=closed`, con `ProtectHome=read-only` y con los grupos `spi` y `gpio`, con el archivo de entorno de la propuesta. Con `Restart=always`, un `systemctl stop` no relanza el servicio y el código 78 tampoco, por `RestartPreventExitStatus=78`.
+- **El vencimiento de la Guía por silencio** (`PANTALLA_GUIA_VENCE_S`, 330 s): no se probó en placa; lo cubren las pruebas sin hardware.
