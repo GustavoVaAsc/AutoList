@@ -15,7 +15,9 @@ enum class QuantFormat { None, DynamicFixedPoint, Affine };
 // Descripcion de un tensor de entrada o salida de una red .nb.
 struct TensorInfo {
   std::string name;
-  std::vector<std::uint32_t> dims;  // orden de VIPLite: [w, h, c, n]
+  // Orden de VIPLite: de la dimension mas rapida a la mas lenta. La entrada puede ser
+  // planar [w, h, c, n] o intercalada [c, w, h, n] (ver vision::input_shape).
+  std::vector<std::uint32_t> dims;
   DataFormat format = DataFormat::Other;
   QuantFormat quant = QuantFormat::None;
   int fixed_point_pos = 0;   // solo DynamicFixedPoint: real = q * 2^-pos

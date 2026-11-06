@@ -259,6 +259,19 @@ int main(int argc, char** argv) {
     std::cerr << "[vision] no existe " << ruta_config
               << ": se usan los valores por omision (--dry-run)\n";
   }
+  // Los ordenes de color del detector y del embedder son obligatorios: no se deducen
+  // del modelo y equivocarlos degrada el resultado sin fallar. En produccion es un error
+  // de configuracion (78), como un archivo invalido; en --dry-run los modelos no se
+  // cargan, asi que solo se avisa.
+  if (!comprobar_colores_npu(config.npu, error)) {
+    if (!dry_run) {
+      std::cerr << "[vision] la configuracion " << ruta_config << " no es valida: " << error
+                << '\n';
+      return kSalidaConfig;
+    }
+    std::cerr << "[vision] AVISO: " << error << " (--dry-run: los modelos no se cargan)\n";
+  }
+  std::cerr << "[vision] npu: " << resumen_npu(config.npu) << '\n';
 
   // Una placa sin NTP ni RTC arranca en 1970. Solo se avisa: el pase de lista no
   // depende de la hora, pero el registro (embedding) fallaria con el motivo npu.
@@ -432,8 +445,8 @@ int main(int argc, char** argv) {
     // proceso avisa y termina: en produccion no se arranca a ciegas.
     try {
       driver_npu = std::make_unique<npu::Driver>();
-      // Los parametros vienen del bloque "npu" de la configuracion (por omision, los de
-      // siempre): el orden de color, el modo de escala y el tamano de entrada del
+      // Los parametros vienen del bloque "npu" de la configuracion: el orden de color
+      // (obligatorio, ya comprobado arriba), el modo de escala y el tamano de entrada del
       // detector (0 = el que tenga el .nb).
       NpuDetectorOptions opciones_detector;
       opciones_detector.input_width = config.npu.detector_width;
@@ -442,13 +455,12 @@ int main(int argc, char** argv) {
       opciones_detector.scale_mode = config.npu.scale_mode;
       detector_npu =
           std::make_unique<NpuFaceDetector>(*driver_npu, detector_nb, opciones_detector);
-      // El embedder es otro modelo: su color y su escala se pueden aparte (heredan los
-      // del detector si no se configuran) y su tamano de entrada (0 = el del .nb) ya no
-      // esta codificado.
+      // El embedder es otro modelo: su color, su escala y su tamano de entrada (0 = el
+      // del .nb) son suyos y no heredan los del detector.
       NpuEmbedderOptions opciones_embedder;
       opciones_embedder.input_width = config.npu.embed_width;
       opciones_embedder.input_height = config.npu.embed_height;
-      opciones_embedder.color_order = config.npu.embed_color_order;
+      opciones_embedder.color_order = config.npu.embed_color_order.value();
       opciones_embedder.scale_mode = config.npu.embed_scale_mode;
       embedder_npu = std::make_unique<NpuFaceEmbedder>(*driver_npu, embedding_nb,
                                                        opciones_embedder);

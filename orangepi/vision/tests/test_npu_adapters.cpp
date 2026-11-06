@@ -112,8 +112,19 @@ TEST(el_detector_rechaza_un_tamano_de_entrada_que_no_cuadra_con_el_modelo) {
   // Igual que el embedder: por omision se toma el tamano del .nb; un tamano pedido que
   // no cuadra se rechaza (el modelo del fabricante es de 224x224).
   vision::NpuDetectorOptions options;
+  // Con el color fijado, para que el rechazo sea por el tamano y no por la falta de color.
+  options.color_order = vision::ColorOrder::Bgr;
   options.input_width = 640;
   options.input_height = 640;
+  CHECK_THROWS(vision::NpuFaceDetector(driver, kModelo, options), std::invalid_argument);
+}
+
+// El orden de color no tiene valor por omision: sin el, el detector no arranca.
+TEST(el_detector_sin_orden_de_color_no_arranca) {
+  if (!hay_modelo()) return;
+  vision::npu::Driver driver;
+  const vision::NpuDetectorOptions options;
+  CHECK(!options.color_order.has_value());
   CHECK_THROWS(vision::NpuFaceDetector(driver, kModelo, options), std::invalid_argument);
 }
 
@@ -171,4 +182,34 @@ TEST(el_embedder_toma_el_tamano_de_entrada_del_modelo_cuando_se_pide_cero) {
   const cv::Mat imagen(224, 224, CV_8UC3, cv::Scalar(10, 20, 30));
   const std::vector<float> embedding = embedder.embed(imagen);
   CHECK(!embedding.empty());
+}
+
+// --- El detector real (RetinaFace del fabricante), si esta instalado --------------
+//
+// Con el .nb de produccion, el detector tiene que pasar la validacion de arranque (la
+// entrada intercalada y las tres salidas) y correr un fotograma. Las detecciones contra
+// la foto de la demo se comprueban a mano con apps/detector_prueba: el repo no lleva
+// fotos de personas.
+TEST(el_detector_real_arranca_y_corre_un_fotograma) {
+  const char* detector_nb = "/opt/autolist/models/detector.nb";
+  if (!std::filesystem::exists(detector_nb)) {
+    std::cout << "[npu] SALTADA: falta detector.nb\n";
+    return;
+  }
+  vision::npu::Driver driver;
+  vision::NpuDetectorOptions options;
+  options.color_order = vision::ColorOrder::Bgr;
+  vision::NpuFaceDetector detector(driver, detector_nb, options);
+  // Una imagen lisa del gris del relleno: no tiene caras.
+  const cv::Mat gris(480, 640, CV_8UC3, cv::Scalar(114, 114, 114));
+  const std::vector<vision::FaceDetection> detecciones = detector.detect(gris);
+  std::cout << "[npu] detector real sobre una imagen lisa: " << detecciones.size()
+            << " detecciones\n";
+  CHECK(detecciones.empty());
+  // Si alguna vez detectara algo, la caja tiene que quedar dentro de la imagen.
+  for (const vision::FaceDetection& d : detecciones) {
+    CHECK(std::isfinite(d.score));
+    CHECK(d.bbox.x >= 0.0f && d.bbox.x + d.bbox.width <= 639.0f + 1e-3f);
+    CHECK(d.bbox.y >= 0.0f && d.bbox.y + d.bbox.height <= 479.0f + 1e-3f);
+  }
 }

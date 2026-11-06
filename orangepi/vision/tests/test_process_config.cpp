@@ -296,35 +296,123 @@ TEST(url_admite_token_solo_con_https_o_localhost) {
 // --- Tercera ronda: el bloque "npu" ----------------------------------------------
 //
 // Los parametros de los adaptadores sobre la NPU (color, modo de escala y tamano de
-// entrada del detector) estaban codificados en el codigo. Ahora estan en el bloque
-// "npu" de la configuracion, que es opcional: si no esta, el comportamiento es el de
-// siempre.
+// entrada) estan en el bloque "npu". Los dos colores son obligatorios fuera de
+// --dry-run (comprobar_colores_npu) y el embedder no hereda nada del detector.
 TEST(config_carga_el_bloque_npu) {
   ProcessConfig config;
   std::string error;
   CHECK(parse_process_config(
       R"({"npu": {"color": "bgr", "escala": "arcface", "ancho": 320, "alto": 320}})",
       config, error));
-  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Bgr));
+  CHECK(config.npu.color_order.has_value());
+  CHECK_EQ(static_cast<int>(config.npu.color_order.value()), static_cast<int>(ColorOrder::Bgr));
   CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::ArcFace));
   CHECK_EQ(config.npu.detector_width, 320);
   CHECK_EQ(config.npu.detector_height, 320);
 }
 
-TEST(config_sin_bloque_npu_deja_los_valores_por_omision) {
+// Sin bloque "npu" el analisis no falla (el archivo es valido), pero los colores quedan
+// sin fijar: es comprobar_colores_npu quien decide.
+TEST(config_sin_bloque_npu_deja_los_colores_sin_fijar) {
   ProcessConfig config;
   std::string error;
   CHECK(parse_process_config(R"({"servicio": {"poll_ms": 50}})", config, error));
-  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Rgb));
+  CHECK(!config.npu.color_order.has_value());
+  CHECK(!config.npu.embed_color_order.has_value());
   CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::Auto));
-  // 0 = "el tamano que tenga el .nb": es lo que hace que el detector y el embedder
-  // funcionen con cualquier modelo sin tocar la configuracion.
+  CHECK_EQ(static_cast<int>(config.npu.embed_scale_mode), static_cast<int>(ScaleMode::Auto));
+  // 0 = "el tamano que tenga el .nb".
   CHECK_EQ(config.npu.detector_width, 0);
   CHECK_EQ(config.npu.detector_height, 0);
   CHECK_EQ(config.npu.embed_width, 0);
   CHECK_EQ(config.npu.embed_height, 0);
-  // El embedder hereda el color y la escala del detector.
-  CHECK_EQ(static_cast<int>(config.npu.embed_color_order), static_cast<int>(ColorOrder::Rgb));
+}
+
+// Fuera de --dry-run los dos colores son obligatorios: sin el bloque, sin "color" o sin
+// "embed_color" es un error de configuracion, con la clave que falta y el valor de los
+// modelos actuales en el mensaje.
+TEST(config_los_dos_colores_de_la_npu_son_obligatorios) {
+  ProcessConfig config;
+  std::string error;
+
+  CHECK(parse_process_config("{}", config, error));
+  CHECK(!comprobar_colores_npu(config.npu, error));
+  CHECK(error.find("npu.color") != std::string::npos);
+  CHECK(error.find("npu.embed_color") != std::string::npos);
+
+  CHECK(parse_process_config(R"({"npu": {"embed_color": "rgb"}})", config, error));
+  CHECK(!comprobar_colores_npu(config.npu, error));
+  CHECK(error.find("npu.color") != std::string::npos);
+  CHECK(error.find("\"bgr\"") != std::string::npos);
+  CHECK(error.find("embed_color") == std::string::npos);
+
+  CHECK(parse_process_config(R"({"npu": {"color": "bgr"}})", config, error));
+  CHECK(!comprobar_colores_npu(config.npu, error));
+  CHECK(error.find("npu.embed_color") != std::string::npos);
+  CHECK(error.find("\"rgb\"") != std::string::npos);
+
+  CHECK(parse_process_config(R"({"npu": {"color": "bgr", "embed_color": "rgb"}})", config,
+                             error));
+  error.clear();
+  CHECK(comprobar_colores_npu(config.npu, error));
+  CHECK(error.empty());
+}
+
+// Con los dos colores, cada uno es el suyo: el del embedder no copia el del detector en
+// ninguna direccion.
+TEST(config_el_color_del_embedder_no_hereda_el_del_detector) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"npu": {"color": "bgr", "embed_color": "rgb"}})", config,
+                             error));
+  CHECK_EQ(static_cast<int>(config.npu.color_order.value()), static_cast<int>(ColorOrder::Bgr));
+  CHECK_EQ(static_cast<int>(config.npu.embed_color_order.value()),
+           static_cast<int>(ColorOrder::Rgb));
+  CHECK(parse_process_config(R"({"npu": {"color": "rgb", "embed_color": "bgr"}})", config,
+                             error));
+  CHECK_EQ(static_cast<int>(config.npu.color_order.value()), static_cast<int>(ColorOrder::Rgb));
+  CHECK_EQ(static_cast<int>(config.npu.embed_color_order.value()),
+           static_cast<int>(ColorOrder::Bgr));
+}
+
+// La linea de arranque con el color y la escala resueltos de los dos modelos.
+TEST(config_el_resumen_de_la_npu_dice_color_y_escala_de_los_dos_modelos) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"npu": {"color": "bgr", "embed_color": "rgb", "embed_escala": "arcface"}})", config,
+      error));
+  CHECK_EQ(resumen_npu(config.npu),
+           std::string("detector: color bgr, escala auto; embedder: color rgb, escala arcface"));
+  CHECK(parse_process_config("{}", config, error));
+  CHECK_EQ(resumen_npu(config.npu), std::string("detector: color sin fijar, escala auto; "
+                                                "embedder: color sin fijar, escala auto"));
+}
+
+// El ejemplo versionado trae los valores de los modelos actuales y pasa la comprobacion.
+TEST(config_el_ejemplo_versionado_trae_los_colores_de_los_modelos) {
+  const std::filesystem::path ejemplo =
+      std::filesystem::path(VISION_SOURCE_DIR) / "vision.conf.example";
+  ProcessConfig config;
+  bool encontrado = false;
+  std::string error;
+  CHECK(load_process_config(ejemplo.string(), config, encontrado, error));
+  CHECK(encontrado);
+  CHECK(comprobar_colores_npu(config.npu, error));
+  CHECK_EQ(resumen_npu(config.npu),
+           std::string("detector: color bgr, escala auto; embedder: color rgb, escala arcface"));
+}
+
+// El embedder es otro modelo: su escala no se hereda de la del detector (el detector
+// del fabricante usa el byte crudo y el embedder EB necesita arcface). Sin
+// "embed_escala" queda en auto, que falla cerrado al arrancar si no se puede deducir.
+TEST(config_el_embedder_no_hereda_la_escala_del_detector) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"npu": {"color": "bgr", "escala": "ninguna", "embed_color": "rgb"}})", config,
+      error));
+  CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::None));
   CHECK_EQ(static_cast<int>(config.npu.embed_scale_mode), static_cast<int>(ScaleMode::Auto));
 }
 
@@ -335,9 +423,10 @@ TEST(config_el_bloque_npu_admite_los_parametros_del_embedder) {
       R"({"npu": {"color": "bgr", "escala": "arcface", "embed_color": "rgb",
                  "embed_escala": "unidad", "embed_ancho": 224, "embed_alto": 224}})",
       config, error));
-  CHECK_EQ(static_cast<int>(config.npu.color_order), static_cast<int>(ColorOrder::Bgr));
+  CHECK_EQ(static_cast<int>(config.npu.color_order.value()), static_cast<int>(ColorOrder::Bgr));
   CHECK_EQ(static_cast<int>(config.npu.scale_mode), static_cast<int>(ScaleMode::ArcFace));
-  CHECK_EQ(static_cast<int>(config.npu.embed_color_order), static_cast<int>(ColorOrder::Rgb));
+  CHECK_EQ(static_cast<int>(config.npu.embed_color_order.value()),
+           static_cast<int>(ColorOrder::Rgb));
   CHECK_EQ(static_cast<int>(config.npu.embed_scale_mode), static_cast<int>(ScaleMode::Unit));
   CHECK_EQ(config.npu.embed_width, 224);
   CHECK_EQ(config.npu.embed_height, 224);
@@ -351,6 +440,11 @@ TEST(config_rechaza_un_color_o_una_escala_desconocidos) {
   std::string error;
   CHECK(!parse_process_config(R"({"npu": {"color": "rgbx"}})", config, error));
   CHECK(error.find("npu.color") != std::string::npos);
+  // El mensaje nombra la clave que esta mal, no siempre "npu.color".
+  CHECK(!parse_process_config(R"({"npu": {"embed_color": "rgbx"}})", config, error));
+  CHECK(error.find("npu.embed_color") != std::string::npos);
+  CHECK(!parse_process_config(R"({"npu": {"embed_escala": "centrada"}})", config, error));
+  CHECK(error.find("npu.embed_escala") != std::string::npos);
   CHECK(!parse_process_config(R"({"npu": {"escala": "centrada"}})", config, error));
   CHECK(error.find("npu.escala") != std::string::npos);
   // Una clave desconocida dentro del bloque, tambien.

@@ -106,6 +106,10 @@ target_link_libraries(mqtt_probe PRIVATE PkgConfig::MOSQUITTO Threads::Threads)
 add_executable(npu_smoke apps/npu_smoke.cpp)
 target_link_libraries(npu_smoke PRIVATE vision_npu)
 
+# Diagnostico del detector: NpuFaceDetector sobre un .nb y una imagen.
+add_executable(detector_prueba apps/detector_prueba.cpp)
+target_link_libraries(detector_prueba PRIVATE vision_models)
+
 # --- Pruebas ----------------------------------------------------------------
 add_library(minitest_main STATIC tests/test_main.cpp)
 target_include_directories(minitest_main PUBLIC tests)
@@ -122,6 +126,8 @@ add_executable(test_core
   tests/test_tensor.cpp
   tests/test_wall_clock.cpp)
 target_link_libraries(test_core PRIVATE vision_core minitest_main)
+# Para que las pruebas lean el vision.conf.example versionado.
+target_compile_definitions(test_core PRIVATE VISION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME core COMMAND test_core)
 
 add_executable(test_service tests/test_service.cpp)

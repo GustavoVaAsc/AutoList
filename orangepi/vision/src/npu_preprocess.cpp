@@ -1,5 +1,6 @@
 #include "vision/npu_preprocess.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -103,7 +104,69 @@ bool rango_contiene(const RangoReal& contenedor, const RangoReal& contenido) {
          contenedor.maximo >= contenido.maximo - margen;
 }
 
+// Canales de la imagen que entra (BGR de OpenCV): es el valor que se busca en las
+// dimensiones del tensor para saber cual es la del canal.
+constexpr std::uint32_t kCanalesImagen = 3;
+
+// Nombre de la forma de cada disposicion, para los mensajes.
+const char* nombre_forma(InputLayout layout) {
+  return layout == InputLayout::Interleaved ? "[c, w, h, n]" : "[w, h, c, n]";
+}
+
+// Canal de la imagen BGR que va en el canal `canal` del tensor: con RGB el canal 0 del
+// tensor es el ultimo de la imagen.
+int canal_de_imagen(ColorOrder orden, int canal) {
+  return orden == ColorOrder::Rgb ? 2 - canal : canal;
+}
+
+// input_shape con el nombre del adaptador en el mensaje de error.
+InputShape interpretar_forma(const TensorInfo& info, const char* quien) {
+  const std::string prefijo = std::string(quien) + ": ";
+  if (info.dims.size() < 3) {
+    throw std::invalid_argument(prefijo + "el tensor de entrada necesita al menos 3 "
+                                "dimensiones ([w, h, c] o [c, w, h]): el tensor declara " +
+                                std::to_string(info.dims.size()));
+  }
+  const bool planar = info.dims[2] == kCanalesImagen;
+  const bool intercalada = info.dims[0] == kCanalesImagen;
+  if (planar && intercalada) {
+    throw std::invalid_argument(
+        prefijo + "la forma del tensor de entrada (" + texto_dims(info.dims) +
+        ") es ambigua: la primera y la tercera dimension valen 3 y no se sabe si es "
+        "planar [w, h, c, n] o intercalada [c, w, h, n]");
+  }
+  if (!planar && !intercalada) {
+    throw std::invalid_argument(
+        prefijo + "el tensor de entrada (" + texto_dims(info.dims) + ") no tiene 3 "
+        "canales ni en la tercera dimension (planar [w, h, c, n]) ni en la primera "
+        "(intercalada [c, w, h, n]); solo se soportan 3 canales (BGR o RGB)");
+  }
+  InputShape shape;
+  if (intercalada) {
+    shape.layout = InputLayout::Interleaved;
+    shape.channels = static_cast<int>(info.dims[0]);
+    shape.width = static_cast<int>(info.dims[1]);
+    shape.height = static_cast<int>(info.dims[2]);
+  } else {
+    shape.layout = InputLayout::Planar;
+    shape.width = static_cast<int>(info.dims[0]);
+    shape.height = static_cast<int>(info.dims[1]);
+    shape.channels = static_cast<int>(info.dims[2]);
+  }
+  shape.batch = info.dims.size() >= 4 ? static_cast<int>(info.dims[3]) : 1;
+  return shape;
+}
+
 }  // namespace
+
+std::string texto_dims(const std::vector<std::uint32_t>& dims) {
+  std::string texto;
+  for (std::size_t i = 0; i < dims.size(); ++i) {
+    if (i != 0) texto += "x";
+    texto += std::to_string(dims[i]);
+  }
+  return texto;
+}
 
 ScaleMode modo_escala_efectivo(ScaleMode modo, const TensorInfo& info) {
   if (!es_ocho_bits(info.format)) {
@@ -185,7 +248,14 @@ ScaleMode modo_escala_efectivo(ScaleMode modo, const TensorInfo& info) {
 }
 
 void ajustar_tamano_entrada(int& ancho, int& alto, const TensorInfo& info, const char* quien) {
-  const InputShape shape = input_shape(info);
+  const InputShape shape = interpretar_forma(info, quien);
+  if (shape.width < kMinLadoEntrada || shape.height < kMinLadoEntrada) {
+    throw std::invalid_argument(
+        std::string(quien) + ": el tensor de entrada (" + texto_dims(info.dims) +
+        ") se interpreta como " + std::to_string(shape.width) + "x" +
+        std::to_string(shape.height) + " y un modelo de rostro necesita al menos " +
+        std::to_string(kMinLadoEntrada) + " pixeles por lado");
+  }
   if (ancho <= 0) ancho = shape.width;
   if (alto <= 0) alto = shape.height;
   if (ancho != shape.width || alto != shape.height) {
@@ -197,17 +267,7 @@ void ajustar_tamano_entrada(int& ancho, int& alto, const TensorInfo& info, const
 }
 
 InputShape input_shape(const TensorInfo& info) {
-  if (info.dims.size() < 3) {
-    throw std::invalid_argument("input_shape: el tensor de entrada necesita al menos 3 "
-                                "dimensiones [w, h, c]: el tensor declara " +
-                                std::to_string(info.dims.size()));
-  }
-  InputShape shape;
-  shape.width = static_cast<int>(info.dims[0]);
-  shape.height = static_cast<int>(info.dims[1]);
-  shape.channels = static_cast<int>(info.dims[2]);
-  shape.batch = info.dims.size() >= 4 ? static_cast<int>(info.dims[3]) : 1;
-  return shape;
+  return interpretar_forma(info, "input_shape");
 }
 
 RangoReal rango_tensor(const TensorInfo& info) {
@@ -285,8 +345,9 @@ void validar_tensor_entrada(const TensorInfo& info, const PreprocessOptions& opt
                                   std::string(to_string(info.format)) +
                                   ", que no se soporta (solo fp32, fp16, uint8 e int8)");
   }
-  // 2. Dimensiones: tres canales y un lote de 1.
-  const InputShape shape = input_shape(info);
+  // 2. Dimensiones: la disposicion (planar o intercalada, o falla cerrado si no se
+  //    deduce), tres canales y un lote de 1.
+  const InputShape shape = interpretar_forma(info, quien);
   if (shape.width <= 0 || shape.height <= 0) {
     throw std::invalid_argument(prefijo + "el tensor de entrada tiene dimensiones no validas (" +
                                 std::to_string(shape.width) + "x" +
@@ -311,7 +372,8 @@ void validar_tensor_entrada(const TensorInfo& info, const PreprocessOptions& opt
                                 std::to_string(bytes) + " bytes y el techo es " +
                                 std::to_string(kMaxBytesPreproceso));
   }
-  // 3.bis El numero de elementos tiene que ser EXACTAMENTE el de la forma [w, h, c, n].
+  // 3.bis El numero de elementos tiene que ser EXACTAMENTE el de la forma ([w, h, c, n]
+  //     o [c, w, h, n]).
   //     Si el .nb declara dimensiones extra, el driver reserva un buffer mucho mayor
   //     que el que usa el preproceso (un .nb manipulado con [112,112,3,1,65535,1]
   //     pediria 2,4 GB en una placa de 4 GB).
@@ -322,7 +384,8 @@ void validar_tensor_entrada(const TensorInfo& info, const PreprocessOptions& opt
   if (info.element_count != 0 && info.element_count != elementos) {
     throw std::invalid_argument(prefijo + "el tensor de entrada declara " +
                                 std::to_string(info.element_count) +
-                                " elementos y su forma [w, h, c, n] son " +
+                                " elementos y su forma " + nombre_forma(shape.layout) +
+                                " son " +
                                 std::to_string(elementos) +
                                 ": el buffer del driver seria mayor que el que usa el "
                                 "preproceso");
@@ -383,16 +446,31 @@ std::vector<float> preprocess_to_floats(const cv::Mat& bgr, const TensorInfo& in
     cv::resize(bgr, resized, cv::Size(shape.width, shape.height), 0.0, 0.0, cv::INTER_LINEAR);
   }
 
-  // Escritura en el orden [w, h, c, n]: canal a canal, no intercalado.
   const std::size_t por_canal =
       static_cast<std::size_t>(shape.width) * static_cast<std::size_t>(shape.height);
   std::vector<float> valores(por_canal * static_cast<std::size_t>(shape.channels) *
                              static_cast<std::size_t>(shape.batch));
   std::size_t escritura = 0;
+  if (shape.layout == InputLayout::Interleaved) {
+    // Escritura en el orden [c, w, h, n]: pixel a pixel (fila a fila) y, dentro de cada
+    // pixel, sus canales seguidos.
+    for (int n = 0; n < shape.batch; ++n) {
+      for (int y = 0; y < shape.height; ++y) {
+        const cv::Vec3b* fila = resized.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < shape.width; ++x) {
+          for (int canal = 0; canal < shape.channels; ++canal) {
+            valores[escritura++] = escala(
+                modo, static_cast<float>(fila[x][canal_de_imagen(options.color_order, canal)]));
+          }
+        }
+      }
+    }
+    return valores;
+  }
+  // Escritura en el orden [w, h, c, n]: canal a canal.
   for (int n = 0; n < shape.batch; ++n) {
     for (int canal = 0; canal < shape.channels; ++canal) {
-      // Con RGB el canal 0 del tensor es el ultimo de la imagen BGR.
-      const int canal_imagen = options.color_order == ColorOrder::Rgb ? 2 - canal : canal;
+      const int canal_imagen = canal_de_imagen(options.color_order, canal);
       for (int y = 0; y < shape.height; ++y) {
         const cv::Vec3b* fila = resized.ptr<cv::Vec3b>(y);
         for (int x = 0; x < shape.width; ++x) {
@@ -419,6 +497,101 @@ std::vector<std::uint8_t> preprocess_to_bytes(const cv::Mat& bgr, const TensorIn
     bytes.resize(info.size_bytes, 0);
   }
   return bytes;
+}
+
+Letterbox calcular_letterbox(int ancho_imagen, int alto_imagen, int ancho_entrada,
+                             int alto_entrada) {
+  if (ancho_imagen <= 0 || alto_imagen <= 0 || ancho_entrada <= 0 || alto_entrada <= 0) {
+    throw std::invalid_argument("letterbox: la imagen " + std::to_string(ancho_imagen) + "x" +
+                                std::to_string(alto_imagen) + " o la entrada " +
+                                std::to_string(ancho_entrada) + "x" +
+                                std::to_string(alto_entrada) + " no son validas");
+  }
+  // La misma aritmetica que la demo (retinaface_pre.cpp:48-58): las dos escalas se
+  // comparan en double, la menor (para que la imagen quepa entera) se guarda en float y
+  // el lado reducido es round(float * lado).
+  const double escala_filas = static_cast<double>(alto_entrada) / alto_imagen;
+  const double escala_columnas = static_cast<double>(ancho_entrada) / ancho_imagen;
+  const float escala =
+      static_cast<float>(escala_filas < escala_columnas ? escala_filas : escala_columnas);
+  Letterbox letterbox;
+  letterbox.ancho_redimensionado =
+      static_cast<int>(std::round(escala * static_cast<float>(ancho_imagen)));
+  letterbox.alto_redimensionado =
+      static_cast<int>(std::round(escala * static_cast<float>(alto_imagen)));
+  if (letterbox.ancho_redimensionado < 1 || letterbox.alto_redimensionado < 1) {
+    throw std::invalid_argument("letterbox: la imagen " + std::to_string(ancho_imagen) + "x" +
+                                std::to_string(alto_imagen) +
+                                " es demasiado alargada para una entrada de " +
+                                std::to_string(ancho_entrada) + "x" +
+                                std::to_string(alto_entrada));
+  }
+  // La demo pone arriba round(relleno/2 - 0.1) y abajo round(relleno/2 + 0.1)
+  // (retinaface_pre.cpp:70-73): con un relleno impar, el pixel de mas va abajo (y a la
+  // derecha). Es la division entera que usa al deshacerlo (retinaface_post.cpp:263).
+  letterbox.relleno_izquierda = (ancho_entrada - letterbox.ancho_redimensionado) / 2;
+  letterbox.relleno_arriba = (alto_entrada - letterbox.alto_redimensionado) / 2;
+  letterbox.factor_x =
+      static_cast<float>(ancho_imagen) / static_cast<float>(letterbox.ancho_redimensionado);
+  letterbox.factor_y =
+      static_cast<float>(alto_imagen) / static_cast<float>(letterbox.alto_redimensionado);
+  return letterbox;
+}
+
+cv::Mat aplicar_letterbox(const cv::Mat& bgr, const Letterbox& letterbox, int ancho_entrada,
+                          int alto_entrada) {
+  if (bgr.empty()) {
+    throw std::invalid_argument("letterbox: la imagen esta vacia");
+  }
+  if (bgr.type() != CV_8UC3) {
+    throw std::invalid_argument("letterbox: la imagen debe ser BGR de 8 bits con 3 canales "
+                                "(CV_8UC3)");
+  }
+  const int derecha =
+      ancho_entrada - letterbox.ancho_redimensionado - letterbox.relleno_izquierda;
+  const int abajo = alto_entrada - letterbox.alto_redimensionado - letterbox.relleno_arriba;
+  if (letterbox.ancho_redimensionado < 1 || letterbox.alto_redimensionado < 1 ||
+      letterbox.relleno_izquierda < 0 || letterbox.relleno_arriba < 0 || derecha < 0 ||
+      abajo < 0) {
+    throw std::invalid_argument("letterbox: la geometria no cabe en la entrada de " +
+                                std::to_string(ancho_entrada) + "x" +
+                                std::to_string(alto_entrada));
+  }
+  // cv::resize con la interpolacion por omision (bilineal), como la demo.
+  cv::Mat reducida;
+  cv::resize(bgr, reducida,
+             cv::Size(letterbox.ancho_redimensionado, letterbox.alto_redimensionado));
+  cv::Mat entrada;
+  cv::copyMakeBorder(reducida, entrada, letterbox.relleno_arriba, abajo,
+                     letterbox.relleno_izquierda, derecha, cv::BORDER_CONSTANT,
+                     cv::Scalar(kRellenoLetterbox, kRellenoLetterbox, kRellenoLetterbox));
+  return entrada;
+}
+
+cv::Point2f deshacer_letterbox(const Letterbox& letterbox, const cv::Point2f& punto) {
+  return cv::Point2f(
+      (punto.x - static_cast<float>(letterbox.relleno_izquierda)) * letterbox.factor_x,
+      (punto.y - static_cast<float>(letterbox.relleno_arriba)) * letterbox.factor_y);
+}
+
+cv::Rect2f deshacer_letterbox(const Letterbox& letterbox, const cv::Rect2f& caja,
+                              int ancho_imagen, int alto_imagen) {
+  // std::clamp con el limite superior por debajo del inferior es comportamiento
+  // indefinido: la imagen tiene que tener al menos un pixel.
+  if (ancho_imagen <= 0 || alto_imagen <= 0) {
+    throw std::invalid_argument("letterbox: la imagen " + std::to_string(ancho_imagen) + "x" +
+                                std::to_string(alto_imagen) + " no es valida");
+  }
+  const cv::Point2f esquina0 = deshacer_letterbox(letterbox, cv::Point2f(caja.x, caja.y));
+  const cv::Point2f esquina1 = deshacer_letterbox(
+      letterbox, cv::Point2f(caja.x + caja.width, caja.y + caja.height));
+  const float max_x = static_cast<float>(ancho_imagen - 1);
+  const float max_y = static_cast<float>(alto_imagen - 1);
+  const float x0 = std::clamp(esquina0.x, 0.0f, max_x);
+  const float y0 = std::clamp(esquina0.y, 0.0f, max_y);
+  const float x1 = std::clamp(esquina1.x, 0.0f, max_x);
+  const float y1 = std::clamp(esquina1.y, 0.0f, max_y);
+  return cv::Rect2f(x0, y0, x1 - x0, y1 - y0);
 }
 
 }  // namespace vision

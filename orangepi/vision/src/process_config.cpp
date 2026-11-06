@@ -139,9 +139,18 @@ bool exigir(const bool condicion, const char* seccion, const char* clave, const 
   return false;
 }
 
-// Mapea la cadena del orden de color del bloque "npu" al enumerado. Un color
-// desconocido hace fallar la carga de la configuracion, como las demas claves.
-bool leer_color(const std::string& valor, ColorOrder& color, std::string& error) {
+// Lee un orden de color del bloque "npu" ("color" o "embed_color"). Si la clave no
+// esta, el color queda sin fijar (std::nullopt): no hay valor por omision, lo exige
+// comprobar_colores_npu. Un color desconocido hace fallar la carga de la configuracion,
+// como las demas claves.
+bool leer_color(const json& bloque, const char* clave, std::optional<ColorOrder>& color,
+                std::string& error) {
+  if (!bloque.contains(clave)) {
+    color.reset();
+    return true;
+  }
+  std::string valor;
+  if (!leer_string(bloque, "npu", clave, valor, error)) return false;
   if (valor == "rgb") {
     color = ColorOrder::Rgb;
     return true;
@@ -150,8 +159,23 @@ bool leer_color(const std::string& valor, ColorOrder& color, std::string& error)
     color = ColorOrder::Bgr;
     return true;
   }
-  error = "npu.color: se esperaba \"rgb\" o \"bgr\"";
+  error = ruta("npu", clave) + ": se esperaba \"rgb\" o \"bgr\"";
   return false;
+}
+
+const char* texto_color(const std::optional<ColorOrder>& color) {
+  if (!color.has_value()) return "sin fijar";
+  return *color == ColorOrder::Bgr ? "bgr" : "rgb";
+}
+
+const char* texto_escala(ScaleMode modo) {
+  switch (modo) {
+    case ScaleMode::Auto: return "auto";
+    case ScaleMode::None: return "ninguna";
+    case ScaleMode::Unit: return "unidad";
+    case ScaleMode::ArcFace: return "arcface";
+  }
+  return "auto";
 }
 
 // Mapea la cadena del modo de escala del bloque "npu" al enumerado. Una escala
@@ -395,8 +419,10 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   }
   if (!leer_string(bloque, "http", "ca_file", config.http.ca_file, error)) return false;
 
-  // Bloque "npu": los parametros de los adaptadores sobre la NPU. Es opcional: si no
-  // esta, se quedan los valores por omision (los de siempre).
+  // Bloque "npu": los parametros de los adaptadores sobre la NPU. Los dos colores no
+  // tienen valor por omision (quedan sin fijar si faltan; ver comprobar_colores_npu) y
+  // el embedder no hereda nada del detector: son dos modelos distintos, convertidos con
+  // ordenes de color y cuantizaciones de entrada distintos.
   if (!seccion(parsed, "npu", bloque, error)) return false;
   if (!solo_claves(bloque,
                    {"color", "escala", "ancho", "alto", "embed_color", "embed_escala",
@@ -404,27 +430,18 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
                    "npu", error)) {
     return false;
   }
-  std::string color = "rgb";
-  if (!leer_string(bloque, "npu", "color", color, error)) return false;
-  if (!leer_color(color, config.npu.color_order, error)) return false;
+  if (!leer_color(bloque, "color", config.npu.color_order, error)) return false;
   std::string escala = "auto";
   if (!leer_string(bloque, "npu", "escala", escala, error)) return false;
   if (!leer_escala(escala, config.npu.scale_mode, error)) return false;
   if (!leer_entero(bloque, "npu", "ancho", config.npu.detector_width, error)) return false;
   if (!leer_entero(bloque, "npu", "alto", config.npu.detector_height, error)) return false;
-  // El embedder hereda el color y la escala del detector si no se le dan los suyos: son
-  // dos modelos distintos y pueden tener cuantizaciones de entrada distintas.
-  config.npu.embed_color_order = config.npu.color_order;
-  config.npu.embed_scale_mode = config.npu.scale_mode;
-  if (bloque.contains("embed_color")) {
-    std::string valor;
-    if (!leer_string(bloque, "npu", "embed_color", valor, error)) return false;
-    if (!leer_color(valor, config.npu.embed_color_order, error)) return false;
-  }
-  if (bloque.contains("embed_escala")) {
-    std::string valor;
-    if (!leer_string(bloque, "npu", "embed_escala", valor, error)) return false;
-    if (!leer_escala(valor, config.npu.embed_scale_mode, error)) return false;
+  if (!leer_color(bloque, "embed_color", config.npu.embed_color_order, error)) return false;
+  std::string embed_escala = "auto";
+  if (!leer_string(bloque, "npu", "embed_escala", embed_escala, error)) return false;
+  if (!leer_escala(embed_escala, config.npu.embed_scale_mode, error)) {
+    error = "npu.embed_escala: se esperaba \"auto\", \"ninguna\", \"unidad\" o \"arcface\"";
+    return false;
   }
   if (!leer_entero(bloque, "npu", "embed_ancho", config.npu.embed_width, error)) return false;
   if (!leer_entero(bloque, "npu", "embed_alto", config.npu.embed_height, error)) return false;
@@ -448,6 +465,28 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
 
   out = std::move(config);
   return true;
+}
+
+bool comprobar_colores_npu(const NpuSettings& npu, std::string& error) {
+  std::string faltan;
+  if (!npu.color_order.has_value()) {
+    faltan += "npu.color (el orden de color del detector; el RetinaFace del fabricante "
+              "lleva \"bgr\")";
+  }
+  if (!npu.embed_color_order.has_value()) {
+    if (!faltan.empty()) faltan += " y ";
+    faltan += "npu.embed_color (el del embedder; w600k_mbf lleva \"rgb\")";
+  }
+  if (faltan.empty()) return true;
+  error = "falta " + faltan +
+          ": el orden de color no se deduce del modelo y no tiene valor por omision";
+  return false;
+}
+
+std::string resumen_npu(const NpuSettings& npu) {
+  return std::string("detector: color ") + texto_color(npu.color_order) + ", escala " +
+         texto_escala(npu.scale_mode) + "; embedder: color " +
+         texto_color(npu.embed_color_order) + ", escala " + texto_escala(npu.embed_scale_mode);
 }
 
 bool url_admite_token(const std::string& url) {

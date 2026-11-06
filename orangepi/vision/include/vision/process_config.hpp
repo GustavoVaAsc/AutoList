@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "vision/npu_preprocess.hpp"
@@ -79,33 +80,48 @@ struct HttpSettings {
   std::string ca_file;
 };
 
-// Bloque "npu": los parametros de los adaptadores sobre la NPU.
+// Bloque "npu": los parametros de los adaptadores sobre la NPU, que dependen de como se
+// convirtio cada .nb.
 //
-// Son los que hasta ahora estaban codificados en el codigo. Dependen del .nb real,
-// que todavia no existe: por eso estan en el archivo de configuracion y no hace falta
-// recompilar cuando llegue.
+// El orden de color NO tiene valor por omision: no se puede deducir del tensor y
+// equivocarlo no falla, degrada en silencio la deteccion o el embedding (fallo
+// abierto). Por eso "color" (detector) y "embed_color" (embedder) son OBLIGATORIAS
+// fuera de --dry-run: el analisis solo registra si estan (std::nullopt si no) y
+// comprobar_colores_npu decide. Los modelos actuales llevan "bgr" en el detector
+// (RetinaFace del fabricante) y "rgb" en el embedder (w600k_mbf de InsightFace).
 //
-// El bloque entero es opcional: si no esta, el comportamiento es el de siempre (RGB,
-// escala deducida del tensor y el tamano de entrada que tenga cada .nb).
+// El embedder es otro modelo: NO hereda nada del detector. Su escala por omision es
+// "auto", que se deduce de la cuantizacion de su tensor o falla cerrado al arrancar
+// (el EB, uint8 afin con zero_point 127, necesita "arcface").
 struct NpuSettings {
-  // "color": "rgb" (por omision) o "bgr".
-  ColorOrder color_order = ColorOrder::Rgb;
+  // "color": "rgb" o "bgr". Obligatoria fuera de --dry-run.
+  std::optional<ColorOrder> color_order;
   // "escala": "auto" (por omision, se deduce del tensor), "ninguna" (el byte crudo),
   // "unidad" (x/255) o "arcface" ((x-127.5)/127.5).
   ScaleMode scale_mode = ScaleMode::Auto;
-  // "ancho" y "alto": tamano de entrada del detector. 0 significa "el que tenga el .nb",
-  // que es lo que se usa por omision: las anclas se escalan al tamano de la entrada, asi
-  // que el detector funciona con cualquier tamano sin tocar la configuracion.
+  // "ancho" y "alto": tamano de entrada del detector. 0 (por omision) significa "el que
+  // tenga el .nb": las anclas se generan para ese tamano.
   int detector_width = 0;
   int detector_height = 0;
-  // El embedder es otro modelo, con su propia cuantizacion y su propio tamano de
-  // entrada. "embed_color" y "embed_escala" si no estan, heredan los del detector.
-  ColorOrder embed_color_order = ColorOrder::Rgb;
+  // "embed_color": "rgb" o "bgr". Obligatoria fuera de --dry-run.
+  std::optional<ColorOrder> embed_color_order;
+  // "embed_escala": como "escala", por omision "auto". No hereda la del detector.
   ScaleMode embed_scale_mode = ScaleMode::Auto;
   // "embed_ancho" y "embed_alto": tamano de entrada del embedder; 0 = el del .nb.
   int embed_width = 0;
   int embed_height = 0;
 };
+
+// Comprueba que el bloque "npu" trae los dos ordenes de color ("color" y
+// "embed_color"). Devuelve false y deja en `error` las claves que faltan y el valor que
+// llevan los modelos actuales. El proceso lo exige fuera de --dry-run (salida 78); en
+// --dry-run solo avisa, porque los modelos no se cargan.
+bool comprobar_colores_npu(const NpuSettings& npu, std::string& error);
+
+// Una linea con el color y la escala del detector y del embedder tal como quedan tras
+// el analisis ("sin fijar" si falta un color), para el registro de arranque. No lleva
+// rutas.
+std::string resumen_npu(const NpuSettings& npu);
 
 // La configuracion completa del proceso.
 struct ProcessConfig {

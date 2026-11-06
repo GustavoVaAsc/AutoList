@@ -1,7 +1,7 @@
-// Camara falsa: un servidor HTTP que devuelve una JPEG sintetica en GET /capture.
+// Camara falsa: un servidor HTTP que devuelve una JPEG sintetica (o una imagen dada) en GET /capture.
 // Simula a la XIAO para probar el servicio de vision sin la placa de campo.
 //
-// Uso: camara_falsa [--puerto N] [--host H] [--ancho W] [--alto H]
+// Uso: camara_falsa [--puerto N] [--host H] [--ancho W] [--alto H] [--imagen RUTA]
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -33,13 +33,14 @@ int main(int argc, char** argv) {
   std::string host = "127.0.0.1";
   int ancho = 640;
   int alto = 480;
+  std::string ruta_imagen;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--help" || arg == "-h") {
-      std::cout << "Uso: camara_falsa [--puerto N] [--host H] [--ancho W] [--alto H]\n"
+      std::cout << "Uso: camara_falsa [--puerto N] [--host H] [--ancho W] [--alto H] [--imagen RUTA]\n"
                    "\n"
-                   "Sirve una JPEG sintetica en GET /capture.\n";
+                   "Sirve una JPEG sintetica (o la imagen indicada) en GET /capture.\n";
       return 0;
     }
     if (arg == "--puerto" && i + 1 < argc) {
@@ -58,6 +59,10 @@ int main(int argc, char** argv) {
       alto = std::atoi(argv[++i]);
       continue;
     }
+    if (arg == "--imagen" && i + 1 < argc) {
+      ruta_imagen = argv[++i];
+      continue;
+    }
     std::cerr << "opcion desconocida: " << arg << '\n';
     return 2;
   }
@@ -67,9 +72,21 @@ int main(int argc, char** argv) {
   }
 
   std::vector<std::uint8_t> jpeg;
-  if (!cv::imencode(".jpg", imagen_sintetica(ancho, alto), jpeg)) {
-    std::cerr << "no se pudo codificar la imagen de prueba\n";
-    return 1;
+  if (!ruta_imagen.empty()) {
+    const cv::Mat img = cv::imread(ruta_imagen, cv::IMREAD_COLOR);
+    if (img.empty()) {
+      std::cerr << "no se pudo leer la imagen " << ruta_imagen << '\n';
+      return 1;
+    }
+    if (!cv::imencode(".jpg", img, jpeg)) {
+      std::cerr << "no se pudo codificar la imagen " << ruta_imagen << '\n';
+      return 1;
+    }
+  } else {
+    if (!cv::imencode(".jpg", imagen_sintetica(ancho, alto), jpeg)) {
+      std::cerr << "no se pudo codificar la imagen de prueba\n";
+      return 1;
+    }
   }
 
   httplib::Server server;

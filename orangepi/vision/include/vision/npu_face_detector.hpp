@@ -2,19 +2,21 @@
 
 // Adaptador del detector sobre la NPU: imagen BGR -> rostros.
 //
-// La imagen se preprocesa (resize al tamano del modelo, orden de color, escala y
-// cuantizacion), se pasa a la red .nb y la salida se decodifica en CPU con el
+// La imagen se preprocesa (letterbox al tamano del modelo con relleno 114, orden de
+// color, escala y cuantizacion, como la demo del fabricante), se pasa a la red .nb y
+// sus tres salidas (cajas, scores y landmarks) se decodifican en CPU con el
 // decodificador de RetinaFace (retinaface_decode.hpp): cajas, landmarks y supresion de
 // no maximos.
 //
 // Las detecciones se devuelven en pixeles de la imagen ORIGINAL que se paso: el
-// reescalado del modelo a la original se aplica al final.
+// letterbox se deshace al final y la caja se recorta a la imagen.
 //
 // NO es segura entre hilos: la usa el hilo de trabajo del servicio, el mismo que llama
 // a poll().
 
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -27,30 +29,31 @@
 namespace vision {
 
 struct NpuDetectorOptions {
-  // Tamano de la entrada del modelo. Por omision 640x640 (el RetinaFace clasico).
-  // Si se deja en 0 (o en negativo), se toma el del tensor del .nb. Se puede fijar en el
-  // archivo de configuracion (bloque "npu", claves "ancho" y "alto").
+  // Tamano de la entrada del modelo. Si se deja en 0 (o en negativo, el valor por
+  // omision), se toma el del tensor del .nb. Se puede fijar en el archivo de
+  // configuracion (bloque "npu", claves "ancho" y "alto").
   int input_width = 0;
   int input_height = 0;
-  // Orden de color del tensor de entrada (archivo de configuracion, bloque "npu",
-  // clave "color"). Por omision RGB.
-  ColorOrder color_order = ColorOrder::Rgb;
+  // Orden de color del tensor de entrada (archivo de configuracion, bloque "npu", clave
+  // "color", obligatoria). SIN valor por omision: no se deduce del modelo y equivocarlo
+  // no falla, degrada la deteccion. Si no se fija, el constructor lanza. El RetinaFace
+  // del fabricante espera BGR (REVERSE_CHANNEL = True en su config_yml.py).
+  std::optional<ColorOrder> color_order;
   // El modo de escala se deriva del tensor de entrada (Auto) salvo que se elija a mano
   // (archivo de configuracion, bloque "npu", clave "escala").
   ScaleMode scale_mode = ScaleMode::Auto;
-  // Disposicion de la salida del modelo (PROVISIONAL: ver DetectorLayout).
+  // Disposicion de la salida del modelo, con los indices de sus tres tensores de salida
+  // (ver DetectorLayout).
   DetectorLayout layout{};
-  // Tensor de salida que trae las cajas. Por omision el 0. Si el .nb expone el score y
-  // los landmarks en tensores aparte, se apuntan en el layout.
-  std::size_t output_index = 0;
 };
 
 // Red de deteccion sobre la NPU.
 //
-// Lanza std::invalid_argument si las opciones no cuadran con el .nb (tamano de entrada
+// Lanza std::invalid_argument si falta el orden de color, si las opciones no cuadran con
+// el .nb (tamano de entrada
 // distinto del del tensor, indice de salida fuera de rango, salida en un formato que
-// dequantize no sabe leer, numero de elementos de la salida que no cuadra con el
-// layout, o un tensor de entrada con un formato, unas dimensiones o un rango que no
+// dequantize no sabe leer, numero de elementos o forma de una salida que no cuadran con
+// el layout, o un tensor de entrada con un formato, unas dimensiones o un rango que no
 // valen) y npu::NpuError si el modelo no se puede cargar o preparar.
 class NpuFaceDetector final : public FaceDetector {
  public:

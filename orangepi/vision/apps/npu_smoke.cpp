@@ -18,7 +18,9 @@ namespace {
 using namespace vision;
 
 void print_tensor(const char* kind, std::size_t index, const TensorInfo& t) {
-  std::cout << kind << "[" << index << "] name=" << t.name << " dims(w,h,c,n)=";
+  // Las dimensiones en el orden de VIPLite, de la mas rapida a la mas lenta: en una
+  // entrada intercalada la primera es el canal (ver vision::input_shape).
+  std::cout << kind << "[" << index << "] name=" << t.name << " dims=";
   for (std::size_t i = 0; i < t.dims.size(); ++i) std::cout << (i ? "x" : "") << t.dims[i];
   std::cout << " format=" << to_string(t.format) << " quant=" << to_string(t.quant)
             << " scale=" << t.scale << " zero_point=" << t.zero_point

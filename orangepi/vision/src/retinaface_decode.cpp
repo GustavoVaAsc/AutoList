@@ -10,31 +10,51 @@ namespace vision {
 
 namespace {
 
-// Las varianzas estandar de RetinaFace: el peso de cada distancia (dx, dy, dw, dh).
-constexpr float kVarBox[4] = {0.1f, 0.2f, 0.3f, 0.3f};
-
-// Relacion de la segunda ancla de cada posicion (la misma area que la cuadrada).
-constexpr float kRatioAncla = 1.3f;
-
-// true si los 10 offsets de landmarks son finitos.
-bool landmarks_finitos(const float* offsets) {
-  for (std::size_t i = 0; i < 10; ++i) {
-    if (!std::isfinite(offsets[i])) return false;
+// La precondicion comun de decode_box y decode_landmarks (ver retinaface_decode.hpp):
+// los `n` valores crudos son finitos. La usan las dos (para lanzar) y el pipeline (para
+// descartar el ancla antes de llamarlas).
+bool valores_finitos(const float* valores, std::size_t n) {
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(valores[i])) return false;
   }
   return true;
 }
 
-// La entrada de referencia del RetinaFace clasico, para la que valen los tamanos base.
-constexpr float kEntradaDeReferencia = 640.0f;
+// true si la caja decodificada es finita: un valor crudo finito puede desbordar al
+// decodificar (exp(1000 * 0.2) es infinito en float).
+bool caja_decodificada_finita(const cv::Rect2f& caja) {
+  return std::isfinite(caja.x) && std::isfinite(caja.y) && std::isfinite(caja.width) &&
+         std::isfinite(caja.height);
+}
+
+// Lo mismo con los landmarks decodificados.
+bool puntos_finitos(const std::array<cv::Point2f, 5>& puntos) {
+  for (const cv::Point2f& punto : puntos) {
+    if (!std::isfinite(punto.x) || !std::isfinite(punto.y)) return false;
+  }
+  return true;
+}
+
+// El score de cara es la salida de un softmax: tiene que estar en (umbral, 1]. Escrito
+// asi, un NaN tampoco pasa (la comparacion con NaN es falsa), ni un infinito.
+bool score_valido(float score, float umbral) {
+  return score > umbral && score <= 1.0f;
+}
+
+// El tensor tiene que traer `por_ancla` valores por cada una de las `anclas`.
+void comprobar_valores(const DetectorTensor& tensor, const char* nombre, std::size_t anclas,
+                       std::size_t por_ancla) {
+  const std::size_t esperados = anclas * por_ancla;
+  if (tensor.values.size() != esperados) {
+    throw std::invalid_argument("decode_detector_outputs: el tensor de " + std::string(nombre) +
+                                " (salida " + std::to_string(tensor.index) + ") trae " +
+                                std::to_string(tensor.values.size()) + " valores y se esperan " +
+                                std::to_string(esperados) + " (" + std::to_string(anclas) +
+                                " anclas por " + std::to_string(por_ancla) + " valores)");
+  }
+}
 
 }  // namespace
-
-int values_per_anchor(const DetectorLayout& layout) {
-  int valores = 4;  // cx, cy, w, h
-  if (layout.score_in_boxes_tensor) ++valores;
-  if (layout.landmarks_in_boxes_tensor) valores += 10;
-  return valores;
-}
 
 int posiciones_mapa(int tamano, int stride) {
   // El techo de tamano/stride, sin sumar antes de dividir: con un tamano cercano a
@@ -48,19 +68,14 @@ int posiciones_mapa(int tamano, int stride) {
 
 std::vector<Anchor> generate_anchors(const DetectorLayout& layout, int input_width,
                                       int input_height) {
-  if (layout.strides.size() != layout.anchors_per_stride.size() ||
-      layout.strides.size() != layout.base_anchor_sizes.size()) {
+  if (layout.strides.size() != layout.anchor_sizes.size()) {
     throw std::invalid_argument(
-        "generate_anchors: strides, anchors_per_stride y base_anchor_sizes deben tener el "
-        "mismo tamaño");
+        "generate_anchors: strides y anchor_sizes deben tener el mismo tamano");
   }
   if (input_width <= 0 || input_height <= 0) {
     throw std::invalid_argument("generate_anchors: la entrada " + std::to_string(input_width) +
                                 "x" + std::to_string(input_height) + " no es valida");
   }
-  const float escala_x = static_cast<float>(input_width) / kEntradaDeReferencia;
-  const float escala_y = static_cast<float>(input_height) / kEntradaDeReferencia;
-
   std::vector<Anchor> anclas;
   for (std::size_t i = 0; i < layout.strides.size(); ++i) {
     const int stride = layout.strides[i];
@@ -68,31 +83,33 @@ std::vector<Anchor> generate_anchors(const DetectorLayout& layout, int input_wid
       throw std::invalid_argument("generate_anchors: el stride " + std::to_string(stride) +
                                   " no es valido");
     }
-    const int anclas_por_posicion = layout.anchors_per_stride[i];
-    const int ancho = posiciones_mapa(input_width, stride);
-    const int alto = posiciones_mapa(input_height, stride);
-    const float base_ancho = layout.base_anchor_sizes[i].first * escala_x;
-    const float base_alto = layout.base_anchor_sizes[i].second * escala_y;
-    for (int y = 0; y < alto; ++y) {
-      for (int x = 0; x < ancho; ++x) {
-        // El centro del ancla cae en la esquina de la celda (la convencion clasica de
-        // RetinaFace): el stride solo fija la rejilla de posiciones.
-        const float cx = static_cast<float>(x * stride);
-        const float cy = static_cast<float>(y * stride);
-        for (int a = 0; a < anclas_por_posicion; ++a) {
+    const std::vector<float>& tamanos = layout.anchor_sizes[i];
+    if (tamanos.empty()) {
+      throw std::invalid_argument("generate_anchors: el stride " + std::to_string(stride) +
+                                  " no tiene tamanos de ancla");
+    }
+    for (const float tamano : tamanos) {
+      if (!(tamano > 0.0f) || !std::isfinite(tamano)) {
+        throw std::invalid_argument("generate_anchors: un tamano de ancla del stride " +
+                                    std::to_string(stride) + " no es positivo");
+      }
+    }
+    const int filas = posiciones_mapa(input_height, stride);
+    const int columnas = posiciones_mapa(input_width, stride);
+    const float paso = static_cast<float>(stride);
+    // El orden del tensor: fila (j), columna (k) y tamano (retinaface_post.cpp:146-158).
+    for (int j = 0; j < filas; ++j) {
+      for (int k = 0; k < columnas; ++k) {
+        // El centro del ancla cae en el medio de la celda.
+        const float cx = (static_cast<float>(k) + 0.5f) * paso;
+        const float cy = (static_cast<float>(j) + 0.5f) * paso;
+        for (const float tamano : tamanos) {
           Anchor ancla;
           ancla.cx = cx;
           ancla.cy = cy;
+          ancla.w = tamano;
+          ancla.h = tamano;
           ancla.stride = stride;
-          if (a % 2 == 0) {
-            // Ancla cuadrada: el tamano base tal cual.
-            ancla.w = base_ancho;
-            ancla.h = base_alto;
-          } else {
-            // Ancla de relacion 1.3: la misma area, mas ancha y mas baja.
-            ancla.w = base_ancho * kRatioAncla;
-            ancla.h = base_alto / kRatioAncla;
-          }
           anclas.push_back(ancla);
         }
       }
@@ -102,35 +119,26 @@ std::vector<Anchor> generate_anchors(const DetectorLayout& layout, int input_wid
 }
 
 cv::Rect2f decode_box(const Anchor& anchor, const float* box) {
-  // Convencion clasica de RetinaFace (la de insightface): las varianzas se aplican al
-  // valor predicho, que ya esta en unidades de la imagen. El stride NO multiplica: el
-  // stride solo fija la rejilla de posiciones y el tamano del ancla.
-  //
-  // PROVISIONAL: hay que contrastar esta convencion con el .nb real cuando exista.
-  for (int i = 0; i < 4; ++i) {
-    if (!std::isfinite(box[i])) {
-      throw std::invalid_argument(
-          "decode_box: la salida del modelo trae un valor no finito en la caja");
-    }
+  if (!valores_finitos(box, kValoresCaja)) {
+    throw std::invalid_argument(
+        "decode_box: la salida del modelo trae un valor no finito en la caja");
   }
-  const float dx = box[0] * kVarBox[0];
-  const float dy = box[1] * kVarBox[1];
-  const float dw = box[2] * kVarBox[2];
-  const float dh = box[3] * kVarBox[3];
-  const float cx = anchor.cx + dx;
-  const float cy = anchor.cy + dy;
-  const float w = anchor.w * std::exp(dw);
-  const float h = anchor.h * std::exp(dh);
-  return cv::Rect2f(cx - w / 2.0f, cy - h / 2.0f, w, h);
+  const float cx = anchor.cx + box[0] * kVarianzaCentro * anchor.w;
+  const float cy = anchor.cy + box[1] * kVarianzaCentro * anchor.h;
+  const float w = anchor.w * std::exp(box[2] * kVarianzaTamano);
+  const float h = anchor.h * std::exp(box[3] * kVarianzaTamano);
+  return cv::Rect2f(cx - w * 0.5f, cy - h * 0.5f, w, h);
 }
 
-std::array<cv::Point2f, 5> decode_landmarks(const cv::Rect2f& bbox, const float* landmarks) {
-  const float cx = bbox.x + bbox.width / 2.0f;
-  const float cy = bbox.y + bbox.height / 2.0f;
+std::array<cv::Point2f, 5> decode_landmarks(const Anchor& anchor, const float* landmarks) {
+  if (!valores_finitos(landmarks, kValoresLandmarks)) {
+    throw std::invalid_argument(
+        "decode_landmarks: la salida del modelo trae un valor no finito en los landmarks");
+  }
   std::array<cv::Point2f, 5> puntos{};
   for (std::size_t i = 0; i < puntos.size(); ++i) {
-    puntos[i] = cv::Point2f(cx + landmarks[2 * i] * bbox.width,
-                            cy + landmarks[2 * i + 1] * bbox.height);
+    puntos[i] = cv::Point2f(anchor.cx + landmarks[2 * i] * kVarianzaCentro * anchor.w,
+                            anchor.cy + landmarks[2 * i + 1] * kVarianzaCentro * anchor.h);
   }
   return puntos;
 }
@@ -206,99 +214,62 @@ std::vector<FaceDetection> decode_detector_outputs(const std::vector<DetectorTen
   const DetectorTensor* landmarks = nullptr;
   for (const DetectorTensor& tensor : tensors) {
     if (tensor.index == layout.boxes_output_index && cajas == nullptr) cajas = &tensor;
-    if (!layout.score_in_boxes_tensor && tensor.index == layout.scores_output_index &&
-        scores == nullptr) {
-      scores = &tensor;
-    }
-    if (!layout.landmarks_in_boxes_tensor && tensor.index == layout.landmarks_output_index &&
-        landmarks == nullptr) {
+    if (tensor.index == layout.scores_output_index && scores == nullptr) scores = &tensor;
+    if (tensor.index == layout.landmarks_output_index && landmarks == nullptr) {
       landmarks = &tensor;
     }
   }
-  if (cajas == nullptr) {
-    throw std::invalid_argument("decode_detector_outputs: falta el tensor de salida " +
-                                std::to_string(layout.boxes_output_index));
+  // Los tres tensores tienen que venir: sin esta comprobacion el puntero queda en
+  // nullptr y la lectura es comportamiento indefinido (un SIGSEGV en pleno fotograma,
+  // no una excepcion).
+  if (cajas == nullptr || scores == nullptr || landmarks == nullptr) {
+    throw std::invalid_argument(
+        "decode_detector_outputs: faltan tensores de salida: se necesitan las cajas (salida " +
+        std::to_string(layout.boxes_output_index) + "), los scores (salida " +
+        std::to_string(layout.scores_output_index) + ") y los landmarks (salida " +
+        std::to_string(layout.landmarks_output_index) + ")");
   }
-  // Los tensores que el layout pide aparte tienen que venir en la lista: sin esta
-  // comprobacion el puntero queda en nullptr y la lectura es comportamiento
-  // indefinido (un SIGSEGV en pleno fotograma, no una excepcion).
-  if (!layout.score_in_boxes_tensor && scores == nullptr) {
-    throw std::invalid_argument("decode_detector_outputs: el layout pide el score en un "
-                                "tensor aparte (salida " +
-                                std::to_string(layout.scores_output_index) +
-                                ") y ese tensor no viene");
-  }
-  if (!layout.landmarks_in_boxes_tensor && landmarks == nullptr) {
-    throw std::invalid_argument("decode_detector_outputs: el layout pide los landmarks en "
-                                "un tensor aparte (salida " +
-                                std::to_string(layout.landmarks_output_index) +
-                                ") y ese tensor no viene");
-  }
+  comprobar_valores(*cajas, "cajas", anchors.size(), kValoresCaja);
+  comprobar_valores(*scores, "scores", anchors.size(), kValoresScore);
+  comprobar_valores(*landmarks, "landmarks", anchors.size(), kValoresLandmarks);
 
-  const int valores_por_ancla = values_per_anchor(layout);
-  const std::size_t esperados = anchors.size() * static_cast<std::size_t>(valores_por_ancla);
-  if (cajas->values.size() != esperados) {
-    throw std::invalid_argument("decode_detector_outputs: el tensor de cajas trae " +
-                                std::to_string(cajas->values.size()) + " valores y se esperan " +
-                                std::to_string(esperados) + " (" + std::to_string(anchors.size()) +
-                                " anclas por " + std::to_string(valores_por_ancla) + " valores)");
-  }
-  if (scores != nullptr && scores->values.size() != anchors.size()) {
-    throw std::invalid_argument("decode_detector_outputs: el tensor de scores trae " +
-                                std::to_string(scores->values.size()) + " valores y se esperan " +
-                                std::to_string(anchors.size()));
-  }
-  if (landmarks != nullptr && landmarks->values.size() != anchors.size() * 10) {
-    throw std::invalid_argument("decode_detector_outputs: el tensor de landmarks trae " +
-                                std::to_string(landmarks->values.size()) +
-                                " valores y se esperan " + std::to_string(anchors.size() * 10));
-  }
-
-  // Recorre las anclas en el mismo orden que las trae el tensor.
+  // Recorre las anclas en el mismo orden que las trae el tensor. Con una cara pasan el
+  // umbral unas decenas de anclas: la reserva cubre el tope del NMS sin realojar.
+  const std::size_t reserva = std::min(anchors.size(), layout.nms_top_k);
   std::vector<cv::Rect2f> cajas_decodificadas;
   std::vector<float> valores_score;
   std::vector<std::array<cv::Point2f, 5>> puntos;
+  cajas_decodificadas.reserve(reserva);
+  valores_score.reserve(reserva);
+  puntos.reserve(reserva);
   for (std::size_t i = 0; i < anchors.size(); ++i) {
-    const float* base = cajas->values.data() + i * static_cast<std::size_t>(valores_por_ancla);
-    float score = 0.0f;
-    const float* offsets = nullptr;
-    if (layout.score_in_boxes_tensor) {
-      score = base[4];
-    } else {
-      score = scores->values[i];
-    }
-    if (layout.landmarks_in_boxes_tensor) {
-      offsets = base + (layout.score_in_boxes_tensor ? 5 : 4);
-    } else {
-      offsets = landmarks->values.data() + i * 10;
-    }
+    const float* caja = cajas->values.data() + i * kValoresCaja;
+    const float score = scores->values[i * kValoresScore + kColumnaCara];
+    const float* offsets = landmarks->values.data() + i * kValoresLandmarks;
 
-    // Un score no finito (NaN) pasa el filtro "score < umbral" (la comparacion con NaN
-    // es falsa) y llegaria al NMS con un comparador que no es una relacion de orden
-    // estricto debil: se descarta el ancla.
-    if (!std::isfinite(score)) continue;
-    if (score < layout.score_threshold) continue;
-    // Los offsets de landmarks tambien tienen que ser finitos: si no, el punto sale
-    // NaN y align_face lanza en cada fotograma.
-    if (!landmarks_finitos(offsets)) continue;
-    // Y los cuatro valores de la caja: un NaN en la caja abortaria el fotograma
-    // entero, cuando el resto de las cajas del fotograma son validas. Se descarta el
-    // ancla, igual que con el score y los landmarks.
-    bool caja_finita = true;
-    for (int i = 0; i < 4; ++i) {
-      if (!std::isfinite(base[i])) caja_finita = false;
+    // "score > umbral", como la demo (retinaface_post.cpp:200), y como mucho 1 (la
+    // salida de un softmax; la demo no dibuja las que pasan de 1, retinaface_post.cpp:
+    // 317-321). Un NaN o un infinito llegarian al NMS con un comparador que no es una
+    // relacion de orden estricto debil.
+    if (!score_valido(score, layout.score_threshold)) continue;
+    // La precondicion de decode_box y decode_landmarks: si no se cumple, se descarta el
+    // ancla en vez de abortar el fotograma entero (un NaN en un landmark haria ademas
+    // que align_face lanzara).
+    if (!valores_finitos(caja, kValoresCaja) || !valores_finitos(offsets, kValoresLandmarks)) {
+      continue;
     }
-    if (!caja_finita) continue;
+    const cv::Rect2f bbox = decode_box(anchors[i], caja);
+    const std::array<cv::Point2f, 5> puntos_ancla = decode_landmarks(anchors[i], offsets);
+    // Un valor finito pero enorme desborda al decodificar: tambien se descarta.
+    if (!caja_decodificada_finita(bbox) || !puntos_finitos(puntos_ancla)) continue;
 
-    const cv::Rect2f bbox = decode_box(anchors[i], base);
     cajas_decodificadas.push_back(bbox);
     valores_score.push_back(score);
-    puntos.push_back(decode_landmarks(bbox, offsets));
+    puntos.push_back(puntos_ancla);
   }
 
-  // Preseleccion: al NMS solo pasan las K cajas de mayor score (K = 500 por omision,
-  // como el "nms top 500" del RetinaFace de referencia). Sin este tope, el NMS seria
-  // O(n^2) sobre las 16 800 anclas de una entrada de 640.
+  // Preseleccion: al NMS solo pasan las K cajas de mayor score (K = 500 por omision).
+  // Sin este tope, el NMS seria O(n^2) sobre todas las anclas que pasen el umbral.
   std::vector<int> orden(cajas_decodificadas.size());
   std::iota(orden.begin(), orden.end(), 0);
   const std::size_t tope = std::min<std::size_t>(layout.nms_top_k, orden.size());
@@ -331,6 +302,41 @@ std::vector<FaceDetection> decode_detector_outputs(const std::vector<DetectorTen
     detecciones.push_back(deteccion);
   }
   return detecciones;
+}
+
+void comprobar_salida_detector(const TensorInfo& info, const char* nombre, std::size_t anclas,
+                               std::size_t por_ancla) {
+  const std::string prefijo = std::string("NpuFaceDetector: la salida de ") + nombre + " (" +
+                              info.name + ", " + texto_dims(info.dims) + ")";
+  exigir_salida_descuantizable(info, "NpuFaceDetector");
+  if (info.element_count != anclas * por_ancla) {
+    throw std::invalid_argument(prefijo + " trae " + std::to_string(info.element_count) +
+                                " elementos y el layout espera " +
+                                std::to_string(anclas * por_ancla) + " (" +
+                                std::to_string(anclas) + " anclas por " +
+                                std::to_string(por_ancla) + " valores)");
+  }
+  bool disposicion_ok = info.dims.size() >= 2 && info.dims[0] == por_ancla &&
+                        info.dims[1] == anclas;
+  for (std::size_t i = 2; disposicion_ok && i < info.dims.size(); ++i) {
+    if (info.dims[i] != 1) disposicion_ok = false;
+  }
+  if (!disposicion_ok) {
+    throw std::invalid_argument(prefijo + " no tiene la forma [" + std::to_string(por_ancla) +
+                                ", " + std::to_string(anclas) +
+                                ", 1]: los valores de cada ancla tienen que ir seguidos");
+  }
+}
+
+void deshacer_letterbox_detecciones(const Letterbox& letterbox,
+                                    std::vector<FaceDetection>& detecciones, int ancho_imagen,
+                                    int alto_imagen) {
+  for (FaceDetection& deteccion : detecciones) {
+    deteccion.bbox = deshacer_letterbox(letterbox, deteccion.bbox, ancho_imagen, alto_imagen);
+    for (cv::Point2f& punto : deteccion.landmarks) {
+      punto = deshacer_letterbox(letterbox, punto);
+    }
+  }
 }
 
 }  // namespace vision

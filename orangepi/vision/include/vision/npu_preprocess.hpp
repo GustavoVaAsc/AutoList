@@ -6,9 +6,16 @@
 // el tensor de entrada: el resize a las dimensiones del tensor, el orden de color, la
 // escala por canal y la cuantizacion del tensor.
 //
-// El tensor de la NPU describe sus dimensiones en el orden [w, h, c, n] (ver
-// TensorInfo::dims) y su memoria es "canal a canal": primero todos los pixeles del
-// canal 0, despues los del canal 1, y asi; NO es un intercalado (RGBRGB...).
+// VIPLite describe las dimensiones del tensor de la mas rapida a la mas lenta (ver
+// TensorInfo::dims). El tensor de entrada puede tener una de dos disposiciones, y se
+// deduce de sus dimensiones (input_shape):
+//  - planar [w, h, c, n] (la tercera dimension vale 3): "canal a canal", primero todos
+//    los pixeles del canal 0, despues los del canal 1, y asi.
+//  - intercalada [c, w, h, n] (la primera dimension vale 3): "pixel a pixel", los tres
+//    canales de cada pixel seguidos (RGBRGB... o BGRBGR...), como la memoria de un
+//    cv::Mat. Es la del RetinaFace R50 convertido (3x320x320x1).
+// Si la primera y la tercera dimension valen 3 la forma es ambigua, y si ninguna vale 3
+// no hay un canal que interpretar: en los dos casos falla cerrado.
 //
 // La normalizacion NO se aplica aqui por omision: el .nb cuantizado lleva la
 // normalizacion DENTRO (el modelo se cuantiza con ella), asi que el byte que se
@@ -49,6 +56,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -111,16 +119,33 @@ struct PreprocessOptions {
   ScaleMode scale_mode = ScaleMode::Auto;
 };
 
-// Dimensiones del tensor de entrada, en el orden [w, h, c, n] de VIPLite.
-// Lanza std::invalid_argument si el tensor no tiene al menos 3 dimensiones.
+// Disposicion de la memoria del tensor de entrada (ver el comentario de cabecera).
+enum class InputLayout {
+  // [w, h, c, n]: canal a canal.
+  Planar,
+  // [c, w, h, n]: pixel a pixel, el canal es la dimension mas rapida.
+  Interleaved,
+};
+
+// Dimensiones del tensor de entrada, ya interpretadas segun su disposicion.
 struct InputShape {
   int width = 0;
   int height = 0;
   int channels = 0;
   int batch = 1;
+  InputLayout layout = InputLayout::Planar;
 };
 
+// Interpreta las dimensiones del tensor: planar si la tercera vale 3, intercalada si la
+// primera vale 3. La cuarta, si existe, es el lote.
+//
+// Lanza std::invalid_argument si el tensor no tiene al menos 3 dimensiones, si la
+// primera y la tercera valen 3 (ambigua) o si ninguna de las dos vale 3.
 InputShape input_shape(const TensorInfo& info);
+
+// Las dimensiones del tensor tal como las reporta VIPLite, para los mensajes
+// ("3x320x320x1").
+std::string texto_dims(const std::vector<std::uint32_t>& dims);
 
 // Modo de escala efectivo: si `modo` es Auto, se deriva del tensor; si es explicito,
 // se comprueba que sea compatible con su cuantizacion.
@@ -131,11 +156,20 @@ InputShape input_shape(const TensorInfo& info);
 // cuantizacion del tensor.
 ScaleMode modo_escala_efectivo(ScaleMode modo, const TensorInfo& info);
 
+// Lado minimo de la entrada de un modelo de rostro. El stride mas fino de RetinaFace es
+// 8 y el embedder espera 112: un tensor con un lado menor que 8 no es un modelo de
+// rostro, y casi seguro sale de interpretar mal sus dimensiones (por ejemplo, un
+// [3, 320, 1, 1] leido como intercalado de 320x1). Lo comprueba ajustar_tamano_entrada,
+// que llaman los dos adaptadores al arrancar; las funciones de preproceso en si aceptan
+// cualquier tamano (sus pruebas usan imagenes de 2x2).
+constexpr int kMinLadoEntrada = 8;
+
 // Ajusta el tamano de entrada de las opciones al del tensor (si el llamador lo deja en 0
 // o menos) y comprueba que el tamano pedido cuadre con el del tensor.
 //
 // `quien` es el nombre del adaptador, para el mensaje de error. Lanza
-// std::invalid_argument si los tamanos no cuadran.
+// std::invalid_argument si los tamanos no cuadran o si un lado del tensor es menor que
+// kMinLadoEntrada.
 void ajustar_tamano_entrada(int& ancho, int& alto, const TensorInfo& info, const char* quien);
 
 // Rango de valores reales (el valor que entra en la cuantizacion) que representa o
@@ -189,8 +223,8 @@ void comprobar_tamano_entrada(int ancho, int alto, const char* quien);
 void validar_tensor_entrada(const TensorInfo& info, const PreprocessOptions& options,
                             const char* quien);
 
-// Convierte la imagen BGR a los valores float del tensor, en el orden [w, h, c, n]
-// (canal a canal).
+// Convierte la imagen BGR a los valores float del tensor, en el orden de su
+// disposicion: [w, h, c, n] (canal a canal) o [c, w, h, n] (pixel a pixel).
 //
 // Lanza std::invalid_argument si la imagen esta vacia, no es de 8 bits con 3 canales,
 // o si el tensor de entrada no vale (lo mismo que validar_tensor_entrada: formato,
@@ -206,5 +240,54 @@ std::vector<float> preprocess_to_floats(const cv::Mat& bgr, const TensorInfo& in
 // tambien si la entrada satura al cuantizar (ver vision::quantize).
 std::vector<std::uint8_t> preprocess_to_bytes(const cv::Mat& bgr, const TensorInfo& info,
                                                const PreprocessOptions& options);
+
+// --- Letterbox (el redimensionado del detector) ------------------------------------
+//
+// El detector no estira la imagen a la entrada del modelo: la reduce conservando la
+// proporcion, la centra y rellena el resto con gris 114, como la demo del fabricante
+// (retinaface_pre.cpp:47-76). Las detecciones salen en pixeles de esa entrada y se
+// devuelven a la imagen original con la operacion inversa (retinaface_post.cpp:236-285).
+
+// Valor del relleno del letterbox, en los tres canales (retinaface_pre.cpp:76).
+constexpr int kRellenoLetterbox = 114;
+
+// Geometria del letterbox de una imagen sobre la entrada del modelo.
+struct Letterbox {
+  // Tamano de la imagen ya reducida: round(escala * lado), con la escala que hace caber
+  // la imagen entera (la menor de las dos).
+  int ancho_redimensionado = 0;
+  int alto_redimensionado = 0;
+  // Relleno a la izquierda y arriba: la mitad (por defecto) del relleno de cada eje. El
+  // resto va a la derecha y abajo.
+  int relleno_izquierda = 0;
+  int relleno_arriba = 0;
+  // De la imagen reducida a la original, por eje: lado original / lado reducido.
+  float factor_x = 1.0f;
+  float factor_y = 1.0f;
+};
+
+// Calcula el letterbox de una imagen de ancho_imagen x alto_imagen sobre una entrada de
+// ancho_entrada x alto_entrada, con la aritmetica de la demo del fabricante.
+//
+// Lanza std::invalid_argument si algun tamano no es positivo o si la imagen es tan
+// alargada que un lado reducido se queda en 0 pixeles.
+Letterbox calcular_letterbox(int ancho_imagen, int alto_imagen, int ancho_entrada,
+                             int alto_entrada);
+
+// La imagen BGR reducida y rellenada a ancho_entrada x alto_entrada (CV_8UC3).
+//
+// Lanza std::invalid_argument si la imagen esta vacia o no es CV_8UC3, o si el letterbox
+// no cabe en la entrada.
+cv::Mat aplicar_letterbox(const cv::Mat& bgr, const Letterbox& letterbox, int ancho_entrada,
+                          int alto_entrada);
+
+// Un punto de la entrada del modelo en pixeles de la imagen original. No se recorta: los
+// landmarks pueden caer fuera de la imagen (la demo tampoco los recorta).
+cv::Point2f deshacer_letterbox(const Letterbox& letterbox, const cv::Point2f& punto);
+
+// Una caja de la entrada del modelo en pixeles de la imagen original, con sus esquinas
+// recortadas a [0, ancho_imagen - 1] x [0, alto_imagen - 1] (retinaface_post.cpp:276-285).
+cv::Rect2f deshacer_letterbox(const Letterbox& letterbox, const cv::Rect2f& caja,
+                              int ancho_imagen, int alto_imagen);
 
 }  // namespace vision

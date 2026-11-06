@@ -34,12 +34,12 @@
     "allow_invalid_certificates": false
   },
   "npu": {
-    "color": "rgb",
+    "color": "bgr",
     "escala": "auto",
     "ancho": 0,
     "alto": 0,
     "embed_color": "rgb",
-    "embed_escala": "auto",
+    "embed_escala": "arcface",
     "embed_ancho": 0,
     "embed_alto": 0
   }
