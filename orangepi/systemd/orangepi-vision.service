@@ -34,6 +34,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=full
+LimitCORE=0
+UMask=0077
 StandardOutput=journal
 StandardError=journal
 
