@@ -2,13 +2,15 @@
 
 Primera versión: controla la **tira LED de 12 V** por MQTT (campo `luz` de `aula/actuador/cmd`). Todo lo demás del firmware de la XIAO (cámara y `/capture`, PIR, INA219, servo, LEDs RGB indicadores y buzzer) sigue sin escribirse y es del carril de Gustavo.
 
-> **Estado: sin compilar y sin flashear.** Esta versión se escribió en la Orange Pi, que no tiene `arduino-cli` ni PlatformIO. Solo se probó en el host la lógica de decisión (`logica_luz`, sección [Pruebas de host](#pruebas-de-host)). Lo demás está en [Sin verificar](#sin-verificar).
+> **Estado: compila, sin flashear.** El 4 nov el firmware completo (tira, cámara, PIR, servo, LED RGB y buzzer) compiló con el core ESP32 3.3.12, PubSubClient 2.8.0 y ArduinoJson 7.4.3, con `arduino-cli` y sin un solo aviso ([Compilar y flashear](#compilar-y-flashear-gustavo)). **En la placa no se ha flasheado nada todavía**: lo que necesita la placa está en [Sin verificar](#sin-verificar).
 
 ## Contenido
 
 - [Carriles](#carriles)
 - [Archivos](#archivos)
 - [Qué hace](#qué-hace)
+- [La cámara y el endpoint /capture](#la-cámara-y-el-endpoint-capture)
+- [Cableado de los sensores y los actuadores](#cableado-de-los-sensores-y-los-actuadores)
 - [Cableado de la etapa de potencia](#cableado-de-la-etapa-de-potencia)
 - [Bibliotecas](#bibliotecas)
 - [Configurar secrets.h](#configurar-secretsh)
@@ -17,6 +19,7 @@ Primera versión: controla la **tira LED de 12 V** por MQTT (campo `luz` de `aul
 - [Integrar el resto del firmware](#integrar-el-resto-del-firmware)
 - [Pruebas de host](#pruebas-de-host)
 - [Sin verificar](#sin-verificar)
+- [Resuelto el 4 nov](#resuelto-el-4-nov)
 
 ## Carriles
 
@@ -30,19 +33,31 @@ Primera versión: controla la **tira LED de 12 V** por MQTT (campo `luz` de `aul
 | `xiao.ino` | Sketch de Arduino: Wi-Fi, MQTT, pin de la tira y publicación del estado. La carpeta se llama `xiao` para que el IDE lo acepte. |
 | `logica_luz.h`, `logica_luz.cpp` | Decisiones en C++ puro, sin Arduino: descarte de retenidos y vacíos, interpretación de `luz`, estado de la luz y payload de `aula/actuador/estado`. |
 | `pruebas/test_logica_luz.cpp` | Pruebas de host de `logica_luz` (`g++`, sin dependencias). El IDE de Arduino no compila esta carpeta. |
+| `logica_pir.h`, `logica_pir.cpp` | Lógica del PIR: flanco de subida, calentamiento, antirrebote y el payload `{"mov":1}`. |
+| `logica_actuadores.h`, `logica_actuadores.cpp` | Lógica del servo, el LED RGB y el buzzer: interpretación de las órdenes, temporizado del servo, prioridad del LED azul y el payload completo del estado. |
+| `actuadores.h`, `actuadores.cpp` | La parte con Arduino de los actuadores: pines, canales LEDC, pulso del servo, tono y color. |
+| `hmac_sha256.h`, `hmac_sha256.cpp` | SHA-256 y HMAC-SHA256 en C++ puro, sin dependencias. La copia del servicio de visión es la misma. |
+| `logica_camara.h`, `logica_camara.cpp` | Lógica de la petición de captura: cabeceras, cadena canónica, firma, frescura y anti-replay. |
+| `captura.h`, `captura.cpp` | La parte con Arduino: la cámara y el endpoint HTTP `/capture` con su servidor en su propia tarea. |
+| `pruebas/test_logica_pir.cpp`, `pruebas/test_logica_actuadores.cpp`, `pruebas/test_hmac_sha256.cpp`, `pruebas/test_logica_camara.cpp` | Pruebas de host de cada módulo (`g++`, sin dependencias). |
+| `compilar.sh` | Compila el sketch con `arduino-cli` y las versiones fijadas (core, bibliotecas y placa). |
+| `flashear.sh` | Compila y flashea por USB (busca la placa por su VID:PID). |
+| `instalar-arduino-cli.sh` | Instala `arduino-cli` en el usuario, sin `sudo`, en la versión fijada y con el sha256 comprobado. |
 | `secrets.h.example` | Plantilla de `secrets.h` (ignorado por git). |
 
 ## Qué hace
 
 - **Se conecta** al Wi-Fi y al broker con el usuario `xiao` (client id `xiao`; el broker usa el nombre de usuario como client id, así que **no hay que conectar otro cliente con el usuario `xiao`** mientras la placa esté encendida: se expulsarían entre sí).
-- **Se suscribe** a `aula/actuador/cmd` (QoS 1, sesión limpia). Aplica solo `luz`: el entero `0` apaga y el `1` enciende la tira en D2 (GPIO3). Cualquier otro valor (`2`, `-1`, `true`, `"1"`, `1.5`), un JSON que no sea un objeto o un mensaje sin `luz` no cambia nada. `servo`, `led` y `buzzer` se ignoran por ahora.
+- **Se suscribe** a `aula/actuador/cmd` (QoS 1, sesión limpia) y a `aula/sesion/estado` (retenido). Del `cmd` aplica `luz` (el entero `0` apaga y el `1` enciende la tira en D2/GPIO3), `servo` (solo `"abrir"`), `led` (azul, verde, rojo, ambar, apagado) y `buzzer` (0, 1, 2). Cualquier valor fuera de esos se ignora. Del estado de la sesión toma `activa`: con la sesión activa el LED azul manda sobre el color de retroalimentación.
 - **Descarta** los mensajes con payload vacío y los que pueden ser retenidos (contrato, sección 1). Ver [Desviaciones del contrato](#desviaciones-del-contrato).
-- **Publica** `aula/actuador/estado` retenido, `{"luz":0}` o `{"luz":1}`, cada vez que la luz cambia, al (re)conectar y en respuesta a **toda** orden válida de `luz`, aunque no cambie nada. Si una publicación falla, queda pendiente y `loop()` la reintenta cada segundo mientras haya enlace.
+- **Publica** `aula/actuador/estado` retenido y **completo**: `{"servo":"cerrado","led":"azul","luz":0}`. Lo publica cada vez que cambia cualquier actuador, al (re)conectar y en respuesta a **toda** orden válida, aunque no cambie nada. Si una publicación falla, queda pendiente y `loop()` la reintenta cada segundo mientras haya enlace.
+- **Cámara:** sirve `GET /capture?res=UXGA` con una JPEG de 2048×1536, **solo si la petición viene firmada** (ver [La cámara y el endpoint /capture](#la-cámara-y-el-endpoint-capture)). El servidor HTTP va en su propia tarea de FreeRTOS: la captura no bloquea el lazo del MQTT.
+- **PIR:** lee D0 (GPIO1) cada 50 ms y publica `{"mov":1}` en `aula/camara/pir` (QoS 0, sin retención) en el flanco de subida, con un antirrebote de 2 s y sin tomar en cuenta el primer minuto (el calentamiento del HC-SR501).
 - **Will y salud mínima:** registra el LWT `{"en_linea":false}` (retenido, QoS 1) en `aula/camara/estado` y publica `{"en_linea":true}` al conectar, como propone el contrato (sección 3). El latido de cada 30 s con `rssi`, `heap` y `temp` queda para el firmware de Gustavo.
 - **Arranque seguro:** `setup()` pone D2 en LOW antes que cualquier otra cosa, y el pull-down de la compuerta mantiene la tira apagada mientras la placa arranca.
 - **Apagado automático (decisión de Yordi):** la tira se apaga sola a los **360 s (6 min) del último `luz:1`** (`kApagadoAutomaticoMs` en `logica_luz.h`), sin bloquear (`millis()` con resta sin signo, correcta con el desbordamiento). Cada `luz:1`, aunque la luz ya esté encendida, reinicia el plazo, y al apagarse publica el estado. **Por qué 360 s:** el servicio de visión publica `luz:1` una sola vez al iniciar el registro de 5 poses y `luz:0` al terminar, y un registro puede durar hasta unos 5 min (el vencimiento de Node-RED); 360 s lo cubren con margen. **Quien necesite la luz más tiempo debe reenviar `luz:1` antes de 360 s.** Si Gustavo agrega a la visión un reenvío periódico de `luz:1`, el plazo se puede bajar (`kApagadoAutomaticoMs`). Hay que avisarle por la orquestación luz–captura.
 - **Apagado de seguridad (decisión):** si se pierde el Wi-Fi o la conexión con el broker, la luz se **apaga**. Sin enlace nadie puede ordenar apagarla. Al reconectar publica el estado real (`luz: 0`). El estado retenido del broker puede decir `luz: 1` mientras la placa está desconectada; para saber si es confiable, mirar `aula/camara/estado`. Por eso quien publique `luz:1` no debe asumir que se aplicó.
-- **Reconexión sin bloqueo indefinido:** cada vuelta de `loop()` hace como mucho un intento. Wi-Fi: reintento automático del controlador y, tras 30 s sin enlace, reinicio de la conexión (con `WiFi.setSleep(false)`). MQTT: un intento cada 5 s. **Un intento bloquea `loop()`**: la conexión TCP (hasta 5 s), la espera del CONNACK (otros 5 s) y, si `MQTT_HOST` es un nombre y no una IP, la resolución DNS, que puede tardar más. Con una IP son unos 10 s en el peor caso, más 1.5 s de la ventana de retenidos si conecta. **Pon una IP en `MQTT_HOST`.** Con la luz apagada por falta de enlace esto no importa; sí importará cuando entren el servo, el PIR y el INA219 (ver [Integrar](#integrar-el-resto-del-firmware)).
+- **Reconexión sin bloqueo indefinido:** cada vuelta de `loop()` hace como mucho un intento. Wi-Fi: reintento automático del controlador y, tras 30 s sin enlace, reinicio de la conexión (con `WiFi.setSleep(false)`). MQTT: un intento cada 5 s. **Un intento bloquea `loop()`**: la conexión TCP (hasta `TIMEOUT_SOCKET_MS` = 5 s, con `setConnectionTimeout`), la espera del CONNACK (otros `TIMEOUT_SOCKET_S` = 5 s, con `setSocketTimeout`) y, si `MQTT_HOST` es un nombre y no una IP, la resolución DNS, que puede tardar más. Con una IP son unos 10 s en el peor caso, más 1.5 s de la ventana de retenidos si conecta. **Pon una IP en `MQTT_HOST`.** Con la luz apagada por falta de enlace esto no importa; sí importará cuando entren el servo, el PIR y el INA219 (ver [Integrar](#integrar-el-resto-del-firmware)).
 
 ### Desviaciones del contrato
 
@@ -53,7 +68,38 @@ Hay tres, todas por límites de PubSubClient 2.8, y ninguna cambia los tópicos 
    - **Costo:** una orden en vivo que llegue en esos 1.5 s se pierde. Ocurre solo justo después de (re)conectar, y con la luz apagada por el apagado de seguridad; el emisor no debe asumir que `luz:1` se aplicó (contrato v0.8).
    - **Cuándo pasar a esp-mqtt** (el cliente MQTT de Espressif, que sí entrega la bandera retain y publica con QoS 1): si Gustavo mide que la ventana no alcanza, o cuando haga falta QoS 1 al publicar o TLS. Hoy se queda PubSubClient, por decisión de Yordi y por el plan (sección 6.1).
 2. **QoS del estado.** El contrato pide QoS 1 para `aula/actuador/estado` y `aula/camara/estado`; PubSubClient solo publica con QoS 0. Ambos son retenidos, así que el último valor queda en el broker, pero un paquete perdido no se reintenta a nivel MQTT (el firmware sí reintenta si la escritura al socket falla). El LWT sí se registra con QoS 1.
-3. **Estado parcial.** El contrato da como ejemplo `{"servo": "cerrado", "led": "azul", "luz": 0}`. Este firmware no controla el servo ni los LEDs, así que no inventa su estado: publica solo `{"luz": N}`. Hoy nadie consume ese tópico en el repo, y el contrato manda ignorar los campos desconocidos y no declara obligatorios los de ese estado. Cuando entren el servo y los LEDs, `construirEstado()` debe publicar los tres campos juntos: el estado va retenido y cada publicación reemplaza a la anterior.
+3. **Estado parcial.** *Cerrada el 4 nov:* el firmware ya controla el servo y los LEDs, así que `aula/actuador/estado` publica los tres campos, `{"servo":"cerrado","led":"azul","luz":0}`, como da el contrato (v0.9). El estado va retenido y cada publicación reemplaza a la anterior.
+
+## La cámara y el endpoint /capture
+
+La cámara del Sense (OV3660, o el OV5640 de las placas más nuevas) la maneja el driver que **viene con el core de Espressif**: el componente `espressif__esp32-camera` está en las librerías precompiladas de `esp32s3-libs`, así que `#include "esp_camera.h"` compila sin instalar nada. Los pines del modelo `CAMERA_MODEL_XIAO_ESP32S3` están en el propio core (`libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h`) y `captura.h` los copia a constantes.
+
+**La petición va firmada.** El servicio de visión no debe pedir la foto a pelo: la firma con HMAC-SHA256 y un secreto compartido. Cabeceras:
+
+| Cabecera | Qué es |
+|---|---|
+| `X-Captura-TS` | Epoch en segundos del reloj del **borde** (la XIAO no tiene reloj confiable: el RTC está en la Orange Pi) |
+| `X-Captura-Nonce` | Entero aleatorio de 64 bits, en decimal |
+| `X-Captura-HMAC` | 64 caracteres hex en minúscula |
+
+La cadena firmada es `GET\n/capture\n<ts>\n<nonce>` (UTF-8, sin salto final). **El camino va sin la query**: la query solo pide la resolución y no cambia el contenido de la foto, así que no va firmada. Es una limitación del protocolo, documentada.
+
+Respuestas: **200** con la JPEG, **401** si falta una cabecera o la firma no cuadra, **403** si el nonce ya se usó o el `ts` es más antiguo que el último aceptado (ventana de 300 s), **503** si la cámara no está lista.
+
+**La XIAO no compara el `ts` con su reloj** (no tiene uno confiable): lo compara con el último `ts` que aceptó, y recuerda los **64** últimos nonces.
+
+**Lo que esto protege y lo que no.** Una petición firmada que se reenvíe con su `ts` viejo (más de 300 s) se rechaza, y un nonce repetido también. **Pero el estado vive solo en RAM**: si la placa se reinicia, la memoria se borra y una petición capturada vuelve a ser aceptable. Y como la ráfaga de una captura son 4 fotos, hacen falta 64 peticiones (unas 16 capturas) para que el nonce más antiguo se salga de la ventana. **La respuesta, además, no va autenticada**: la firma protege la petición, no la foto que vuelve. Todo eso está anotado en el README del servicio de visión.
+
+La implementación del HMAC es **la misma en los dos lados**: aquí `firmware/xiao/hmac_sha256.cpp`, y en el borde `orangepi/vision/src/hmac_sha256.cpp`, con vectores de prueba compartidos (los mismos cinco). **La copia del borde todavía no está en esta rama**: vive en la rama de la NPU, que sigue aparte. Mientras tanto, **la placa exige la firma y el servicio no la manda**, así que `/capture` responde 401 y no hay fotos hasta que se junten las dos partes. El secreto se llama `CAPTURA_HMAC_SECRETO` y es **el mismo valor** en `firmware/xiao/secrets.h` (la placa) y en `/etc/pase-lista/vision.env` (el borde). **El HMAC autentica al emisor pero no cifra**: las fotos siguen viajando en claro por la LAN.
+
+## Cableado de los sensores y los actuadores
+
+- **PIR → D0 (GPIO1).** El HC-SR501 es de 5 V: su salida **no puede ir directa** a un GPIO de 3.3 V. En la protoboard va un divisor de **10 kΩ en serie** con la salida y **20 kΩ a GND** (3.33 V en el pin). El sensor se alimenta de 5 V y comparte tierra con la XIAO. Tarda alrededor de un minuto en calentarse: el firmware ignora los movimientos de ese primer minuto.
+- **Servo → D1 (GPIO2).** Se alimenta del **buck de 5 V**, nunca del pin de 3.3 V, con un **capacitor de 470 µF** junto a él (un brownout del servo reinicia la cámara) y tierra común. El pulso es de 50 Hz: 500 µs con la puerta cerrada (0°) y 1500 µs con la puerta abierta (90°). Si en la placa abre hacia el otro lado, se ajustan `PULSO_SERVO_CERRADO_US` y `PULSO_SERVO_ABIERTO_US` en `actuadores.h`.
+- **LED RGB → D8, D9 y D10 (GPIO 7, 8 y 9).** Son los pines de la microSD de la placa Sense, que el proyecto no usa. Si los LEDs rescatados son **WS2812** (un solo pin de datos), hay que cambiar las constantes de `actuadores.h` y escribir el color con una biblioteca WS2812.
+- **Buzzer → D3 (GPIO4).** Tono de 2 kHz al 50 % de duty, que es lo que reproducen tanto los buzzers pasivos como los activos.
+- **Tira LED de 12 V → D2 (GPIO3)**, con su MOSFET y el pull-down (sección anterior).
+- **INA219 → D4 y D5 (GPIO 5 y 6), en I2C0.** La SCCB de la cámara usa el **I2C1** (el `esp32-camera` del core 3.3.12 está hecho con `CONFIG_SCCB_HARDWARE_I2C_PORT1=y`, con los pines GPIO39/40 de la placa), así que el INA219 va en `Wire.begin(5, 6)`, que en el core es el I2C0. Todavía no está implementado.
 
 ## Cableado de la etapa de potencia
 
@@ -125,33 +171,96 @@ El ESP32-S3 lo usa en el arranque para elegir el origen de las señales JTAG, y 
 
 ## Bibliotecas
 
-Instalar desde el Gestor de bibliotecas del IDE de Arduino. Las versiones son las que el código asume; no se compiló con ninguna:
+Instalar desde el Gestor de bibliotecas del IDE de Arduino, o con `arduino-cli` (sección [Compilar y flashear](#compilar-y-flashear-gustavo)). Las versiones están fijadas y son las que se compilaron el 4 nov:
 
 | Componente | Versión | Nota |
 |---|---|---|
-| Paquete de placas **esp32** de Espressif (core Arduino de ESP32) | 3.x | Placa **XIAO_ESP32S3**. Activar **USB CDC On Boot** para que `Serial` salga por el USB. |
-| **PubSubClient** (Nick O'Leary) | 2.8 | Versión que el código asume (`setSocketTimeout` y `connect` con LWT y sesión limpia). Búfer de 256 bytes por defecto: basta para estos mensajes. |
-| **ArduinoJson** (Benoît Blanchon) | 7.x | Para leer `luz` del JSON; el sketch usa `JsonDocument`, que es de la serie 7. Se eligió sobre un extractor manual porque un texto con `"luz":1` dentro de otro campo no debe encender la tira. |
+| Paquete de placas **esp32** de Espressif (core Arduino de ESP32) | 3.3.12 | Placa **XIAO_ESP32S3**. `USB CDC On Boot` ya viene activo en esta placa. |
+| **PubSubClient** (Nick O'Leary) | 2.8.0 | `setSocketTimeout` y `connect` con LWT y sesión limpia. Búfer de 256 bytes por defecto: basta para estos mensajes. |
+| **ArduinoJson** (Benoît Blanchon) | 7.4.3 | Para leer `luz` del JSON; el sketch usa `JsonDocument`, que es de la serie 7. Se eligió sobre un extractor manual porque un texto con `"luz":1` dentro de otro campo no debe encender la tira. |
+| **Driver de cámara** | el del core | **No hay que instalar nada.** El componente `espressif__esp32-camera` va en las librerías precompiladas de `esp32s3-libs`, así que `#include "esp_camera.h"` compila tal cual. Los pines del modelo `CAMERA_MODEL_XIAO_ESP32S3` están en el core (`libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h`) y `captura.h` los copia a constantes. |
+| **HTTP de la IDF** | el del core | El servidor de `/capture` es el `httpd` del IDF (`esp_http_server.h`), que ya viene en el core y va en su propia tarea. |
+
+`arduino-cli` se usa en la versión **1.5.1**. La placa es `XIAO_ESP32S3` con `PSRAM=opi` (8 MB de flash y 8 MB de PSRAM OPI; sin PSRAM no hay JPEG de la cámara a UXGA), `USBMode=hwcdc` (consola y programación por el USB Serial/JTAG) y `PartitionScheme=default_8MB`.
 
 `WiFi.h` viene con el core de ESP32.
 
+**Limitaciones conocidas del toolchain.** El índice de placas de Espressif se descarga por HTTPS y `arduino-cli` verifica el sha256 de cada paquete contra ese índice, pero **la firma GPG del índice no se comprueba**: ese índice es la única raíz de confianza y **no está anclada**. Si alguien sustituyera el índice (un servicio de Espressif comprometido o un intermediario TLS en la red), el `core install` descargaría un paquete distinto, cuyo script de instalación se ejecuta en el equipo que compila: **ejecución de código con acceso a `secrets.h` y al `.bin` con la clave MQTT**, y un firmware falseado en la placa. Como mitigación parcial, el repositorio **ancla el sha256 del paquete `esp32:esp32@3.3.12`** (`SHA256_CORE` en `compilar.sh`): si el índice no sirve ese paquete exacto, el script no instala nada. Verificar la firma GPG del índice con `gpg` sería la mitigación completa y queda pendiente.
+
+El toolchain (el compilador de Xtensa y las bibliotecas del chip) llega como herramienta normal del índice y `core install` la instala; el core 3.3.12 no trae script post-install, así que no hace falta `--run-post-install`.
+
 ## Configurar secrets.h
 
-1. Copiar `secrets.h.example` a `secrets.h` en esta misma carpeta (junto a `xiao.ino`).
+1. Crear `secrets.h` en esta misma carpeta (junto a `xiao.ino`) a partir de la plantilla, **con permisos solo del propietario**: el archivo lleva el SSID, la clave del Wi-Fi y la clave MQTT del usuario `xiao`.
+
+   ```bash
+   install -m 600 secrets.h.example secrets.h
+   ```
+
+   `cp` a secas deja el archivo en 644 (legible por cualquier cuenta local del equipo).
 2. Rellenar el SSID y la clave del Wi-Fi de 2.4 GHz, el host o la IP de la Orange Pi y la clave del usuario `xiao`. Esa clave es la `MQTT_XIAO_PASSWORD` de `orangepi/.env`: pídesela a Yordi; no la copies ni la pegues en ningún documento.
 3. `secrets.h` lo ignora git (`.gitignore`). Comprobar con `git status` que no aparece antes de hacer un commit. No lo leas, no lo imprimas y no lo cites: es una regla del repo, igual que con `orangepi/.env`.
 4. Las claves quedan en la memoria flash de la XIAO y se pueden extraer con acceso físico. **Si una XIAO flasheada se extravía, hay que rotar la clave del usuario `xiao` (en `orangepi/.env`, lo hace Yordi) y la del Wi-Fi.**
+5. **`CAPTURA_HMAC_SECRETO`** es el secreto compartido con el servicio de visión: **el mismo valor** tiene que estar en `/etc/pase-lista/vision.env` (en la Orange Pi). Con 32 caracteres o más, y no puede ser el valor de ejemplo de la plantilla: la placa **no arranca la cámara** con el placeholder (el valor de ejemplo está versionado en el repo, así que con él cualquiera firmaría; el borde comprueba el placeholder exacto y la placa cualquier valor que empiece por `cambiar_`). Los dos lados lo llaman así a propósito, pero son dos archivos distintos en dos equipos distintos: si no coinciden, el servicio pide fotos y la placa las rechaza con 401, y el servicio avisa por log de que la placa no devolvió la foto.
+6. Lo mismo vale para el **binario compilado**: el `.bin` y el `.elf` llevan el SSID y las claves como cadenas en claro. Los scripts compilan con `--build-path` en un directorio temporal que se borra al terminar, y `.gitignore` excluye `firmware/**/build/`, `firmware/**/*.bin` y `firmware/**/*.elf`. No los copies a ningún lado ni los subas a un Drive.
+7. **La caché de `arduino-cli` también guarda las claves.** Los scripts compilan con `--build-path`, que no deja copia; pero **una compilación a mano o desde el IDE deja una copia de `secrets.h` y del `.bin` en `~/.cache/arduino/sketches/<hash>/`**. Después de compilar con el IDE, o antes de irte de ese equipo, bórrala:
+
+   ```bash
+   rm -rf ~/.cache/arduino/sketches
+   ```
 
 ## Compilar y flashear (Gustavo)
 
-Desde su laptop, con el IDE de Arduino:
+### Con arduino-cli (reproducible)
+
+El toolchain va en el equipo que compila, nunca en la Orange Pi: en la placa no se instala `arduino-cli` ni PlatformIO (AGENTS.md, [Hardware compartido](../../AGENTS.md#hardware-compartido)).
+
+1. Instalar `arduino-cli` en el usuario, sin `sudo`. El script baja la versión fijada (1.5.1) y **comprueba su sha256** contra el que publica la release:
+
+   ```bash
+   cd firmware/xiao
+   ./instalar-arduino-cli.sh
+   ```
+
+   Los hashes salen de `1.5.1-checksums.txt` de la release; el script los lleva escritos y el README dice cómo volver a derivarlos. El instalador comprueba además que la carpeta de destino no sea escribible por el grupo ni por otros (en tu `$HOME` la corrige él mismo) y que el binario instalado responda como esa versión.
+
+2. Crear `secrets.h` como se explica más arriba y rellenarlo.
+3. Compilar:
+
+   ```bash
+   ./compilar.sh
+   ```
+
+   El script comprueba que el core y las bibliotecas sean **exactamente** las versiones fijadas (y los instala o reemplaza si no lo son), avisa si `secrets.h` conserva los valores de ejemplo y compila con `PSRAM=opi`, `USBMode=hwcdc` y `PartitionScheme=default_8MB`. Se puede pasar la ruta a `arduino-cli` con la variable de entorno `ARDUINO_CLI`.
+
+   Con `BUILD_DIR=<carpeta>` el build va a esa carpeta en vez de a un temporal, y **no se borra al terminar**: sirve para inspeccionar el `.bin`, que lleva las claves en claro, así que hay que borrarlo a mano.
+
+4. Flashear con la placa conectada por USB-C:
+
+   ```bash
+   ./flashear.sh              # busca la XIAO entre los puertos
+   ./flashear.sh /dev/ttyACM0 # o el puerto explícito
+   arduino-cli board list     # para ver los puertos
+   ```
+
+   El script identifica la placa por su VID:PID y **no flashea a un puerto que no sea una ESP32 con USB nativo**: el VID:PID `303a:1001` es el USB Serial/JTAG del ROM de Espressif, que comparten todas las ESP32-S3 de la familia, así que **una DevKitC también passaría el filtro**. Para estar seguros, flashea con el puerto explícito y comprueba que `board list` muestra esa placa. Si hay más de una, pide el puerto a mano. Si la placa está conectada y la CLI no la ve, se puede forzar con `PERMITIR_CUALQUIER_PUERTO=1` (solo para depurar; es un escape del control de identidad, no de los permisos de `secrets.h`, que tienen su propio `PERMITIR_SECRETOS_LEGIBLES=1`).
+
+5. Monitor serie a 115200. **El puerto es el del USB Serial/JTAG**, que con `USBMode=hwcdc` es el USB del ROM (VID:PID `303a:1001`); en modo TinyUSB sería el de la variante (`2886:0056`). Se elige con `arduino-cli board list` (columna `Port`) o con `lsusb | grep -i 303a`:
+
+   ```bash
+   arduino-cli monitor --port <puerto> --config baudrate=115200
+   ```
+
+### Con el IDE de Arduino
+
+Sigue siendo válido: usa el mismo core y las mismas bibliotecas, pero hay que **elegir las mismas opciones que el FQBN de los scripts**, o el binario y la consola no son los mismos.
 
 1. Instalar el paquete de placas y las bibliotecas de la sección anterior.
-2. Abrir `firmware/xiao/xiao.ino` (la carpeta tiene el mismo nombre que el sketch), crear `secrets.h` y elegir la placa **XIAO_ESP32S3** con **USB CDC On Boot** activado.
+2. Abrir `firmware/xiao/xiao.ino` (la carpeta tiene el mismo nombre que el sketch), crear `secrets.h` y elegir la placa **XIAO_ESP32S3** con **USBMode en "Hardware CDC and JTAG"** (es el equivalente en el IDE del `USBMode=hwcdc` de los scripts), **PSRAM en OPI** y el esquema de particiones **Default with spiffs**. Con ese modo, el "USB CDC On Boot" del menú no aplica: es el que usa el modo TinyUSB.
 3. Compilar y cargar con la tira **aún sin conectar** a los 12 V. Abrir el monitor serie a 115200: debe verse `XIAO: tira LED por MQTT` y luego `MQTT: conectado`.
 4. Conectar la etapa de potencia como en el cableado y seguir con las pruebas de abajo. **No conectar el adaptador a la tira hasta resolver los cuatro datos pendientes** (MOSFET, largo y densidad de la tira, amperaje del adaptador y rotulado de los pines): si el amperaje del adaptador no cubre 1.25 veces el consumo de la tira, usar un tramo más corto.
 
-Si la compilación falla por una API distinta a la esperada (lo más probable: `JsonDocument` si se instaló ArduinoJson 6, o `setSocketTimeout` en otra versión de PubSubClient, o `setTimeout` de `WiFiClient`), avisar a Yordi con el mensaje del compilador.
+Si la compilación falla por una API distinta a la esperada, avisar a Yordi con el mensaje del compilador. Con las versiones fijadas arriba, el 4 nov compiló sin avisos. **No pegues la salida de la compilación en un chat, en un documento ni en un log compartido si has tocado `secrets.h`**: el compilador puede citar la línea que falló y esa línea lleva una clave. Los scripts ya ocultan esas líneas al imprimirlas, pero la Terminal y el IDE no.
 
 ## Probar desde Node-RED
 
@@ -182,47 +291,70 @@ No uses desde la línea de comandos el usuario `xiao` (es la placa) ni `nodered`
 | Apagado de seguridad | Con la luz encendida, detener Mosquitto (lo hace Yordi en la placa) | La tira apaga en cuanto se cierra la conexión (hasta unos 30 s si la red se cae sin cerrar el socket) y el monitor lo dice; al volver el broker reconecta en unos 5 s |
 | Arranque apagado | Quitar y volver a dar alimentación a la XIAO con la luz encendida | La tira no destella al arrancar; el USB sigue funcionando |
 | Will | Quitar la alimentación de la XIAO | Tras unos 20 a 30 s llega `{"en_linea":false}` retenido a `aula/camara/estado` |
+| Actuadores | `{"servo":"abrir"}` | El servo abre 90° y se cierra solo a los 3 s; llega `aula/actuador/estado {"servo":"cerrado","led":"apagado","luz":0}` (el LED está apagado si no hay sesión activa) |
+| LED y buzzer | `{"led":"verde","buzzer":1}` | El LED se pone verde y suena un pitido; el estado trae los tres campos |
+| Sesión activa | (la publica Node-RED) `aula/sesion/estado {"activa":true}` | El LED se pone azul mientras la sesión está activa; al terminarla vuelve al último color |
+| PIR | (no hay orden: es un evento) | Al pasar por delante del PIR llega `aula/camara/pir {"mov":1}`; en la terminal de Node-RED, `aula/camara/pir` con `mqtt in` |
+| Cámara | (la pide la visión) | `curl http://<ip-xiao>/capture?res=UXGA` **sin firma** devuelve 401; con la firma bien, devuelve la JPEG. La firma la calcula el servicio de visión: `orangepi/vision` la manda sola |
 
 Mosquitto descarta en silencio lo que su ACL deniega: si una orden no hace nada, mirar el log del broker antes de culpar al firmware.
 
-## Integrar el resto del firmware
+## Lo que falta (el INA219 y el endurecimiento)
 
-Gustavo agrega cámara, PIR, INA219, servo, LEDs y buzzer **en este mismo sketch** (`xiao.ino` y archivos nuevos en la carpeta), porque la placa corre un solo programa y comparte el Wi-Fi y la conexión MQTT. Puntos de unión:
+Lo que sigue sin implementar, todo del carril de Gustavo:
 
-- **Más campos de `cmd`:** en `alRecibir()`, junto al bloque de `luz`. El procesamiento no se corta con un `return` para que los bloques de cada actuador convivan.
-- **Estado:** `construirEstado()` (en `logica_luz`) hoy solo escribe `luz`. Hay que ampliarlo para que publique `servo`, `led` y `luz` juntos, y llamarlo cada vez que cambie cualquiera de los tres (ver [Desviaciones](#desviaciones-del-contrato), punto 3).
-- **Salud:** el `{"en_linea":true}` de `conectarMqtt()` se reemplaza por el latido de cada 30 s de `aula/camara/estado` (contrato, sección 3), con el mismo LWT.
-- **Otros tópicos:** hay que suscribirse en `conectarMqtt()`; `aula/sesion/estado` también es retenido y su ventana de descarte (1500 ms) es la misma. Las publicaciones nuevas necesitan el permiso en la ACL, que ya lo tiene para `aula/camara/pir`, `aula/camara/energia` y `aula/camara/estado`.
-- **Bloqueo de `loop()`:** los reintentos de conexión MQTT (`conectarMqtt()`) bloquean `loop()` hasta unos 10 s con IP (más con un nombre, por el DNS), más 1.5 s de ventana de retenidos. Es aceptable mientras solo hay una tira, pero no con servo, PIR e INA219 en el mismo `loop()`: cuando entren, mover la conexión a otra tarea de FreeRTOS o usar un connect no bloqueante.
-- **Apagado automático:** `loop()` revisa el plazo de 360 s de la luz; cualquier trabajo bloqueante nuevo lo retrasa. La visión y la orquestación luz–captura deben reenviar `luz:1` antes de 360 s (contrato v0.8).
+- **INA219:** `aula/camara/energia` con `{"v":...,"i":...,"p":...}`, en los rangos que valida Node-RED (v 0-30, i 0-10, p 0-300). Va en **I2C0** (`Wire.begin(5, 6)`), porque la SCCB de la cámara usa el I2C1.
+- **Latido de salud:** `aula/camara/estado` pasa de publicarse solo al conectar a publicar **cada 30 s** con `rssi`, `heap` y `temp`, conservando el LWT `{"en_linea":false}` (contrato, sección 3).
+- **Bloqueo de `loop()`:** los reintentos de conexión MQTT bloquean `loop()` hasta unos 10 s con IP (más con un nombre, por el DNS), más 1.5 s de la ventana de retenidos. Con el servo, el PIR y la cámara ya es un problema: la conexión tiene que pasar a otra tarea de FreeRTOS o a un `connect` no bloqueante. **La cámara ya va en su propia tarea** (`captura.cpp`), pero el MQTT sigue en el lazo.
 - **Búfer:** PubSubClient tiene 256 bytes por defecto; si algo que publique o reciba lo supera, `mqtt.setBufferSize()`.
-- **LEDC:** el sketch no usa LEDC: la tira es todo o nada con `digitalWrite`. No consume uno de los 4 timers que se reparten el servo, el buzzer y los LEDs RGB (plan, sección 13).
-- **Pruebas unitarias:** las de cámara, INA219 y servo que prevé el plan (sección 11) son de Gustavo; las de `logica_luz` viven en `pruebas/` de esta carpeta.
+- **Apagado automático:** `loop()` revisa el plazo de 360 s de la luz; cualquier trabajo bloqueante nuevo lo retrasa. La visión y la orquestación luz–captura deben reenviar `luz:1` antes de 360 s (contrato v0.8).
+- **QoS 1 al publicar:** PubSubClient solo publica con QoS 0. Para el LWT y para el estado retenido basta; si hace falta QoS 1 de verdad, hay que migrar a esp-mqtt.
+- **Pruebas de la cámara en la placa:** ver [Sin verificar](#sin-verificar).
 
 ## Pruebas de host
 
-Prueban `logica_luz` sin Arduino ni dependencias, solo con `g++`. Desde `firmware/xiao/`:
+Prueban los módulos puros sin Arduino ni dependencias, solo con `g++`. Cada módulo va en su propio archivo de prueba y se compila aparte. Desde `firmware/xiao/`:
 
 ```bash
 d=$(mktemp -d)
-g++ -std=c++17 -Wall -Wextra -Werror -I. logica_luz.cpp pruebas/test_logica_luz.cpp -o "$d/test_logica_luz"
-"$d/test_logica_luz"   # termina con "N verificaciones, 0 fallos" y código 0
+g++ -std=c++17 -Wall -Wextra -Werror -I. logica_luz.cpp pruebas/test_logica_luz.cpp -o "$d/t_luz"
+"$d/t_luz"   # termina con "N verificaciones, 0 fallos" y código 0
 ```
 
-Cubren: descarte de retenidos y de payloads vacíos, `luz` ausente, no entera y fuera de 0 y 1, cambio de estado solo cuando cambia (también para el apagado de seguridad), el apagado automático (vence justo en el límite, se renueva con otro `luz:1`, no vence si se apaga antes y funciona con el desbordamiento de `millis()`) y el payload de `aula/actuador/estado`, incluido cuando no cabe en el búfer. **No** cubren `xiao.ino`: el parseo del JSON, Wi-Fi, MQTT y el pin necesitan la placa.
+Los cinco módulos y sus pruebas:
+
+| Módulo | Qué cubre |
+|---|---|
+| `logica_luz` | Descarte de retenidos y de payloads vacíos, `luz` ausente, no entera y fuera de 0 y 1, cambio de estado solo cuando cambia, el apagado automático (vence en el límite, se renueva con otro `luz:1`, no vence si se apaga antes, y con el desbordamiento de `millis()`). |
+| `logica_pir` | Flanco de subida (el de bajada no publica), antirrebote, calentamiento del sensor, el desbordamiento de `millis()` y el payload exacto `{"mov":1}`. |
+| `logica_actuadores` | Los valores del contrato de `servo`, `led` y `buzzer` (y lo que se ignora), el temporizado de 3 s del servo, la prioridad del LED azul con la sesión activa, y el payload `{"servo":...,"led":...,"luz":N}` incluido cuando no cabe en el búfer. |
+| `hmac_sha256` | Los vectores del protocolo (los mismos cinco que usa el servicio de visión) y la comparación en tiempo constante. |
+| `logica_camara` | Las cabeceras ausentes, la firma inválida, el nonce repetido, el `ts` antiguo, el camino con query y el payload que no cabe. |
+
+**No** cubren `xiao.ino`, `captura.cpp` ni `actuadores.cpp`: el parseo del JSON, el Wi-Fi, el MQTT, la cámara y los pines necesitan la placa.
 
 ## Sin verificar
 
 Hasta que Gustavo flashee la placa, **nada de lo siguiente se ha ejecutado**:
 
-- Que `xiao.ino` compila con el core ESP32 3.x, PubSubClient 2.8 y ArduinoJson 7. Solo se comprobó la sintaxis contra declaraciones propias, que reflejan lo que se recuerda de esas APIs y no son las bibliotecas reales.
 - Que el callback de PubSubClient 2.8 no expone la bandera retain (desviación 1), y que la ventana de 1500 ms (con `WiFi.setSleep(false)`) basta para la entrega inicial del broker.
 - Que `ArduinoJson` rechaza como se espera `true`, `"1"` y `1.5` en `is<int>()`.
 - La conexión, el LWT, la sesión limpia y la suscripción con QoS 1 contra el Mosquitto real y su ACL.
 - La reconexión del Wi-Fi y del broker, el tiempo real que bloquea un intento y el apagado de seguridad.
 - El apagado automático de 360 s con la placa (la lógica está probada en host; el cableado a `loop()` no).
 - El reintento del estado pendiente tras una publicación fallida.
-- Que `WiFiClient::setTimeout` recibe segundos en el core 3.x.
+- El camino de flasheo completo (`compile --build-path` y `upload --input-dir`): nunca se ha ejecutado contra hardware. En el primer flasheo hay que comprobar que el build tiene los tres `.bin` (bootloader, particiones y app) y que el `.bin` que se graba es el recién compilado.
 - Que D2 (GPIO3) arranca bajo y que el USB Serial/JTAG sigue funcionando con el pull-down puesto.
 - El cableado completo con el MOSFET real, el adaptador y la tira; en particular que el IRLZ44N conmuta bien con 3.3 V.
 - Los datos de la tira, el adaptador y el MOSFET de la lista de pendientes.
+- **La cámara en la placa:** que arranque, que el sensor se detecte (OV3660 u OV5640), que la foto quepa en los 2 MB que acepta la visión, y que el tiempo de la captura deje margen al plazo de 2 s del cliente.
+- **El endpoint `/capture` de punta a punta:** que la visión (con la firma) saque la foto y que la placa la rechace con 401 si la firma está mal o el nonce se repite. El lado de la visión **no está compilado** (en este equipo no hay OpenCV 4.6): el `cmake` y el `ctest` se correrán en la Orange Pi.
+- **El divisor del PIR** (10 kΩ/20 kΩ) y el nivel real del HC-SR501 en D0.
+- **El sentido del servo:** si la puerta abre hacia el lado contrario, se ajustan los dos pulsos en `actuadores.h`.
+- **Los LEDs RGB** en D8/D9/D10: que el ámbar (rojo + verde) se vea y que el azul de la sesión mande sobre el color de retroalimentación.
+- **El buzzer:** que suene y que el doble pitido del error se oiga.
+
+### Resuelto el 4 nov
+
+- **Compila.** El sketch compiló con el core ESP32 3.3.12, PubSubClient 2.8.0 y ArduinoJson 7.4.3, con `arduino-cli` 1.5.1 y sin un solo aviso (`--warnings all`).
+- **Los timeouts del socket.** Las unidades de `Stream::setTimeout` son milisegundos, y además esa llamada **no hacía nada aquí**: `NetworkClient` declara su propio `int _timeout` y lo oculta por nombre, así que la llamada escribía un miembro sin usar. El timeout de la conexión TCP y el del socket (`SO_RCVTIMEO`) salen del `_timeout` de `NetworkClient`, que arranca en 3000 ms (`WIFI_CLIENT_DEF_CONN_TIMEOUT_MS`) y solo cambia con `setConnectionTimeout(ms)`. El sketch usaba `red.setTimeout(5)`: era inerte, no rompía la conexión, y el valor real era el de 3 s del core. Ahora usa `red.setConnectionTimeout(TIMEOUT_SOCKET_MS)` (5000 ms), que sí acota la conexión TCP, y `mqtt.setSocketTimeout(TIMEOUT_SOCKET_S)` (5 s, en segundos) para el CONNACK. Con eso, el peor caso del intento de conexión son 5 s + 5 s = 10 s, como decía el README.

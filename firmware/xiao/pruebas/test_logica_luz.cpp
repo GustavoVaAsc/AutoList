@@ -129,27 +129,6 @@ static void apagado_automatico_con_desbordamiento_de_millis() {
   VERIFICAR(!c.encendida());
 }
 
-static void construye_estado() {
-  char buf[32];
-  VERIFICAR(construirEstado(buf, sizeof buf, true) == 9);
-  VERIFICAR(strcmp(buf, "{\"luz\":1}") == 0);
-  VERIFICAR(construirEstado(buf, sizeof buf, false) == 9);
-  VERIFICAR(strcmp(buf, "{\"luz\":0}") == 0);
-}
-
-static void estado_no_cabe() {
-  char buf[9];
-  memset(buf, 'x', sizeof buf);
-  VERIFICAR(construirEstado(buf, 9, true) == 0);   // falta el terminador
-  VERIFICAR(buf[0] == '\0');                       // no deja basura
-  char justo[10];
-  VERIFICAR(construirEstado(justo, sizeof justo, true) == 9);
-  VERIFICAR(construirEstado(nullptr, 0, true) == 0);
-  char uno[1] = {'x'};
-  VERIFICAR(construirEstado(uno, 1, false) == 0);
-  VERIFICAR(uno[0] == '\0');
-}
-
 int main() {
   descarta_retenido_y_vacio();
   interpreta_luz();
@@ -161,8 +140,6 @@ int main() {
   otro_encender_renueva_el_plazo();
   apagar_antes_cancela_el_vencimiento();
   apagado_automatico_con_desbordamiento_de_millis();
-  construye_estado();
-  estado_no_cabe();
   printf("%d verificaciones, %d fallos\n", total, fallos);
   return fallos == 0 ? 0 : 1;
 }

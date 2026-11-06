@@ -42,14 +42,4 @@ bool ControlLuz::revisarVencimiento(uint32_t ahora_ms) {
   return true;
 }
 
-size_t construirEstado(char* destino, size_t capacidad, bool encendida) {
-  if (destino == nullptr || capacidad == 0) return 0;
-  const int n = snprintf(destino, capacidad, "{\"luz\":%d}", encendida ? 1 : 0);
-  if (n < 0 || static_cast<size_t>(n) >= capacidad) {
-    destino[0] = '\0';
-    return 0;
-  }
-  return static_cast<size_t>(n);
-}
-
 }  // namespace logica_luz

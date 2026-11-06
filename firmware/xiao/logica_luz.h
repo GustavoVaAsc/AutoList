@@ -69,8 +69,8 @@ class ControlLuz {
   bool encendida_ = false;
 };
 
-// Escribe en `destino` el payload de aula/actuador/estado, p. ej. {"luz":1}, con
-// terminador nulo. Devuelve su longitud, o 0 si no cabe en `capacidad`.
-size_t construirEstado(char* destino, size_t capacidad, bool encendida);
+// El payload de aula/actuador/estado lo construye logica_actuadores
+// (construirEstado), porque ahora lleva los tres campos (servo, led y luz) y no
+// solo la luz: un solo sitio que arma el payload del tópico.
 
 }  // namespace logica_luz
