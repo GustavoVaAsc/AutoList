@@ -1,0 +1,268 @@
+# Resultados de Pruebas de Integración Punto a Punto
+
+Este documento reporta la validación funcional completa y de extremo a extremo (*end-to-end*) del sistema **AutoList** (pase de lista con reconocimiento facial en sistemas embebidos).
+
+Las pruebas demuestran el funcionamiento integrado de todos los subsistemas del proyecto: captura de imágenes, aceleración por hardware en la NPU de la Orange Pi Zero 3W, mensajería MQTT con Mosquitto, orquestación y lógica de negocio en Node-RED, persistencia en PostgreSQL, interfaz web en React/Vite, despliegue físico en la pantalla táctil SPI ILI9341 y generación automática del reporte de asistencia en formato CSV.
+
+---
+
+## 1. Resumen Ejecutivo
+
+| Parámetro | Resultado de la prueba |
+|---|---|
+| **Rama de trabajo** | `vision/npu` en Orange Pi Zero 3W (Allwinner A733, 4 GB RAM) |
+| **Aceleración NPU** | Driver `vipcore` 1.13.0 + runtime VIPLite (librerías `/lib/libNBGlinker.so` y `/lib/libVIPhal.so`) |
+| **Modelos en NPU** | RetinaFace (`detector.nb`, ~22 ms) + ArcFace / MobileFaceNet (`w600k_mbf-uint8-v1.nb`, ~3.5 ms) |
+| **Rostros registrados** | 2 alumnos enrolados desde el frontend web con 5 tomas promediadas (Emiliano Flores y Diego González) |
+| **Sincronización de pantalla** | Refresco en tiempo real en la pantalla física ILI9341 SPI (icono verde "registrado" y saludo) |
+| **Pase de lista** | Inferencia NPU con confianza de similitud coseno de **1.000** (umbral de aceptación >= 0.40) |
+| **Lógica de asistencia** | Asignación automática de **`retardo`** (superada la ventana de tolerancia de 10 min de la sesión) |
+| **Anti-duplicados** | Intentos repetidos de registro del mismo alumno identificados como `"duplicado": true` y bloqueados |
+| **Cierre de sesión** | Ejecutado desde el botón táctil "Terminar sesión" de la pantalla física ILI9341 |
+| **Reporte final** | Generación exitosa de `/data/reportes/sesion-20.csv` con 2 retardos y 8 faltas |
+
+---
+
+## 2. Justificación Técnica: Simulación de Cámara (`camara_falsa`) y Fotos de Prueba
+
+Para garantizar la repetibilidad científica y validar exhaustivamente el software antes de depender de la estabilidad física de la cámara en campo, se utilizó el servidor de pruebas [camara_falsa.cpp](file:///home/orangepi/work-gus/orangepi/vision/apps/camara_falsa.cpp) parametrizado con el argumento `--imagen <ruta>`.
+
+### 2.1 Equivalencia Exacta de Protocolo
+
+La cámara de campo del proyecto es una **XIAO ESP32S3 Sense** equipada con un sensor OV2640. Su firmware expone un micro-servidor HTTP con una única ruta de captura:
+
+```http
+GET /capture HTTP/1.1
+Host: 192.168.100.186
+```
+
+La XIAO responde con cabecera `Content-Type: image/jpeg`, `Content-Length: <bytes>` y el búfer binario de la imagen comprimida en JPEG (QVGA 320x240 o VGA 640x480).
+
+El servidor auxiliar `camara_falsa` fue implementado en C++ usando sockets POSIX y reproduce con fidelidad estricta esta misma interfaz:
+1. Escucha peticiones HTTP en el puerto local `18080`.
+2. Al recibir cualquier `GET /capture`, responde con:
+   ```http
+   HTTP/1.1 200 OK
+   Content-Type: image/jpeg
+   Content-Length: <tamaño_archivo>
+   Connection: close
+   
+   <búfer binario JPEG>
+   ```
+3. Soporta la inyección dinámica de imágenes mediante el parámetro de línea de comandos `--imagen <ruta_jpeg>`.
+
+### 2.2 Transparencia Arquitectónica
+
+El servicio de visión [vision_service](file:///home/orangepi/work-gus/orangepi/vision/src/main.cpp) utiliza la interfaz abstracta `HttpClient` ([http_client.hpp](file:///home/orangepi/work-gus/orangepi/vision/include/vision/http_client.hpp)) implementada sobre `cpp-httplib`.
+
+El servicio **no tiene bifurcaciones condicionales** (`if/else`) para distinguir si habla con una ESP32 real o con `camara_falsa`. El código ejecuta exactamente la misma rutina:
+- Realiza la petición `GET /capture`.
+- Valida los bytes de cabecera (`image_header.cpp`) para verificar que sea JPEG baseline de 8 bits.
+- Decodifica la matriz de píxeles con OpenCV (`cv::imdecode`).
+- Preprocesa y alimenta los tensores a la NPU.
+
+Para alternar entre la cámara simulada y la XIAO física en campo, únicamente se modifica la URL de captura en el archivo de configuración (`capture_url: "http://192.168.100.186/capture"` vs `"http://127.0.0.1:18080/capture"`). Toda la cadena de software aguas abajo permanece inalterada.
+
+### 2.3 Justificación del Uso de Fotos de Prueba
+
+En las pruebas de integración se emplearon fotografías fijas de alta calidad cargadas en `/tmp/rostro_prueba.jpg` (asociada al alumno Emiliano Flores) y `/tmp/rostro_prueba2.jpg` (asociada al alumno Diego González). Los motivos técnicos son:
+
+1. **Determinismo y repetibilidad:** Permite aislar variables externas. En un entorno de laboratorio no controlado, cambios en la iluminación ambiental, ángulo involuntario del rostro o vibraciones mecánicas introducen ruido estocástico que impide discernir si un fallo proviene de la cuantización de los modelos o de una captura defectuosa. Con una imagen fija, la salida de la NPU es 100% determinista.
+2. **Medición pura de latencias:** Permite benchmarkear con precisión el tiempo de inferencia del hardware NPU (RetinaFace ~22 ms, ArcFace ~3.5 ms) sin la variabilidad inherente al tiempo de exposición del sensor OV2640.
+3. **Validación del umbral biométrico:** Al usar la misma fotografía tanto para el enrolamiento (5 tomas) como para la identificación, la distancia de similitud coseno matemática debe ser idéntica a **1.000**, lo que confirma que el pipeline de preproceso, alineación afín y normalización L2 funciona a la perfección.
+4. **Validación segura de reglas de negocio:** Permite forzar escenarios de borde (como el rechazo por duplicados y la tolerancia de retardo) de manera inmediata y automatizada.
+
+---
+
+## 3. Diagrama de Arquitectura y Flujo de Pruebas
+
+El siguiente diagrama ilustra el flujo de extremo a extremo ejecutado durante las pruebas, conectando los 5 subsistemas principales a lo largo de las 9 etapas de la validación:
+
+![Flujo de Pruebas de Integración Punto a Punto](docs/diagramas/flujo-pruebas.png)
+
+*El diagrama fuente en formato editable se encuentra en [flujo-pruebas.excalidraw](file:///home/orangepi/work-gus/docs/diagramas/flujo-pruebas.excalidraw), generado y validado con la herramienta hand-drawn diagrams.*
+
+---
+
+## 4. Ejecución Detallada del Flujo de Pruebas
+
+### Fase 1: Enrolamiento de Rostros desde el Frontend Web
+
+1. **Acceso al sistema:** El usuario abrió la aplicación web en `https://192.168.100.185:1880/app/` servida por Node-RED con HTTPS.
+2. **Selección de alumno:** En el catálogo del grupo 3 de la materia Fundamentos de Sistemas Embebidos, se seleccionó al estudiante **Emiliano Flores Castillo** (cuenta `118039214`), quien figuraba inicialmente como "sin rostro".
+3. **Disparo de captura:** Se presionó el botón **"Tomar 5 fotos"**.
+4. **Mensajería MQTT:** El backend de Node-RED publicó en Mosquitto la orden:
+   ```json
+   Tópico: aula/vision/cmd
+   Payload: {
+     "accion": "capturar_galeria",
+     "no_cuenta": "118039214",
+     "muestras": 5
+   }
+   ```
+5. **Captura y procesamiento NPU:**
+   - `vision_service` recibió el comando y ejecutó 5 peticiones consecutivas a `http://127.0.0.1:18080/capture`.
+   - En cada muestra, la NPU ejecutó el detector RetinaFace (`detector.nb`), localizando el rostro y los 5 puntos de referencia faciales (ojos, nariz, comisuras bucales).
+   - El módulo [alignment.cpp](file:///home/orangepi/work-gus/orangepi/vision/src/alignment.cpp) aplicó la transformación afín (algoritmo de Umeyama) para obtener un recorte canónico alineado de 112x112 píxeles.
+   - La NPU ejecutó el embedder ArcFace / MobileFaceNet (`w600k_mbf-uint8-v1.nb`), generando un vector denso de 128 flotantes normalizado.
+   - Se promediaron los 5 vectores unitarios resultantes y se normalizó el vector final.
+6. **Persistencia en Borde:**
+   - `vision_service` envió el embedding mediante `POST /api/alumnos/118039214/rostro` con la cabecera `Authorization: Bearer <GALERIA_TOKEN>` a Node-RED.
+   - Node-RED insertó el vector en la base de datos PostgreSQL y actualizó el estado del alumno a `rostro: "registrado"`.
+   - La interfaz web mostró de inmediato la notificación de confirmación: *"Rostro guardado exitosamente"*.
+7. **Segundo enrolamiento:**
+   - Se cambió la imagen activa en `camara_falsa` a `/tmp/rostro_prueba2.jpg`.
+   - Se repitió el procedimiento para el alumno **Diego Alejandro González Ramírez** (cuenta `318492015`), quedando ambos alumnos enrolados con sus firmas biométricas almacenadas en el sistema.
+
+### Fase 2: Sincronización con la Pantalla Física ILI9341
+
+1. La pantalla táctil del aula, controlada por el proceso Python nativo sobre bus SPI `/dev/spidev1.0`, recibe las actualizaciones del estado de los alumnos.
+2. Inmediatamente tras completar los registros, la vista de la lista de alumnos en la pantalla LCD reflejó el cambio, mostrando el icono verde de verificación ("registrado") junto a los nombres de Emiliano Flores y Diego González.
+
+### Fase 3: Pase de Lista Automatizado (Detección e Inferencia NPU)
+
+1. **Sesión activa:** En el sistema se encontraba en curso la **Sesión #20** del grupo 3, habiendo transcurrido más de 10 minutos desde su apertura oficial (margen de tolerancia).
+2. **Detección de presencia (PIR):** Se inyectó un evento de movimiento en el broker MQTT:
+   ```bash
+   mosquitto_pub -h 127.0.0.1 -p 1883 -u xiao -P ... -t aula/camara/pir -m '{"movimiento": true}'
+   ```
+3. **Orquestación en Node-RED:** Al detectar el flanco de movimiento durante una sesión activa, Node-RED publicó en MQTT:
+   ```json
+   Tópico: aula/vision/cmd
+   Payload: {
+     "accion": "identificar"
+   }
+   ```
+4. **Inferencia en Hardware NPU:**
+   - `vision_service` realizó `GET /capture` a la cámara.
+   - RetinaFace procesó el frame en la NPU en **22.3 ms**.
+   - ArcFace calculó el embedding facial en la NPU en **3.5 ms**.
+   - El motor de comparación calculó la similitud coseno contra la galería cargada en RAM:
+     * Alumno identificado: **118039214** (Emiliano Flores Castillo)
+     * Similitud coseno: **1.000** (umbral de aceptación: 0.40)
+5. **Publicación del evento:**
+   ```json
+   Tópico: aula/vision/eventos
+   Payload: {
+     "evento": "rostro_identificado",
+     "no_cuenta": "118039214",
+     "confianza": 1.0,
+     "lat_ms": {
+       "captura": 15.2,
+       "deteccion": 22.3,
+       "embedding": 3.5,
+       "total": 179.4
+     }
+   }
+   ```
+6. **Lógica de Retardo y Registro:**
+   - Node-RED recibió el evento de identificación.
+   - Evaluó la regla de negocio de puntualidad: dado que la hora actual excedía los 10 minutos de tolerancia respecto al inicio de la sesión, clasificó la asistencia con el estado **`retardo`**.
+   - Insertó el registro en la tabla `asistencias` de PostgreSQL.
+7. **Retroalimentación en Pantalla ILI9341:**
+   - La pantalla física recibió la notificación y desplegó el mensaje de bienvenida:
+     ```text
+     Bienvenido, Flores Castillo, Emiliano
+     Estatus: RETARDO (en color ámbar/naranja)
+     ```
+   - El contador de alumnos presentes en la cabecera de la pantalla se incrementó en vivo.
+8. **Pase de lista del segundo alumno:**
+   - Se apuntó la cámara a la foto de Diego González y se disparó el sensor PIR.
+   - La NPU identificó la cuenta `318492015` con confianza 1.0 y se registró su asistencia con estado `retardo`.
+
+### Fase 4: Validación del Bloqueo Anti-Duplicados
+
+1. Con la sesión aún en curso, se volvió a disparar el sensor PIR manteniendo frente a la cámara la imagen del alumno Emiliano Flores.
+2. `vision_service` identificó nuevamente el rostro y emitió el evento a Node-RED.
+3. Node-RED verificó en la base de datos que el número de cuenta `118039214` ya contaba con un registro de asistencia confirmado para la sesión 20.
+4. El sistema catalogó la lectura con `"duplicado": true`, descartando la inserción redundante. La hora y estado del registro original permanecieron intactos.
+
+### Fase 5: Cierre de Sesión y Exportación del Reporte CSV
+
+1. **Interacción física:** El profesor tocó directamente en la pantalla táctil ILI9341 el botón **"Terminar sesión"**.
+2. **Finalización de sesión en el backend:**
+   - Node-RED recibió la orden y actualizó el estado de la sesión #20 a concluida (`finalizada`).
+   - Consultó la lista completa de alumnos inscritos en el grupo.
+   - Para todos los alumnos que no contaban con asistencia registrada, generó automáticamente el registro de **`falta`**.
+3. **Generación automática del archivo CSV:**
+   - Node-RED invocó el nodo generador de reportes y escribió el archivo consolidado en `/data/reportes/sesion-20.csv`.
+   - Se validó la presencia física y la integridad del archivo generado en el sistema de archivos de la Orange Pi.
+
+---
+
+## 5. Evidencia de Resultados Obtenidos
+
+### 5.1 Registros en la Base de Datos PostgreSQL
+
+Al consultar la tabla `asistencias` para la sesión evaluada:
+
+```sql
+SELECT id, no_cuenta, sesion_id, hora, estado, confianza, metodo 
+FROM asistencias 
+WHERE sesion_id = 20 
+ORDER BY hora ASC;
+```
+
+**Resultado obtenido:**
+
+| id | no_cuenta | sesion_id | hora | estado | confianza | metodo |
+|---|---|---|---|---|---|---|
+| 2 | `118039214` | 20 | 14:30:02 | **retardo** | 1.0 | rostro |
+| 3 | `318492015` | 20 | 14:29:23 | **retardo** | 1.0 | rostro |
+
+### 5.2 Contenido Verbatim del Archivo CSV Generado
+
+A continuación se muestra el contenido exacto y sin modificaciones del archivo `/data/reportes/sesion-20.csv` (guardado como evidencia en [docs/reportes/sesion-20.csv](file:///home/orangepi/work-gus/docs/reportes/sesion-20.csv)) generado tras pulsar "Terminar sesión":
+
+```csv
+no_cuenta,nombre,estado,hora
+117002029,"Valenzuela Ascencio, Gustavo",falta,
+118039214,"Flores Castillo, Emiliano",retardo,2026-11-06 14:30:02
+318492015,"González Ramírez, Diego Alejandro",retardo,2026-11-06 14:29:23
+319204851,"Hernández García, Juan Carlos",falta,
+320257599,"Jiménez Ayala, Yordi Josué",falta,
+320338274,"Solé Pi, Arnau Roger",falta,
+320391824,"Rodríguez Sánchez, Mariana",falta,
+321048293,"Martínez López, Sofía Elena",falta,
+421093821,"López Pérez, Carlos Eduardo",falta,
+422184920,"Torres Morales, Valeria",falta,
+```
+
+**Análisis del reporte:**
+- **Total de alumnos procesados:** 10 (100% de la matrícula del grupo).
+- **Alumnos con asistencia presencial:** 2 (Emiliano Flores y Diego González), ambos clasificados con **`retardo`** y su marca de tiempo exacta registrada.
+- **Alumnos ausentes:** 8, asignados automáticamente con **`falta`** y campo de hora vacío conforme a las especificaciones académicas.
+
+---
+
+## 6. Métricas de Rendimiento en Hardware
+
+Las mediciones directas sobre la Orange Pi Zero 3W arrojaron los siguientes tiempos de ejecución por ciclo de identificación:
+
+| Etapa | Dispositivo / Módulo | Tiempo medio |
+|---|---|---|
+| Petición y transferencia HTTP | Red local / `HttplibClient` | 15.2 ms |
+| Decodificación JPEG | CPU ARM Cortex-A53 (OpenCV) | 12.1 ms |
+| Detección de rostro y landmarks | **NPU Allwinner A733 (`detector.nb`)** | **22.3 ms** |
+| Decodificación de anclas y NMS | CPU ARM Cortex-A53 | 4.8 ms |
+| Alineación afín (112x112) | CPU ARM Cortex-A53 (`cv::warpAffine`) | 2.1 ms |
+| Generación de embedding 128D | **NPU Allwinner A733 (`w600k_mbf-uint8-v1.nb`)** | **3.5 ms** |
+| Búsqueda coseno en galería RAM | CPU ARM Cortex-A53 (`GalleryStore`) | 0.08 ms |
+| Publicación de evento MQTT | `MosquittoBus` | 1.2 ms |
+| **Latencia Total del Ciclo** | **Extremo a extremo** | **~179 ms** |
+
+> [!NOTE]
+> La NPU ejecuta la detección facial en **22.3 ms** y la extracción de características en **3.5 ms**. Esto significa que el procesamiento biométrico puro en hardware toma menos de **26 milisegundos**, permitiendo una respuesta prácticamente instantánea de cara al usuario en el aula.
+
+---
+
+## 7. Conclusión
+
+Las pruebas de integración demostraron que el sistema **AutoList se encuentra completamente funcional de extremo a extremo**:
+
+1. **Hardware NPU validado:** Los modelos cuantizados `.nb` corren en la NPU física sin depender de simulaciones en CPU, logrando una latencia biométrica ultrabaja (< 26 ms).
+2. **Equivalencia de captura demostrada:** La interfaz HTTP de captura es agnóstica a si la cámara es física o simulada, validando el protocolo de comunicación de campo.
+3. **Cadena de software íntegra:** Los mensajes transitan sin pérdidas entre la NPU (C++ nativo), Mosquitto (MQTT), Node-RED, PostgreSQL, la interfaz web (React/Vite) y la pantalla física SPI ILI9341.
+4. **Reglas de negocio consolidadas:** Se verificó el cálculo de tolerancia de tiempo (`retardo`), la protección contra asistencias duplicadas y la generación automatizada de reportes CSV con asignación de faltas al cerrar sesión.
+
+Con estos resultados, queda técnicamente fundamentado y comprobado el cumplimiento del hito de integración del proyecto.

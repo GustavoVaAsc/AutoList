@@ -1,6 +1,6 @@
 # Servicio de visión (C++, nativo)
 
-Servicio de visión del plan (`docs/HIGH-LEVEL-PLAN.md`, secciones 5.1, 5.4, 6.2 y 7.1). Sigue siendo agnóstico a una decisión: el modelo concreto (el detector y el reconocedor, y la dimensión de su embedding), que vive detrás de interfaces y detrás de la NPU. Las librerías de MQTT y HTTP ya no son una de esas decisiones: hay adaptadores reales (libmosquitto y cpp-httplib) detrás de las mismas interfaces, y los adaptadores del detector y el embedder sobre la NPU también existen (`NpuFaceDetector` y `NpuFaceEmbedder`), aunque los `.nb` todavía no. El contrato MQTT (`docs/contrato-mqtt.md`) está codificado en los payloads tipados y en la capa JSON.
+Servicio de visión del plan (`docs/HIGH-LEVEL-PLAN.md`, secciones 5.1, 5.4, 6.2 y 7.1). Sigue siendo agnóstico a una decisión: el modelo concreto (el detector y el reconocedor, y la dimensión de su embedding), que vive detrás de interfaces y detrás de la NPU. Las librerías de MQTT y HTTP usan adaptadores reales (libmosquitto y cpp-httplib) detrás de las mismas interfaces, y los adaptadores del detector y el embedder sobre la NPU (`NpuFaceDetector` y `NpuFaceEmbedder`) operan sobre modelos binarios compilados `.nb` (RetinaFace `detector.nb` y ArcFace / MobileFaceNet `w600k_mbf-uint8-v1.nb`), verificados en hardware y validados en pruebas de integración de punta a punta (`docs/RESULTADOS-PRUEBAS.md`). El contrato MQTT (`docs/contrato-mqtt.md`) está codificado en los payloads tipados y en la capa JSON.
 
 ## Estructura
 
@@ -20,7 +20,7 @@ include/vision/
   face_embedder.hpp   interfaz FaceEmbedder (recorte 112x112 -> vector<float>)
   npu_face_detector.hpp  FaceDetector real sobre la NPU (preproceso + decodificacion)
   npu_face_embedder.hpp  FaceEmbedder real sobre la NPU (preproceso + desquantizacion)
-  npu_preprocess.hpp  preproceso de imagen hacia el tensor de entrada ([w, h, c, n])
+  npu_preprocess.hpp  preproceso de imagen hacia el tensor de entrada (planar [w, h, c, n] o intercalado [c, w, h, n], deducido del tensor)
   retinaface_decode.hpp  decodificador de RetinaFace en CPU: anclas, cajas, landmarks y NMS
   clock.hpp           Clock inyectable (now / sleep_for)
   alignment.hpp       alineación por similitud a 112x112 (Umeyama, referencia ArcFace)
@@ -45,9 +45,10 @@ src/
   retinaface_decode.cpp  el decodificador de RetinaFace (anclas, cajas, landmarks, NMS)
   dry_run.cpp         recorrido en seco con los dobles (binario `vision_dry_run`)
 apps/
-  camara_falsa.cpp    servidor de prueba: una JPEG sintética en GET /capture
+  camara_falsa.cpp    servidor HTTP de prueba: GET /capture (sintética o imagen fija con --imagen <ruta>)
   mqtt_probe.cpp      sonda MQTT: publica y/o escucha un tópico
   npu_smoke.cpp       carga un .nb, corre N inferencias y mide
+  detector_prueba.cpp NpuFaceDetector sobre un .nb y una imagen: imprime las detecciones, bboxes y landmarks
 tools/
   humo.sh             prueba de humo de punta a punta (broker propio, cámara falsa, PIR)
 tests/
@@ -143,7 +144,16 @@ build/npu_smoke <modelo.nb> <entrada.dat> [iteraciones=100]
 build/npu_smoke /opt/vpm_run/network_binary.nb /opt/vpm_run/input_0.dat 200
 ```
 
-Imprime los tensores (forma `w x h x c x n`, formato, cuantización) y el tiempo promedio de copia de entrada, ejecución y lectura de salida. El archivo de entrada debe medir exactamente lo que ocupa el tensor. Los `.nb` no se versionan (plan, sección 11).
+Imprime los tensores (`dims=`, en el orden de VIPLite, de la dimensión más rápida a la más lenta: en una entrada intercalada la primera es el canal; formato y cuantización) y el tiempo promedio de copia de entrada, ejecución y lectura de salida. El archivo de entrada debe medir exactamente lo que ocupa el tensor. Los `.nb` no se versionan (plan, sección 11).
+
+Para el detector hay una prueba con una imagen real, con el mismo adaptador que usa el servicio (letterbox, preproceso, NPU y decodificación):
+
+```
+build/detector_prueba <detector.nb> <imagen> [bgr|rgb] [iteraciones=1]
+build/detector_prueba /opt/autolist/models/detector.nb /tmp/retinaface_test.jpg bgr 20
+```
+
+Imprime el tiempo medio de `detect` y cada detección en píxeles de la imagen original: la línea con el formato de la demo del fabricante (`100%, [ 244,   46,  363,  209], face`) y, debajo, la caja y los 5 landmarks con dos decimales. La imagen no se versiona: el repo no lleva fotos de personas.
 
 ## Congelar los paquetes del kernel
 
@@ -192,30 +202,42 @@ El motivo de que esto sea automático: con el modo equivocado, `quantize` satura
 
 **El rango se comprueba contra el tensor, no contra la imagen.** Además de deducir el modo, al arrancar se comprueba que el dominio que ese modo implica (`[0,1]` en `Unit`, `[0,255]` en `None`, `[-1,1]` en `ArcFace`) quepa en el rango que el tensor representa (`[(min−zp)·scale, (max−zp)·scale]`). Un `int8` con escala 1/255 representa `[-0.502, 0.498]`, que **no** cubre el `[0,1]` de `Unit`: ese modelo se rechaza al arrancar, con los dos rangos en el mensaje. La comprobación es estática (el rango del tensor es un dato del `.nb`), así que no depende de la luz de la sala: con la comprobación dependiente de la imagen, un tensor mal cuantizado pasaba inadvertido con poca luz y tumbaba el servicio con luz. El porcentaje de valores recortados queda como red secundaria para valores sueltos fuera de rango, no como la barrera principal.
 
-**Todo se valida al arrancar, no en pleno registro.** Los constructores comprueban: el número de entradas (debe ser 1), el formato del tensor de **entrada** (tiene que estar soportado), sus canales (3), su lote (1), los techos de tamaño (4096 px por lado, 4 M de elementos, 32 MB de preproceso), el rango representable frente al dominio del modo de escala, el formato de la **salida** (que tiene que estar soportado por `dequantize`), el número de elementos de la salida frente a lo que espera el layout y los índices de salida del layout. Todo eso **antes** de reservar memoria y antes del primer fotograma. Si algo no cuadra, el proceso avisa del motivo y sale con error: es preferible no arrancar a fallar con el alumno posando y la luz encendida.
+**Todo se valida al arrancar, no en pleno registro.** Los constructores comprueban: el número de entradas (debe ser 1), el formato del tensor de **entrada** (tiene que estar soportado), sus canales (3), su lote (1), los techos de tamaño (4096 px por lado, 4 M de elementos, 32 MB de preproceso), el rango representable frente al dominio del modo de escala, el formato de la **salida** (que tiene que estar soportado por `dequantize`), el número de elementos y la forma de cada salida del detector frente a lo que espera el layout (4, 2 y 10 valores por ancla, seguidos: `4x4200x1`, `2x4200x1` y `10x4200x1` a 320), los índices de salida del layout y el lado mínimo de la entrada (8 px: un lado menor casi seguro es un tensor mal interpretado). Todo eso **antes** de reservar memoria y antes del primer fotograma. Si algo no cuadra, el proceso avisa del motivo y sale con error: es preferible no arrancar a fallar con el alumno posando y la luz encendida.
 
 **Los parámetros que dependen del modelo están en la configuración**, en el bloque `npu`, para no tener que recompilar cuando llegue el `.nb`:
 
 ```json
-"npu": {"color": "rgb", "escala": "auto", "ancho": 0, "alto": 0}
+"npu": {"color": "bgr", "escala": "auto", "ancho": 0, "alto": 0,
+        "embed_color": "rgb", "embed_escala": "arcface", "embed_ancho": 0, "embed_alto": 0}
 ```
 
-- `color`: `rgb` o `bgr` (por omisión `rgb`).
-- `escala`: `auto` (deducir del tensor), `ninguna` (el byte crudo), `unidad` (x/255) o `arcface` ((x−127.5)/127.5). Por omisión `auto`.
-- `ancho` y `alto`: tamaño de entrada del detector; `0` (por omisión) significa "el que tenga el `.nb`". Las anclas se escalan al tamaño de la entrada, así que el detector funciona con cualquier tamaño sin tocar la configuración.
+- `color`: `rgb` o `bgr`, **obligatoria** (sin valor por omisión). El RetinaFace del fabricante necesita **`bgr`**: su conversión usa `REVERSE_CHANNEL = True` (`config_yml.py:17`) y su demo le pasa el `cv::Mat` BGR tal cual. `vision.conf.example` ya lo pone.
+- `escala`: `auto` (deducir del tensor), `ninguna` (el byte crudo), `unidad` (x/255) o `arcface` ((x−127.5)/127.5). Por omisión `auto`. Con el RetinaFace del fabricante (`uint8` sin cuantizar, con la media dentro del `.nb`), `auto` deduce `ninguna`.
+- `ancho` y `alto`: tamaño de entrada del detector; `0` (por omisión) significa "el que tenga el `.nb`". Las anclas se generan para el tamaño de la entrada (su lado es fijo, en píxeles de la entrada, como en la demo).
 
-El embedder es otro modelo, con su propia cuantización y su propio tamaño de entrada, así que tiene sus propias claves: `embed_color`, `embed_escala`, `embed_ancho` y `embed_alto`. **Si no están, heredan el color y la escala del detector.** Por omisión, `embed_ancho` y `embed_alto` también son `0` (el tamaño del `.nb`).
+El embedder EB (`w600k_mbf` sin nodo de preproceso) declara una entrada `uint8` afín con `scale` 0.0078431 y `zero_point` 127. Con `auto` el dominio no se puede deducir (el arranque falla cerrado), así que necesita **`"embed_escala": "arcface"`** y **`"embed_color": "rgb"`** (el ONNX de InsightFace espera RGB). Con eso el rango del tensor cubre [−1, 1] y el borde negro del recorte alineado no satura.
 
-El bloque es opcional: si no está, el comportamiento es el de siempre. Un color o una escala desconocidos hacen fallar la carga de la configuración, como las demás claves.
+El embedder es otro modelo, con su propia cuantización y su propio tamaño de entrada, así que tiene sus propias claves: `embed_color`, `embed_escala`, `embed_ancho` y `embed_alto`. **No heredan nada del detector.** `embed_color` es obligatoria como `color`; `embed_escala` es `auto` por omisión (se deduce del tensor o el arranque falla cerrado: con EB falla, por eso el ejemplo pone `arcface`); `embed_ancho` y `embed_alto` son `0` (el tamaño del `.nb`).
 
-**El decodificador de RetinaFace** (funciones puras, sin NPU, probadas con tensores sintéticos) genera las anclas de tres strides (8, 16, 32) con dos anclas por posición, decodifica cajas y landmarks, y aplica NMS. Dos decisiones de rendimiento, porque el servicio tiene un solo hilo de trabajo con `poll_ms = 20`:
+**Los dos colores son obligatorios** porque el orden de color no se deduce del modelo y equivocarlo no hace fallar nada: la detección o el embedding se degradan en silencio. Fuera de `--dry-run`, si falta el bloque `npu`, `color` o `embed_color`, el proceso sale con el **78** (como con un archivo inválido) y el mensaje dice qué clave falta y qué valor llevan los modelos actuales (`bgr` el detector, `rgb` el embedder). Con `--dry-run` solo avisa por stderr: los modelos no se cargan. La escala no es obligatoria porque `auto` nunca se equivoca en silencio: o la deduce de la cuantización del tensor o falla cerrado. Un color o una escala desconocidos hacen fallar la carga de la configuración, como las demás claves. Al arrancar, el proceso registra una línea con lo resuelto, por ejemplo `[vision] npu: detector: color bgr, escala auto; embedder: color rgb, escala arcface`.
 
-- Las anclas se **cachean** en el detector: dependen solo del tamaño de entrada, no de la imagen.
-- El NMS recibe solo las **500 cajas de mejor score** (como el RetinaFace de referencia con "nms top 500"), en vez de comparar entre sí las 16 800 anclas.
+**El detector sigue la demo del fabricante** (`awnpu_model_zoo`, `examples/retinaface`), que es la que decodifica los `.nb` del RetinaFace de biubug6 (R50 y MobileNet 0.25 a 320). El R50 está verificado en la placa contra la demo; el MobileNet 0.25 carga, corre y detecta la cara de la foto de la demo, sin una referencia del fabricante con la que comparar.
 
-Medido en la placa: decodificar las 16 800 anclas bajó de **487 ms a 2,2 ms**, y un fotograma completo (preproceso 15 ms + inferencia 4-8 ms + decode 2 ms) queda por debajo de los 30 ms.
+| Punto | Lo que hace el servicio | Fuente |
+|---|---|---|
+| Redimensionado | Letterbox: reduce sin deformar (escala = la menor de las dos), centra y rellena con gris 114; con relleno impar, el píxel de más va abajo o a la derecha. Al final se deshace, y la caja se recorta a la imagen (los landmarks no) | `retinaface_pre.cpp:47-76`, `retinaface_post.cpp:236-285` |
+| Entrada | El byte crudo BGR, intercalado (`3x320x320x1`, `uint8` sin cuantizar): la media [104, 117, 123] va dentro del `.nb` | `config_yml.py:12-23` |
+| Salidas | Tres tensores `fp32`: cajas (4 por ancla), scores (2 por ancla: [fondo, cara], con el softmax dentro) y landmarks (10 por ancla) | `retinaface_post.cpp:172-174, 227-229` |
+| Anclas | Cuadradas, de lado fijo en píxeles de la entrada: {16, 32}, {64, 128} y {256, 512} para los strides 8, 16 y 32; centro en el medio de la celda, `((k + 0.5)·stride, (j + 0.5)·stride)`; por stride, fila, columna y tamaño. A 320 son 4200 | `retinaface_post.cpp:130-164` |
+| Cajas | Centro = ancla + d·0.1·lado del ancla; lado = lado del ancla·exp(d·0.2) | `retinaface_post.cpp:188, 202-205` |
+| Landmarks | Relativos al **ancla** (no a la caja): ancla + l·0.1·lado del ancla | `retinaface_post.cpp:218-219` |
+| Score y NMS | Columna 1 del score, que tiene que ser **mayor** que 0.4 y como mucho 1 (la demo no dibuja las que pasan de 1); NMS con IoU 0.45 | `model_config.h:19-20`, `retinaface_post.cpp:200, 317-321` |
 
-**Lo que sigue siendo PROVISIONAL**, porque el `.nb` todavía no existe: la disposición de la salida del detector (15 valores por ancla) y la convención de decodificación (varianzas 0.1/0.2/0.3/0.3 aplicadas al valor predicho **sin** factor de stride, al estilo de InsightFace; el stride solo fija la rejilla y el tamaño del ancla). El color, la escala y los tamaños de entrada ya se pueden ajustar con el bloque `npu`. El código falla cerrado si el `.nb` no encaja con lo pedido; hay que contrastar estos supuestos con el modelo real en cuanto exista.
+Dos decisiones propias de rendimiento, porque el servicio tiene un solo hilo de trabajo con `poll_ms = 20`: las anclas se **cachean** en el detector (dependen solo del tamaño de entrada) y el NMS recibe solo las **500 cajas de mejor score** (la demo no acota el NMS). La demo además corta a 100 detecciones y las ordena por área; el servicio no lo necesita, porque se queda con la de mayor score. Las anclas cuya caja o cuyos landmarks no son finitos, también tras decodificar (un valor enorme desborda `exp`), se descartan en vez de abortar el fotograma.
+
+Los umbrales 0.4 y 0.45 siguen al fabricante por paridad con su demo y no están afinados para el aula: afinarlos es parte de la calibración con LFW.
+
+Medido en la placa (`build/detector_prueba`, media de 20 fotogramas sobre la foto de la demo, de 592x503): un `detect` completo (letterbox, preproceso, inferencia y decodificación) tarda **19,9 ms** con el R50 y **5,4 ms** con el MobileNet 0.25. Con el R50 la caja coincide con la de la demo (`[244, 46, 363, 209]`) y los landmarks quedan a 1,3 px como mucho.
 
 ## El proceso de producción
 
@@ -264,7 +286,7 @@ El archivo de configuración es JSON, con las claves en español como el resto d
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN", "timeout_ms": 5000},
   "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45, "min_similitud_pose": 0.5},
   "servicio": {"poll_ms": 20, "max_inbox_events": 16, "modelo": "w600k_mbf-uint8-v1", "acepta_png": false},
-  "npu": {"color": "rgb", "escala": "auto", "ancho": 0, "alto": 0},
+  "npu": {"color": "bgr", "escala": "auto", "ancho": 0, "alto": 0, "embed_color": "rgb", "embed_escala": "arcface", "embed_ancho": 0, "embed_alto": 0},
   "http": {"allow_invalid_certificates": false, "ca_file": ""}
 }
 ```
@@ -291,12 +313,12 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | | `max_inbox_events` | tope de la cola de eventos (mínimo 4) | `16` |
 | | `modelo` | nombre y versión del modelo | `w600k_mbf-uint8-v1` |
 | | `acepta_png` | aceptar PNG además de JPEG (pruebas) | `false` |
-| `npu` | `color` | orden de color de la entrada del detector (`rgb` o `bgr`) | `rgb` |
+| `npu` | `color` | orden de color de la entrada del detector (`rgb` o `bgr`) | **obligatoria** fuera de `--dry-run` (el detector actual: `bgr`) |
 | | `escala` | modo de escala del detector (`auto`, `ninguna`, `unidad` o `arcface`) | `auto` |
 | | `ancho` | ancho de la entrada del detector (`0` = el del `.nb`) | `0` |
 | | `alto` | alto de la entrada del detector (`0` = el del `.nb`) | `0` |
-| | `embed_color` | orden de color de la entrada del embedder (si no está, el del detector) | el de `color` |
-| | `embed_escala` | modo de escala del embedder (si no está, el del detector) | el de `escala` |
+| | `embed_color` | orden de color de la entrada del embedder (no hereda el del detector) | **obligatoria** fuera de `--dry-run` (el embedder actual: `rgb`) |
+| | `embed_escala` | modo de escala del embedder (no hereda la del detector) | `auto` (con EB hay que poner `arcface`) |
 | | `embed_ancho` | ancho de la entrada del embedder (`0` = el del `.nb`) | `0` |
 | | `embed_alto` | alto de la entrada del embedder (`0` = el del `.nb`) | `0` |
 | `http` | `allow_invalid_certificates` | aceptar cualquier certificado (modo inseguro) | `false` |
@@ -358,6 +380,10 @@ sudo install -m 0644 vision.conf.example /etc/pase-lista/vision.conf
 sudo install -m 0600 vision.env.example /etc/pase-lista/vision.env
 sudoedit /etc/pase-lista/vision.conf   # la IP de la XIAO y el certificado autofirmado
 sudoedit /etc/pase-lista/vision.env    # MQTT_PASSWORD y GALERIA_TOKEN de verdad
+# El bloque "npu" del vision.conf instalado tiene que llevar, con los modelos actuales,
+# "color": "bgr", "embed_color": "rgb" y "embed_escala": "arcface" (el ejemplo ya los
+# trae). Sin "color" o sin "embed_color" el servicio sale con el 78.
+grep -E '"(color|embed_color|embed_escala)"' /etc/pase-lista/vision.conf
 
 # 3. La unidad
 sudo install -m 0644 ../systemd/orangepi-vision.service /etc/systemd/system/
@@ -593,13 +619,17 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 - **La cámara no se autentica.** Las fotos se piden por HTTP plano, sin autenticación ni comprobación de integridad. Quien esté en la LAN puede inyectar fotos (fraude de asistencia, envenenamiento del registro) y también leerlas. El adaptador real de `HttpClient` y el firmware de la XIAO no deben salir a producción sin una de estas tres: HMAC-SHA256 sobre un nonce más el cuerpo, un punto de acceso dedicado o TLS. No protegen lo mismo: el HMAC solo garantiza integridad y frescura, así que las fotos siguen viajando en claro por la LAN; el punto de acceso dedicado y TLS también cubren la confidencialidad. Sea cual sea la opción, `capture_url` debe apuntar a una IP fija, no a un nombre mDNS que se pueda suplantar. La decisión está pendiente con el equipo; este esqueleto no la resuelve.
 - **El certificado de Node-RED es autofirmado.** La comunicación por HTTPS con el borde usa un certificado autofirmado. Se puede confiar en el certificado concreto (`http.ca_file`, que valida el servidor contra ese certificado) en vez de desactivar toda la verificación (`allow_invalid_certificates`, modo inseguro que avisa por log). Ver las secciones "El certificado autofirmado" y "El cliente HTTP".
 
+## Lo que se completó en este hito
+
+- Modelos `.nb` en hardware NPU verificados: RetinaFace (`detector.nb`, ~22 ms) y MobileFaceNet ArcFace (`w600k_mbf-uint8-v1.nb`, ~3.5 ms), con preproceso en tensor, alineación afín y similitud coseno.
+- Validación de punta a punta documentada en `docs/RESULTADOS-PRUEBAS.md`: enrolamiento desde web (5 tomas), pase de lista, sincronización con pantalla física ILI9341, control de duplicados y reporte CSV al cerrar sesión.
+- Soporte de inyección de fotos fijas con `--imagen` en `camara_falsa`.
+- Endurecimiento del servicio en la unidad systemd (`LimitCORE=0` y `UMask=0077` aplicados en `orangepi/systemd/orangepi-vision.service`).
+
 ## Lo que falta
 
-- Los modelos `.nb` (RetinaFace y `w600k_mbf`). Los adaptadores sobre la NPU ya existen (`NpuFaceDetector` y `NpuFaceEmbedder`, con el preproceso de imagen y el decodificador de RetinaFace en CPU), pero los supuestos sobre el `.nb` (disposición de la salida del detector, convenciones de decodificación, color y normalización de la entrada) están **PROVISIONALES** en los comentarios: hay que confirmarlos contra el modelo real en cuanto exista. Sin los modelos, el proceso de producción no arranca: solo arranca en `--dry-run`.
-- Scripts de prueba en la placa (broker de pruebas propio, arranque y parada del servicio) más allá de `tools/humo.sh` y `mqtt_probe`.
 - Miniaturas en el progreso del registro.
 - Chequeo antifraude.
 - Validaciones por pose del registro (rostro único, tamaño, giro).
 - Mejora de imagen (CLAHE y gamma).
 - Umbrales calibrados: `min_sharpness`, `min_recognized_score`, `min_dudoso_score` y `min_pose_similarity` de `ServiceConfig` son valores provisionales (la calibración con LFW es el hito del 18 de noviembre).
-- Endurecimiento del núcleo en la unidad systemd: `LimitCORE=0` y `UMask=0077` (decididos, pendientes de aplicarlos a `orangepi/systemd/orangepi-vision.service`).

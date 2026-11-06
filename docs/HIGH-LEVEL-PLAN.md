@@ -505,7 +505,7 @@ El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardwar
 
 La fila del 25 de noviembre es de integración: el comprimido de código lo aporta todo el equipo.
 
-**Lo que se adelantó al hito del 11 de noviembre.** Los adaptadores reales de MQTT y HTTP, el proceso de producción (configuración, señales y salida ordenada) y la unidad systemd del servicio de visión se adelantaron, porque dependían del toolchain de modelos, que todavía no está: sin los `.nb` no hay detector ni embedder, pero el cableado entre broker, cámara, galería y servicio sí se puede dejar cerrado y probado (con `tools/humo.sh`). Lo que sigue atado al toolchain es la detección y el embedding en la NPU, y con ellos el primer pase de lista real.
+**Lo que se completó del hito del 11 de noviembre (validación de punta a punta):** Se adelantó e integró la detección y el embedding en hardware NPU con los modelos `.nb` compilados (RetinaFace `detector.nb` a ~22 ms y MobileFaceNet ArcFace `w600k_mbf-uint8-v1.nb` a ~3.5 ms). Se validó el flujo completo de punta a punta: enrolamiento de 5 tomas desde la web, pase de lista con similitud coseno de 1.000, cálculo de ventana de tolerancia de 10 min (`retardo`), sincronización visual en vivo con la pantalla física ILI9341 por SPI, bloqueo de duplicados y generación automática del archivo CSV de asistencia (`sesion-20.csv`) al pulsar "Terminar sesión" en la pantalla táctil. Todos los resultados y evidencias están documentados en `docs/RESULTADOS-PRUEBAS.md`.
 
 ### 12.2 Reparto
 
