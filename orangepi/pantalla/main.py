@@ -80,12 +80,13 @@ CONFIG = {
     "TACTIL_DISPOSITIVO": (1, False),   # /dev/spidev3.1
     "TACTIL_IRQ": (32, False),          # pin fisico 11, baja al tocar
     "TACTIL_BAUDRATE": (2000000, False),
-    # Calibracion: se mide con calibrar_tactil.py (ver README). Valores de
-    # partida, sin calibrar con la pantalla real.
-    "TACTIL_X_MIN": (200, False),
-    "TACTIL_X_MAX": (3900, False),
-    "TACTIL_Y_MIN": (200, False),
-    "TACTIL_Y_MAX": (3900, False),
+    # Calibracion medida con calibrar_tactil.py en esta placa el 5 nov (ver
+    # README): valida con ROTACION = 0; hay que recalibrar si cambia de rotacion
+    # o se remonta el panel. Cada panel y montaje dan otros, pero solo hay una.
+    "TACTIL_X_MIN": (228, False),
+    "TACTIL_X_MAX": (3830, False),
+    "TACTIL_Y_MIN": (153, False),
+    "TACTIL_Y_MAX": (3742, False),
     "TACTIL_CAMBIAR_EJES": (0, False),
     "TACTIL_INVERTIR_X": (0, False),
     "TACTIL_INVERTIR_Y": (0, False),

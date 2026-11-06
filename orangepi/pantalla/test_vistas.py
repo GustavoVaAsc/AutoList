@@ -394,6 +394,28 @@ class Dibujo(unittest.TestCase):
         self.assertNotEqual(self.cuadro(vacia).tobytes(),
                             self.cuadro(llena).tobytes())
 
+    def test_el_mensaje_amarillo_deja_aire_con_el_boton(self):
+        # El mensaje de rechazo caia pegado al boton "Salir de la guia".
+        e = con_guia(estado="rechazada", motivo="borrosa")
+        img = self.cuadro(e)
+        pixeles = img.load()
+        alto_boton = vistas.GEOMETRIA["guia_salir"][1]
+        filas = [y for y in range(alto_boton)
+                 if any(pixeles[x, y] == vistas.ALERTA for x in range(ANCHO))]
+        self.assertTrue(filas)            # el mensaje se ve
+        self.assertLessEqual(max(filas), alto_boton - 9)
+
+    def test_el_aviso_de_rechazo_se_dibujo_entero(self):
+        # El aviso es de una linea: si no cabe, sale recortado con "...".
+        e = Estado()
+        e.aplicar(("enrolamiento", {"cuenta": "", "nombre": "", "paso": 0,
+                                    "total": 5, "pose": "", "estado": "error",
+                                    "motivo": "ocupado"}), 0)
+        self.assertEqual(e.aviso[0], "Registro rechazado")
+        self.assertEqual(vistas.ajustar_texto(e.aviso[0],
+                                              self.fuentes["negrita"],
+                                              vistas.INTERIOR), e.aviso[0])
+
     def test_textos_largos_o_raros_no_rompen_el_dibujo(self):
         e = conectado()
         e.aplicar(("sesion", {"activa": True, "materia": "M" * 80, "grupo": "G" * 80,
