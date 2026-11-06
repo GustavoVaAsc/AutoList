@@ -6,7 +6,7 @@ Programa de la pantalla ILI9341 de AutoList (plan, sección 6.5). Corre en el ho
 
 Esta versión es el **menú base** del plan (sección 6.5): las vistas Sesión, Lista y Guía de registro, navegación con el táctil XPT2046 y un cliente MQTT con el usuario `pantalla`. Está verificada **sin la pantalla delante**: las pruebas unitarias (sin hardware ni broker), una corrida de 20 s sobre los dispositivos reales con una clave ficticia (abrió el SPI de la pantalla y del táctil y los GPIO, mostró "sin conexión" sin caerse, salió con 0 al recibir SIGTERM y soltó las líneas 32, 33 y 139) y el cliente MQTT contra un broker de pruebas mínimo. **Nadie ha visto aún cómo se ven las vistas ni ha tocado la pantalla**: el táctil y su calibración siguen sin probar. Ver [Sin verificar](#sin-verificar).
 
-Aún no hay I²C ni RTC. La vista Lista y el "último registro" y el contador de presentes de Sesión no tienen fuente de datos (el contrato no define un tópico y Node-RED no tiene flujos de sesiones): muestran "sin datos". Ver [Huecos de datos](#huecos-de-datos).
+Aún no hay I²C ni RTC. La vista Lista y el "último registro" y el contador de presentes de Sesión no tienen fuente de datos (el contrato no define un tópico para ellos; la pestaña `Sesiones` de Node-RED ya publica `aula/sesion/estado`, verificada en la placa el 5 nov): muestran "sin datos". Ver [Huecos de datos](#huecos-de-datos).
 
 ## Contenido
 
@@ -284,6 +284,6 @@ Falta la prueba con la pantalla delante. Lo que Yordi debe comprobar:
 - **La fluidez**: el bucle redibuja la pantalla completa cada segundo y en cada cambio (unos 150 KB por el SPI a 40 MHz). Si al tocar se nota lento, es lo primero a medir.
 - **"Credenciales rechazadas"**: con una clave equivocada contra el broker real debe salir ese texto (con la clave ficticia, el CONNACK de Mosquitto es "Not authorized"; no se vio en pantalla).
 - **Guía**: que "Salir de la guía" quepa y responda, y qué hace un registro real si el último mensaje se pierde.
-- **Con un broker real y la clave real** (el 11 nov o cuando la unidad esté instalada): que conecte y se suscriba, que la Guía siga un registro real, que "Abrir puerta" y "Probar luz LED" lleguen a la XIAO, que "Iniciar sesión" publique (hoy no hay flujo de sesiones en Node-RED que lo consuma: no cambiará nada en pantalla) y que el reinicio por MQTT relance el programa.
+- **Con un broker real y la clave real** (el 11 nov o cuando la unidad esté instalada): que conecte y se suscriba, que la Guía siga un registro real, que "Abrir puerta" y "Probar luz LED" lleguen a la XIAO, que "Iniciar sesión" publique (lo consume la pestaña `Sesiones` de Node-RED, verificada en la placa el 5 nov), que la vista Sesión muestre el `aula/sesion/estado` que publica Node-RED y que el reinicio por MQTT relance el programa.
 - **Convención de las poses**: si "izquierda" en el contrato es la izquierda del alumno o la de la imagen de la cámara. La guía dice "gira un poco la cabeza a la izquierda" sin flechas; si la visión usa la otra convención, hay que invertir el texto.
 - **Bajo systemd**: que la unidad arranque con `DevicePolicy=closed`, con `ProtectHome=read-only` y con los grupos `spi` y `gpio`, con el archivo de entorno de la propuesta. Con `Restart=always`, un `systemctl stop` no relanza el servicio y el código 78 tampoco, por `RestartPreventExitStatus=78`.
