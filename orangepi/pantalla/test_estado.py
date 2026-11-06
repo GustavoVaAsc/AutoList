@@ -282,6 +282,8 @@ class Guia(unittest.TestCase):
         self.assertIsNone(e.guia)
         self.assertEqual(e.vista_visible, "sesion")
         self.assertIsNotNone(e.aviso)
+        # El aviso es de una linea: el texto tiene que caber sin recortarse.
+        self.assertEqual(e.aviso[0], "Registro rechazado")
 
     def test_en_la_guia_solo_actua_salir(self):
         e = Estado()

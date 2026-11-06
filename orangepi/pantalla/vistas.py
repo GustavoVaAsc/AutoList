@@ -383,9 +383,11 @@ def _vista_guia(d, estado, fuentes):
                                        INTERIOR, 3)):
         d.text((ANCHO // 2, 194 + i * 19), linea, font=fuentes["subtitulo"],
                fill=TEXTO, anchor="mm")
+    # El mensaje va sobre el boton "Salir de la guia" (y=282): se deja el
+    # mismo aire que la franja de avisos de la vista Sesion (unos 10 px).
     for i, linea in enumerate(envolver(t["mensaje"], fuentes["subtitulo"],
                                        INTERIOR, 2)):
-        d.text((ANCHO // 2, 254 + i * 19), linea, font=fuentes["subtitulo"],
+        d.text((ANCHO // 2, 244 + i * 19), linea, font=fuentes["subtitulo"],
                fill=TONOS[t["tono"]], anchor="mm")
 
 

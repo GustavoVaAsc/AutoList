@@ -281,7 +281,7 @@ class Estado:
         # dice nada del registro en curso, ni abre la Guia por si solo.
         if d["estado"] == "error" and d["paso"] == 0:
             if g is None:
-                self.avisar("Registro rechazado por la visión", ahora)
+                self.avisar("Registro rechazado", ahora)
                 return True
             return False
         if not cuenta:
