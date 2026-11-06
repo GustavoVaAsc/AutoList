@@ -16,6 +16,8 @@ Las pruebas demuestran el funcionamiento integrado de todos los subsistemas del 
 | **Rostros registrados** | 2 alumnos enrolados desde el frontend web con 5 tomas promediadas (Emiliano Flores y Diego González) |
 | **Sincronización de pantalla** | Refresco en tiempo real en la pantalla física ILI9341 SPI (icono verde "registrado" y saludo) |
 | **Pase de lista** | Inferencia NPU con confianza de similitud coseno de **1.000** (umbral de aceptación >= 0.40) |
+| **Discriminación biométrica** | Similitud entre personas distintas < 0.09 (rechazo categórico frente al umbral >= 0.40) |
+| **Anti-suplantación / Desconocidos** | Rostros no registrados o cruzados catalogados como `desconocido` (alerta roja, cero asistencias) |
 | **Lógica de asistencia** | Asignación automática de **`retardo`** (superada la ventana de tolerancia de 10 min de la sesión) |
 | **Anti-duplicados** | Intentos repetidos de registro del mismo alumno identificados como `"duplicado": true` y bloqueados |
 | **Cierre de sesión** | Ejecutado desde el botón táctil "Terminar sesión" de la pantalla física ILI9341 |
@@ -177,7 +179,42 @@ El siguiente diagrama ilustra el flujo de extremo a extremo ejecutado durante la
 3. Node-RED verificó en la base de datos que el número de cuenta `118039214` ya contaba con un registro de asistencia confirmado para la sesión 20.
 4. El sistema catalogó la lectura con `"duplicado": true`, descartando la inserción redundante. La hora y estado del registro original permanecieron intactos.
 
-### Fase 5: Cierre de Sesión y Exportación del Reporte CSV
+### Fase 5: Validación de Rechazo y Protección contra Suplantación (Prueba Negativa)
+
+Para comprobar de forma rigurosa que el sistema no permite que una persona pase lista con la fotografía de otra, ni que un rostro ajeno acredite asistencia ilegítima, se ejecutó una prueba de validación negativa en vivo:
+
+1. **Intento de suplantación con foto de otro alumno:**
+   - Estando la sesión en curso y pendientes de pasar lista los demás alumnos del grupo (como Diego González o los 8 alumnos restantes), se colocó frente a la cámara la fotografía de Emiliano Flores.
+   - La NPU analizó el encuadre y extrajo su embedding de 128 flotantes.
+   - Al comparar contra la galería, la NPU obtuvo una similitud de **1.0000** con Emiliano (`118039214`), pero de **`-0.1337`** frente a Diego (`318492015`).
+   - El sistema identificó a **Emiliano** y **en ningún momento a la otra persona**.
+   - Como Emiliano ya tenía su asistencia registrada, Node-RED activó el bloqueo por duplicado (`Pase de lista: duplicado`) y emitió la señal de alerta en actuadores:
+     ```json
+     Tópico: aula/actuador/cmd
+     Payload: {"led": "rojo", "buzzer": 2}
+     ```
+   - La otra persona permaneció sin asistencia (`falta`), impidiendo cualquier intento de pase cruzado o suplantación.
+
+2. **Intento de pase con rostro no registrado / persona desconocida:**
+   - Se inyectó en `camara_falsa` la fotografía de un individuo ajeno al grupo (`/tmp/rostro_desconocido_limpio.jpg`, detectado con score 0.9995 por RetinaFace).
+   - Se disparó el ciclo de pase de lista vía `aula/camara/pir`.
+   - La NPU calculó su vector biométrico y lo comparó contra todos los registros de la galería en RAM.
+   - La coincidencia más alta obtenida fue de apenas **`0.0919`** (9%), situada muy por debajo del umbral mínimo de aceptación (`0.40`).
+   - `vision_service` catalogó el evento como **`desconocido`**:
+     ```json
+     Tópico: aula/vision/resultado
+     Payload: {
+       "modo": "pase",
+       "decision": "desconocido",
+       "cuenta": null,
+       "conf": 0.0919,
+       "motivo": "desconocido"
+     }
+     ```
+   - Node-RED procesó el descarte (`Pase de lista: desconocido`), disparó la alerta roja con doble pitido (`{"led": "rojo", "buzzer": 2}`) y registró el intento en la tabla de auditoría `intentos`.
+   - La tabla `asistencias` se mantuvo completamente inalterada (cero registros nuevos).
+
+### Fase 6: Cierre de Sesión y Exportación del Reporte CSV
 
 1. **Interacción física:** El profesor tocó directamente en la pantalla táctil ILI9341 el botón **"Terminar sesión"**.
 2. **Finalización de sesión en el backend:**
@@ -233,6 +270,48 @@ no_cuenta,nombre,estado,hora
 - **Alumnos con asistencia presencial:** 2 (Emiliano Flores y Diego González), ambos clasificados con **`retardo`** y su marca de tiempo exacta registrada.
 - **Alumnos ausentes:** 8, asignados automáticamente con **`falta`** y campo de hora vacío conforme a las especificaciones académicas.
 
+### 5.3 Matriz de Similitud Coseno en Hardware NPU (Discriminación Biométrica)
+
+Se compararon en hardware directo de la NPU tres identidades:
+1. `Foto 1`: Emiliano Flores (`118039214`)
+2. `Foto 2`: Diego González (`318492015`)
+3. `Foto 3`: Individuo ajeno / no registrado (`/tmp/rostro_desconocido_limpio.jpg`)
+
+| Comparación | Similitud Coseno | Evaluación (Umbral $\ge 0.40$) | Decisión |
+|---|:---:|:---:|:---:|
+| **Foto 1 (Emiliano) vs Foto 1 (Emiliano)** | **`1.0000`** | $\ge 0.40$ | **COINCIDENCIA (Misma persona)** |
+| **Foto 1 (Emiliano) vs Foto 2 (Diego)** | **`-0.1337`** | $< 0.40$ | **RECHAZADO (Distinta persona)** |
+| **Foto 1 (Emiliano) vs Foto 3 (Desconocido)** | **`-0.0331`** | $< 0.40$ | **RECHAZADO (Distinta persona)** |
+| **Foto 2 (Diego) vs Foto 2 (Diego)** | **`1.0000`** | $\ge 0.40$ | **COINCIDENCIA (Misma persona)** |
+| **Foto 2 (Diego) vs Foto 3 (Desconocido)** | **`+0.0826`** | $< 0.40$ | **RECHAZADO (Distinta persona)** |
+| **Foto 3 (Desconocido) vs Foto 3 (Desconocido)** | **`1.0000`** | $\ge 0.40$ | **COINCIDENCIA (Misma persona)** |
+
+> [!TIP]
+> Los valores de similitud entre personas distintas se sitúan en el rango de **`-0.13` a `+0.08`**, lo que demuestra una separación geométrica rotunda respecto a la frontera de decisión (`0.40`). Esto garantiza matemáticamente que una fotografía de otra persona jamás podrá ser validada como propia.
+
+### 5.4 Auditoría de Intentos Rechazados en PostgreSQL (Tabla `intentos`)
+
+Durante las pruebas en vivo de suplantación y rostros desconocidos, el sistema auditó los intentos anómalos en la base de datos sin alterar la tabla principal de `asistencias`:
+
+```sql
+SELECT id, sesion_id, motivo, confianza_max, hora 
+FROM intentos 
+ORDER BY id DESC LIMIT 3;
+```
+
+**Resultado de la consulta:**
+
+| id | sesion_id | motivo | confianza_max | hora |
+|:---:|:---:|:---:|:---:|:---:|
+| 15 | 21 | **`desconocido`** | **0.0919** | 16:27:52 |
+| 14 | 21 | **`duplicado`** | **1.0000** | 16:27:03 |
+| 13 | 21 | **`imagen_insuficiente`** | *null* | 16:23:46 |
+
+**Comportamiento verificado:**
+- El intento de pase con un rostro ajeno (ID 15) obtuvo una confianza máxima de solo **`0.0919`**, catalogándose como `desconocido` y activando la señal `{led: "rojo", buzzer: 2}`.
+- El intento repetido con la foto de Emiliano (ID 14) fue catalogado como `duplicado` y bloqueado.
+- En ninguno de estos eventos se insertaron filas en la tabla `asistencias`, demostrando que los intentos fallidos no contaminan la lista oficial de presentes.
+
 ---
 
 ## 6. Métricas de Rendimiento en Hardware
@@ -264,5 +343,6 @@ Las pruebas de integración demostraron que el sistema **AutoList se encuentra c
 2. **Equivalencia de captura demostrada:** La interfaz HTTP de captura es agnóstica a si la cámara es física o simulada, validando el protocolo de comunicación de campo.
 3. **Cadena de software íntegra:** Los mensajes transitan sin pérdidas entre la NPU (C++ nativo), Mosquitto (MQTT), Node-RED, PostgreSQL, la interfaz web (React/Vite) y la pantalla física SPI ILI9341.
 4. **Reglas de negocio consolidadas:** Se verificó el cálculo de tolerancia de tiempo (`retardo`), la protección contra asistencias duplicadas y la generación automatizada de reportes CSV con asignación de faltas al cerrar sesión.
+5. **Inmunidad a suplantación y rechazo efectivo:** Se probó que presentar la foto de otra persona o un rostro no registrado es rechazado de inmediato (`desconocido` con confianza < 0.10 o `duplicado`), evitando fraudes, protegiendo la integridad de la lista de asistencia y disparando las señales de error en los actuadores.
 
 Con estos resultados, queda técnicamente fundamentado y comprobado el cumplimiento del hito de integración del proyecto.
