@@ -29,7 +29,7 @@ const VISTA_INICIAL = 'metricas'
 const LECTURAS_A_PEDIR = 100
 const CONSULTA_CADA_MS = 5000
 // Lo que tarda en irse la vista anterior; es --d-salir-vista de estilos.css.
-const SALIDA_VISTA_MS = 120
+const SALIDA_VISTA_MS = 90
 
 function rutaActual(): string {
   const ruta = window.location.hash.replace(/^#\/?/, '').split('?')[0] ?? ''
@@ -63,7 +63,7 @@ function useIndicador(lista: React.RefObject<HTMLUListElement | null>, ruta: str
     }
     rutaPrevia.current = ruta
     setAnimado(true)
-    const id = window.setTimeout(() => setAnimado(false), 320)
+    const id = window.setTimeout(() => setAnimado(false), 260)
     return () => window.clearTimeout(id)
   }, [ruta])
 
@@ -200,7 +200,9 @@ export function App() {
               {caja !== null && (
                 <span
                   className={`navegacion__indicador${animado ? ' navegacion__indicador--animado' : ''}`}
-                  style={{ transform: `translate(${caja.x}px, ${caja.y}px)`, width: caja.ancho, height: caja.alto }}
+                  style={{
+                    transform: `translate3d(${caja.x}px, ${caja.y + caja.alto - 3}px, 0) scaleX(${caja.ancho})`,
+                  }}
                   aria-hidden="true"
                 />
               )}

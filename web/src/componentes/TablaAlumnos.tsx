@@ -14,13 +14,13 @@ interface Props {
 
 // Los renglones se escriben solo al montarse la tabla (la primera carga de la
 // vista), de arriba abajo. Después, ni el sondeo ni el filtro repiten la
-// entrada. El escalón es de 40 ms (cada renglón dura --d-fila, 360 ms, en
-// estilos.css) y solo lo llevan los 12 primeros: el resto se pinta sin
+// entrada. El escalón es de 25 ms (cada renglón dura --d-fila, 240 ms, en
+// estilos.css) y solo lo llevan los 8 primeros: el resto se pinta sin
 // animación (una lista de 500 filas no debe crear 500 animaciones) y, al
 // quedar fuera de la primera pantalla, no se nota.
-const ESCALON_MS = 40
-const ESCALONES_MAXIMOS = 11
-const ENTRADA_TOTAL_MS = ESCALON_MS * ESCALONES_MAXIMOS + 360 + 100
+const ESCALON_MS = 25
+const ESCALONES_MAXIMOS = 7
+const ENTRADA_TOTAL_MS = ESCALON_MS * ESCALONES_MAXIMOS + 240 + 80
 // El resaltado de una fila que cambió dura 1200 ms (estilos.css, resaltar-cambio).
 const RESALTE_MS = 1300
 

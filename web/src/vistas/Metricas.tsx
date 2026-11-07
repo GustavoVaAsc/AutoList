@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
-import { useEstadoLecturas } from '../lecturasContexto'
 import { AvisoObsoleta } from '../componentes/AvisoObsoleta'
 import { Cifra } from '../componentes/Cifra'
 import { EstadoVacio } from '../componentes/EstadoVacio'
 import { GraficaPotencia } from '../componentes/GraficaPotencia'
+import { HojaAsistencia } from '../componentes/HojaAsistencia'
 import { MarcaAsistencia } from '../componentes/MarcaAsistencia'
 import { Pagina } from '../componentes/Pagina'
 import { TablaLecturas } from '../componentes/TablaLecturas'
@@ -14,107 +14,191 @@ import {
   formatearPotencia,
   formatearVoltaje,
 } from '../formato'
+import { useEstadoLecturas } from '../lecturasContexto'
 import { construirSerie, VENTANA_MS } from '../serie'
+import { useAsistencia } from '../useAsistencia'
 
-// Cada cuántos segundos consulta la API App.tsx (useLecturas); solo se usa en los textos.
 const CONSULTA_CADA_S = 5
+const CONSULTA_CADA_MS = CONSULTA_CADA_S * 1000
 
 const entero = (n: number) => String(Math.round(n))
 
 export function Metricas() {
-  const { lecturas, error, horaServidor, sinSesion, reintentar } = useEstadoLecturas()
-  const ultima = lecturas && lecturas.length > 0 ? lecturas[lecturas.length - 1]! : null
-  const serie = useMemo(() => (lecturas && lecturas.length > 0 ? construirSerie(lecturas) : null), [lecturas])
-  const minutosVentana = VENTANA_MS / 60_000
+  const asistencia = useAsistencia(CONSULTA_CADA_MS)
+  const energia = useEstadoLecturas()
 
-  // Datos de la ventana visible, calculados de la serie real (nada inventado).
+  const ultima =
+    energia.lecturas && energia.lecturas.length > 0
+      ? energia.lecturas[energia.lecturas.length - 1]!
+      : null
+  const serie = useMemo(
+    () => (energia.lecturas && energia.lecturas.length > 0 ? construirSerie(energia.lecturas) : null),
+    [energia.lecturas],
+  )
+  const minutosVentana = VENTANA_MS / 60_000
   const potencias = serie !== null ? serie.visibles.map((l) => l.p) : []
+
+  const errorMostrado = asistencia.error ?? energia.error
+  const sinSesion = asistencia.sinSesion || energia.sinSesion
+  const horaUltimaRespuesta = asistencia.horaServidor ?? energia.horaServidor
+  const sinDatosPrevios = asistencia.sesiones === null && energia.lecturas === null
+
+  function reintentarTodo() {
+    asistencia.reintentar()
+    energia.reintentar()
+  }
 
   return (
     <Pagina
       titulo="Métricas y asistencia"
-      descripcion={`Energía de la placa, actualizada cada ${CONSULTA_CADA_S} s. La asistencia, la latencia y la confianza llegan en un avance posterior.`}
+      descripcion={`Asistencia por sesión, intentos de reconocimiento y energía de la placa, actualizados cada ${CONSULTA_CADA_S} s.`}
     >
-      {error !== null && (
+      {errorMostrado !== null && (
         <div className="aviso aviso--error">
           <p className="aviso__titulo">
-            {lecturas === null ? 'No se pudieron cargar las lecturas' : 'No se pudo actualizar'}
+            {sinDatosPrevios ? 'No se pudieron cargar los datos' : 'No se pudo actualizar'}
           </p>
           <p>
-            {error}{' '}
-            {horaServidor !== null ? `Se muestran los datos de las ${formatearHora(horaServidor)}. ` : ''}
-            {sinSesion ? 'La vista no insistirá sola.' : `La vista lo vuelve a intentar cada ${CONSULTA_CADA_S} s.`}
+            {errorMostrado}{' '}
+            {horaUltimaRespuesta !== null
+              ? `Se muestran los datos de las ${formatearHora(horaUltimaRespuesta)}. `
+              : ''}
+            {sinSesion
+              ? 'La vista no insistirá sola.'
+              : `La vista lo vuelve a intentar cada ${CONSULTA_CADA_S} s.`}
           </p>
           {sinSesion && (
-            <button type="button" className="boton" onClick={reintentar}>
+            <button type="button" className="boton" onClick={reintentarTodo}>
               Reintentar
             </button>
           )}
         </div>
       )}
 
-      {lecturas === null && error === null && (
+      {asistencia.sesiones === null && asistencia.error === null && (
         <div className="hoja estado" aria-busy="true">
           <MarcaAsistencia tipo="pendiente" />
           <div className="estado__cuerpo">
-            <h2 className="estado__titulo">Cargando las lecturas de energía</h2>
-            <p className="estado__texto">Esperando la primera respuesta de la placa.</p>
+            <h2 className="estado__titulo">Cargando sesiones de asistencia</h2>
+            <p className="estado__texto">Consultando el historial de sesiones en la placa.</p>
           </div>
         </div>
       )}
 
-      {lecturas !== null && ultima === null && (
-        <EstadoVacio titulo="Todavía no hay lecturas de energía">
-          Revisa que la XIAO esté encendida y publicando en <code>aula/camara/energia</code>. La primera lectura aparece
-          aquí sin recargar la página.
+      {asistencia.sesiones !== null && asistencia.sesiones.length === 0 && (
+        <EstadoVacio titulo="Todavía no hay sesiones de asistencia">
+          Inicia una sesión desde la pantalla táctil del aula para comenzar el pase de lista. Al
+          abrirse o cerrarse, aparecerá aquí automáticamente.
         </EstadoVacio>
       )}
 
-      {lecturas !== null && ultima !== null && serie !== null && (
+      {asistencia.sesiones !== null && asistencia.sesiones.length > 0 && (
+        <HojaAsistencia
+          sesiones={asistencia.sesiones}
+          detalle={asistencia.detalle}
+          idSeleccionado={asistencia.idSeleccionado}
+          cargandoDetalle={asistencia.cargandoDetalle}
+          cambiadas={asistencia.cambiadas}
+          alSeleccionarSesion={asistencia.seleccionarSesion}
+        />
+      )}
+
+      {energia.lecturas === null && energia.error === null && (
+        <div className="hoja estado" aria-busy="true">
+          <MarcaAsistencia tipo="pendiente" />
+          <div className="estado__cuerpo">
+            <h2 className="estado__titulo">Cargando las lecturas de energía</h2>
+            <p className="estado__texto">Esperando la respuesta del monitor de energía.</p>
+          </div>
+        </div>
+      )}
+
+      {energia.lecturas !== null && ultima === null && (
+        <EstadoVacio titulo="Todavía no hay lecturas de energía">
+          Revisa que la XIAO esté encendida y publicando en <code>aula/camara/energia</code>. La
+          primera lectura aparece aquí sin recargar la página.
+        </EstadoVacio>
+      )}
+
+      {energia.lecturas !== null && ultima !== null && serie !== null && (
         <>
           <AvisoObsoleta />
 
-          {/* Una hoja de dos columnas: la potencia y las demás cifras como renglones con puntos guía, y la gráfica. */}
           <section className="hoja hoja--energia" aria-label="Energía">
             <div className="energia__cifras">
               <dl className="cifras">
-                <Cifra destacada etiqueta="Potencia" valor={ultima.p} formato={formatearPotencia} unidad="W" />
+                <Cifra
+                  destacada
+                  etiqueta="Potencia"
+                  valor={ultima.p}
+                  formato={formatearPotencia}
+                  unidad="W"
+                />
               </dl>
               <div className="energia__hora">
                 <p className="etiqueta-tecnica hora-lectura">
                   Última lectura: {formatearFechaYHora(ultima.t)} (hora de Ciudad de México)
                 </p>
-                {horaServidor !== null && (
+                {energia.horaServidor !== null && (
                   <p className="etiqueta-tecnica">
-                    Actualizado a las {formatearHora(horaServidor)}, cada {CONSULTA_CADA_S} s
+                    Actualizado a las {formatearHora(energia.horaServidor)}, cada {CONSULTA_CADA_S} s
                   </p>
                 )}
               </div>
               <dl className="cifras cifras--renglones">
-                <Cifra etiqueta="Voltaje" valor={ultima.v} formato={formatearVoltaje} unidad="V" />
-                <Cifra etiqueta="Corriente" valor={ultima.i} formato={formatearCorriente} unidad="A" />
-                <Cifra etiqueta={`Mínima en ${minutosVentana} min`} valor={Math.min(...potencias)} formato={formatearPotencia} unidad="W" />
-                <Cifra etiqueta={`Máxima en ${minutosVentana} min`} valor={Math.max(...potencias)} formato={formatearPotencia} unidad="W" />
-                <Cifra etiqueta={`Lecturas en ${minutosVentana} min`} valor={potencias.length} formato={entero} />
+                <Cifra
+                  etiqueta="Voltaje"
+                  valor={ultima.v}
+                  formato={formatearVoltaje}
+                  unidad="V"
+                />
+                <Cifra
+                  etiqueta="Corriente"
+                  valor={ultima.i}
+                  formato={formatearCorriente}
+                  unidad="A"
+                />
+                <Cifra
+                  etiqueta={`Mínima en ${minutosVentana} min`}
+                  valor={Math.min(...potencias)}
+                  formato={formatearPotencia}
+                  unidad="W"
+                />
+                <Cifra
+                  etiqueta={`Máxima en ${minutosVentana} min`}
+                  valor={Math.max(...potencias)}
+                  formato={formatearPotencia}
+                  unidad="W"
+                />
+                <Cifra
+                  etiqueta={`Lecturas en ${minutosVentana} min`}
+                  valor={potencias.length}
+                  formato={entero}
+                />
               </dl>
             </div>
             <div className="energia__grafica">
-              <h2 id="titulo-grafica" className="hoja__subtitulo">Potencia en los últimos {minutosVentana} min (W)</h2>
+              <h2 id="titulo-grafica" className="hoja__subtitulo">
+                Potencia en los últimos {minutosVentana} min (W)
+              </h2>
               <GraficaPotencia serie={serie} />
             </div>
           </section>
 
           <section className="hoja hoja--tabla" aria-labelledby="titulo-tabla">
             <header className="hoja__encabezado hoja__encabezado--tabla">
-              <h2 id="titulo-tabla" className="hoja__subtitulo">Lecturas recientes</h2>
+              <h2 id="titulo-tabla" className="hoja__subtitulo">
+                Lecturas recientes
+              </h2>
             </header>
-            <TablaLecturas lecturas={lecturas} idTitulo="titulo-tabla" />
+            <TablaLecturas lecturas={energia.lecturas} idTitulo="titulo-tabla" />
           </section>
         </>
       )}
 
-      <EstadoVacio titulo="Todavía no hay asistencia">
-        La asistencia por sesión llega en un avance posterior. Hoy no hay sesiones que mostrar, y por eso no hay cifras.
+      <EstadoVacio titulo="Todavía no hay lecturas de latencia">
+        La latencia de inferencia de la NPU aún no se almacena en la base de datos de la placa.
+        Cuando se incorpore su ingesta, las mediciones reales se mostrarán aquí.
       </EstadoVacio>
     </Pagina>
   )

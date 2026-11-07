@@ -3,8 +3,8 @@ Programa de la pantalla ILI9341 de AutoList (pase de lista)
 
 Menu base del plan (sección 6.5): las vistas Sesión, Lista y Guía de registro,
 con navegación por el táctil XPT2046 y un cliente MQTT con el usuario
-`pantalla` (docs/contrato-mqtt.md). Sesión y Lista muestran "sin datos" donde
-el contrato aún no define una fuente (ver estado.Estado).
+`pantalla` (docs/contrato-mqtt.md). Sesión y Lista muestran "sin datos" sin
+sesión activa o antes del primer mensaje retenido (ver estado.Estado).
 
 Con SIGTERM o SIGINT apaga la luz de prueba si estaba encendida, cierra MQTT,
 limpia la pantalla, libera el SPI y los GPIO y sale con código 0. Con un

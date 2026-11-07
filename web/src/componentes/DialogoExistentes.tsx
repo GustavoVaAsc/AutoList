@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import type { Decision } from '../api/alumnosRespuestas'
+import { useDialogo } from '../useDialogo'
 import type { PorDecidir } from '../useImportacion'
 
 interface Props {
@@ -11,81 +12,24 @@ interface Props {
   alCancelar: () => void
 }
 
-// Si la transición de salida no avisa (pestaña oculta, estilos que no cargaron), se cierra igual.
-const SALIDA_MAXIMA_MS = 400
-
 /**
  * Diálogo del 409 con escrito:false: ya existen cuentas del archivo y la
- * decisión es del profesor. Usa <dialog> nativo con showModal(): el navegador
- * deja inerte el resto de la página, atrapa el foco, devuelve el foco al botón
- * que lo tenía y entrega Escape como evento `cancel`; nada de eso se reescribe.
- *
- * Movimiento (estilos.css, `.dialogo`): entra con un resorte corto
- * (transición con curva linear(), 300 ms, un 4.6 % de rebote) y sale en 150 ms
- * con ease-out, más rápido porque la persona ya decidió. Son transiciones y no
- * keyframes, así que se pueden interrumpir: si `datos` vuelve a llegar durante
- * la salida, la transición se revierte desde donde va. La salida la espera el
- * código (transitionend) antes de llamar a close(), porque la salida de
- * <dialog> con CSS puro depende de `overlay`, que Safari y Firefox no animan.
- * Con movimiento reducido las transiciones valen 0 s y se cierra al instante.
+ * decisión es del profesor. Usa <dialog> nativo con showModal() mediante
+ * `useDialogo`: el navegador deja inerte el resto de la página, atrapa el foco,
+ * devuelve el foco al botón que lo tenía y entrega Escape como evento `cancel`;
+ * nada de eso se reescribe.
  *
  * Foco inicial: "Cancelar", la única acción que no cambia nada; ninguna de las
  * dos decisiones queda como predeterminada.
  */
 export function DialogoExistentes({ datos, enviando, alDecidir, alCancelar }: Props) {
-  const dialogo = useRef<HTMLDialogElement>(null)
-  const [visible, setVisible] = useState(false)
+  const abierto = datos !== null
+  const { dialogo, visible, alCerrar } = useDialogo(abierto)
   // El contenido sobrevive a la salida: `datos` ya es null mientras el diálogo se desvanece.
   const [mostrado, setMostrado] = useState(datos)
   if (datos !== null && datos !== mostrado) {
     setMostrado(datos)
   }
-  const abierto = datos !== null
-
-  useEffect(() => {
-    const el = dialogo.current
-    if (el === null) {
-      return
-    }
-    if (abierto) {
-      if (!el.open) {
-        el.showModal()
-      }
-      el.querySelector<HTMLElement>('[data-foco-inicial]')?.focus()
-      // Fija el estado oculto antes de activar `data-visible`: sin esta lectura el
-      // navegador no ve el cambio y la transición no corre.
-      void el.offsetWidth
-      setVisible(true)
-      return
-    }
-    setVisible(false)
-    if (!el.open) {
-      return
-    }
-    let terminado = false
-    const cerrar = () => {
-      if (!terminado) {
-        terminado = true
-        el.close()
-      }
-    }
-    if (!(Number.parseFloat(getComputedStyle(el).transitionDuration) > 0)) {
-      cerrar()
-      return
-    }
-    const alTerminar = (e: TransitionEvent) => {
-      if (e.target === el && e.propertyName === 'opacity') {
-        cerrar()
-      }
-    }
-    el.addEventListener('transitionend', alTerminar)
-    const respaldo = window.setTimeout(cerrar, SALIDA_MAXIMA_MS)
-    return () => {
-      terminado = true
-      el.removeEventListener('transitionend', alTerminar)
-      window.clearTimeout(respaldo)
-    }
-  }, [abierto])
 
   const cambian = mostrado?.existentes.filter((e) => e.cambia).length ?? 0
   const total = mostrado?.existentes.length ?? 0
@@ -104,13 +48,7 @@ export function DialogoExistentes({ datos, enviando, alDecidir, alCancelar }: Pr
           alCancelar()
         }
       }}
-      onClose={() => {
-        // Un cierre que no vino del estado (Chrome cierra a la segunda Escape seguida):
-        // si la persona aún debe decidir, se vuelve a abrir.
-        if (abierto) {
-          dialogo.current?.showModal()
-        }
-      }}
+      onClose={alCerrar}
     >
       {mostrado !== null && (
         <div className="dialogo__interior">

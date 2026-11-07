@@ -12,6 +12,7 @@ import estado
 from estado import Estado, interpretar
 
 SESION = "aula/sesion/estado"
+ASISTENCIA = "aula/sesion/asistencia"
 ACTUADOR = "aula/actuador/estado"
 ENROL = "aula/vision/enrolamiento"
 REINICIO = "aula/pantalla/reinicio"
@@ -183,9 +184,121 @@ class InterpretarReinicio(unittest.TestCase):
 
 
 class Suscripciones(unittest.TestCase):
-    def test_son_los_cuatro_topicos_de_la_acl(self):
+    def test_son_los_cinco_topicos_de_la_acl(self):
         self.assertEqual(dict(estado.SUSCRIPCIONES),
-                         {SESION: 1, ACTUADOR: 1, ENROL: 0, REINICIO: 1})
+                         {SESION: 1, ASISTENCIA: 1, ACTUADOR: 1,
+                          ENROL: 0, REINICIO: 1})
+
+
+class InterpretarAsistencia(unittest.TestCase):
+    def test_activa_con_ultimo(self):
+        ev = interpretar(ASISTENCIA, j({
+            "activa": True, "id": 23, "presentes": 5, "retardos": 1,
+            "faltantes": 4,
+            "ultimo": {"nombre": "Valenzuela Ascencio, Gustavo",
+                       "estado": "presente"}
+        }), True)
+        self.assertEqual(ev, ("asistencia", {
+            "activa": True, "id": 23,
+            "asistencia": {"presentes": 5, "retardos": 1, "faltantes": 4},
+            "ultimo": {"nombre": "Valenzuela Ascencio, Gustavo",
+                       "estado": "presente"},
+        }))
+
+    def test_activa_sin_ultimo(self):
+        ev = interpretar(ASISTENCIA, j({
+            "activa": True, "id": 23, "presentes": 0, "retardos": 0,
+            "faltantes": 10, "ultimo": None
+        }), False)
+        self.assertIsNone(ev[1]["ultimo"])
+        self.assertEqual(ev[1]["asistencia"],
+                         {"presentes": 0, "retardos": 0, "faltantes": 10})
+
+    def test_inactiva(self):
+        ev = interpretar(ASISTENCIA, j({"activa": False}), True)
+        self.assertEqual(ev, ("asistencia", {"activa": False, "id": None,
+                                             "asistencia": None, "ultimo": None}))
+
+    def test_limpia_y_recorta_el_nombre_del_ultimo(self):
+        ev = interpretar(ASISTENCIA, j({
+            "activa": True, "id": 1, "presentes": 0, "retardos": 1,
+            "faltantes": 9,
+            "ultimo": {"nombre": "Ana\n\u202eLópez" + "x" * 200,
+                       "estado": "retardo"}
+        }), False)
+        self.assertEqual(ev[1]["ultimo"]["estado"], "retardo")
+        self.assertTrue(ev[1]["ultimo"]["nombre"].startswith("Ana  López"))
+        self.assertLessEqual(len(ev[1]["ultimo"]["nombre"]), 80)
+
+    def test_descartes(self):
+        base = {"activa": True, "id": 1, "presentes": 1, "retardos": 0,
+                "faltantes": 9, "ultimo": None}
+        malos = [
+            b"", b"no", j([]), j({"activa": "si"}), j({"activa": 1}),
+            j(dict(base, presentes=-1)), j(dict(base, retardos=True)),
+            j(dict(base, faltantes=10001)), j(dict(base, presentes="1")),
+            j({"activa": True}),
+            j(dict(base, ultimo="Ana")), j(dict(base, ultimo=[])),
+            j(dict(base, ultimo={"nombre": "", "estado": "presente"})),
+            j(dict(base, ultimo={"nombre": "   ", "estado": "presente"})),
+            j(dict(base, ultimo={"nombre": "Ana", "estado": "falta"})),
+        ]
+        for payload in malos:
+            with self.subTest(payload=payload):
+                self.assertIsNone(interpretar(ASISTENCIA, payload, False))
+
+
+class EstadoAsistencia(unittest.TestCase):
+    def test_actualiza_conteos_y_ultimo_y_limpia_al_cerrar(self):
+        e = Estado()
+        e.aplicar(interpretar(SESION, j({"activa": True, "id": 23,
+                                         "materia": "FSE", "grupo": "1"}), True), 0)
+        e.sucio = False
+        e.aplicar(interpretar(ASISTENCIA, j({
+            "activa": True, "id": 23, "presentes": 1, "retardos": 0,
+            "faltantes": 9,
+            "ultimo": {"nombre": "Ana López", "estado": "presente"}
+        }), False), 1)
+        self.assertTrue(e.sucio)
+        self.assertEqual(e.asistencia,
+                         {"presentes": 1, "retardos": 0, "faltantes": 9})
+        self.assertEqual(e.ultimo_registro,
+                         {"nombre": "Ana López", "estado": "presente"})
+        e.sucio = False
+        e.aplicar(interpretar(SESION, j({"activa": False, "id": 23}), False), 2)
+        self.assertTrue(e.sucio)
+        self.assertIsNone(e.asistencia)
+        self.assertIsNone(e.ultimo_registro)
+
+    def test_funciona_aunque_asistencia_llegue_antes_que_el_estado_de_sesion(self):
+        e = Estado()
+        e.aplicar(interpretar(SESION, j({"activa": False, "id": 22}), True), 0)
+        # Al iniciar la 23, asistencia llega un instante antes que estado
+        e.aplicar(interpretar(ASISTENCIA, j({
+            "activa": True, "id": 23, "presentes": 0, "retardos": 0,
+            "faltantes": 10, "ultimo": None
+        }), False), 1)
+        self.assertEqual(e.asistencia["faltantes"], 10)
+        e.aplicar(interpretar(SESION, j({"activa": True, "id": 23,
+                                         "materia": "FSE", "grupo": "1"}), False), 2)
+        self.assertEqual(e.asistencia["faltantes"], 10)
+
+    def test_descarta_asistencia_rezagada_de_una_sesion_cerrada_o_anterior(self):
+        e = Estado()
+        e.aplicar(interpretar(SESION, j({"activa": False, "id": 23}), True), 0)
+        e.sucio = False
+        e.aplicar(interpretar(ASISTENCIA, j({
+            "activa": True, "id": 23, "presentes": 3, "retardos": 0,
+            "faltantes": 7, "ultimo": None
+        }), False), 1)
+        self.assertIsNone(e.asistencia)
+        self.assertFalse(e.sucio)
+        e.aplicar(interpretar(SESION, j({"activa": True, "id": 24}), False), 2)
+        e.aplicar(interpretar(ASISTENCIA, j({
+            "activa": True, "id": 23, "presentes": 3, "retardos": 0,
+            "faltantes": 7, "ultimo": None
+        }), False), 3)
+        self.assertIsNone(e.asistencia)
 
 
 class Conexion(unittest.TestCase):

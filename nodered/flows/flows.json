@@ -1578,7 +1578,7 @@
         "type": "postgresql",
         "z": "a1f0c0de00000090",
         "name": "INSERT sesión (cierra la olvidada)",
-        "query": "WITH cerrada AS (\n  UPDATE sesiones SET fin = now() WHERE fin IS NULL RETURNING id\n), previa AS (\n  SELECT max(id) AS id FROM cerrada\n), nueva AS (\n  INSERT INTO sesiones (materia, grupo, tolerancia_min)\n  SELECT $1::text, $2::text, $3::int FROM previa\n  RETURNING id, materia, grupo, inicio, tolerancia_min\n)\nSELECT nueva.id, nueva.materia, nueva.grupo,\n       to_char(nueva.inicio AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"') AS inicio,\n       nueva.tolerancia_min AS tol_min,\n       previa.id AS cerrada_id\nFROM nueva CROSS JOIN previa",
+        "query": "WITH cerrada AS (\n  UPDATE sesiones SET fin = now() WHERE fin IS NULL RETURNING id\n), previa AS (\n  SELECT max(id) AS id FROM cerrada\n), nueva AS (\n  INSERT INTO sesiones (materia, grupo, tolerancia_min)\n  SELECT $1::text, $2::text, $3::int FROM previa\n  RETURNING id, materia, grupo, inicio, tolerancia_min\n)\nSELECT nueva.id, nueva.materia, nueva.grupo,\n       to_char(nueva.inicio AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"') AS inicio,\n       nueva.tolerancia_min AS tol_min,\n       previa.id AS cerrada_id,\n       (SELECT count(*)::int FROM alumnos WHERE grupo = nueva.grupo) AS faltantes\nFROM nueva CROSS JOIN previa",
         "postgreSQLConfig": "a1f0c0de00000003",
         "split": false,
         "rowsPerMsg": 1,
@@ -1596,8 +1596,8 @@
         "type": "function",
         "z": "a1f0c0de00000090",
         "name": "Estado tras iniciar",
-        "func": "// Respuesta del CTE de iniciar (una fila): la sesión nueva y, si había una abierta olvidada, su id\n// en `cerrada_id`. Se publica DESPUÉS de escribir en la base: el estado retenido nunca adelanta a\n// la base. El mqtt out \"Publicar estado de sesión\" fija el tópico, el QoS 1 y el retain.\n// Si la respuesta no es lo esperado, lanza: el catch reconcilia y publica lo que diga la base.\n// Salida 1: aula/sesion/estado. Salida 2: reporte de la sesión olvidada que se cerró.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length !== 1) {\n    throw new Error(\"el INSERT de la sesión no devolvió una fila\");\n}\nconst f = filas[0];\nif (!Number.isSafeInteger(f.id) || f.id < 1) {\n    throw new Error(\"el INSERT de la sesión no devolvió un id válido\");\n}\nconst estado = {\n    activa: true,\n    id: f.id,\n    materia: f.materia,\n    grupo: f.grupo,\n    inicio: f.inicio,\n    tol_min: f.tol_min\n};\nnode.log(\"Sesión \" + f.id + \" iniciada\");\nlet reporte = null;\nif (f.cerrada_id !== null && f.cerrada_id !== undefined) {\n    node.log(\"Iniciar cerró la sesión olvidada \" + f.cerrada_id + \": se genera su reporte\");\n    reporte = { sesion_id: f.cerrada_id };\n}\nreturn [{ payload: JSON.stringify(estado) }, reporte];",
-        "outputs": 2,
+        "func": "// Respuesta del CTE de iniciar (una fila): la sesión nueva, el total de alumnos del grupo en\n// `faltantes` y, si había una abierta olvidada, su id en `cerrada_id`. Se publica DESPUÉS de\n// escribir en la base: los retenidos nunca adelantan a la base.\n// Si la respuesta no es lo esperado, lanza: el catch reconcilia y publica lo que diga la base.\n// Salida 1: aula/sesion/estado. Salida 2: reporte de la olvidada. Salida 3: aula/sesion/asistencia.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length !== 1) {\n    throw new Error(\"el INSERT de la sesión no devolvió una fila\");\n}\nconst f = filas[0];\nif (!Number.isSafeInteger(f.id) || f.id < 1) {\n    throw new Error(\"el INSERT de la sesión no devolvió un id válido\");\n}\nif (!Number.isSafeInteger(f.faltantes) || f.faltantes < 0) {\n    throw new Error(\"el INSERT de la sesión no devolvió faltantes válidos\");\n}\nconst estado = {\n    activa: true,\n    id: f.id,\n    materia: f.materia,\n    grupo: f.grupo,\n    inicio: f.inicio,\n    tol_min: f.tol_min\n};\nconst asistencia = {\n    activa: true,\n    id: f.id,\n    presentes: 0,\n    retardos: 0,\n    faltantes: f.faltantes,\n    ultimo: null\n};\nnode.log(\"Sesión \" + f.id + \" iniciada\");\nlet reporte = null;\nif (f.cerrada_id !== null && f.cerrada_id !== undefined) {\n    node.log(\"Iniciar cerró la sesión olvidada \" + f.cerrada_id + \": se genera su reporte\");\n    reporte = { sesion_id: f.cerrada_id };\n}\nreturn [{ payload: JSON.stringify(estado) }, reporte, { payload: JSON.stringify(asistencia) }];",
+        "outputs": 3,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
@@ -1611,6 +1611,9 @@
             ],
             [
                 "a1f0c0de000000a2"
+            ],
+            [
+                "a1f0c0de000000d4"
             ]
         ]
     },
@@ -1637,8 +1640,8 @@
         "type": "function",
         "z": "a1f0c0de00000090",
         "name": "Estado tras terminar",
-        "func": "// Respuesta de \"UPDATE cerrar sesión\" (RETURNING id): una fila si había una sesión abierta, ninguna\n// si no. Se publica DESPUÉS de escribir en la base.\n//   - Con sesión: publica {\"activa\":false,\"id\":N} (retenido, QoS 1) y pide el reporte.\n//   - Sin sesión: no cambia nada en la base, no hay reporte y no se publica un estado inventado:\n//     se pide el estado real a la base (mismo SELECT de la reconciliación), que corrige un\n//     retenido viejo si lo hubiera (por ejemplo, si el broker perdió el último).\n// Salida 1: aula/sesion/estado. Salida 2: reporte. Salida 3: reconciliar.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"el UPDATE de cerrar la sesión no devolvió 0 o 1 filas\");\n}\nif (filas.length === 0) {\n    node.log(\"Terminar sin sesión abierta: no cambia nada; se republica el estado real de la base\");\n    return [null, null, { fuente: \"reconciliar\", payload: null }];\n}\nconst id = filas[0].id;\nif (!Number.isSafeInteger(id) || id < 1) {\n    throw new Error(\"el UPDATE de cerrar la sesión no devolvió un id válido\");\n}\nnode.log(\"Sesión \" + id + \" terminada\");\nreturn [{ payload: JSON.stringify({ activa: false, id: id }) }, { sesion_id: id }, null];",
-        "outputs": 3,
+        "func": "// Respuesta de \"UPDATE cerrar sesión\" (RETURNING id): una fila si había una sesión abierta, ninguna\n// si no. Se publica DESPUÉS de escribir en la base.\n//   - Con sesión: publica {\"activa\":false,\"id\":N} en aula/sesion/estado, {\"activa\":false} en\n//     aula/sesion/asistencia y pide el reporte.\n//   - Sin sesión: no cambia nada en la base, no hay reporte y no se publica un estado inventado:\n//     se pide el estado real a la base (mismo SELECT de la reconciliación), que corrige retenidos\n//     viejos si los hubiera.\n// Salida 1: aula/sesion/estado. Salida 2: reporte. Salida 3: reconciliar. Salida 4: aula/sesion/asistencia.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"el UPDATE de cerrar la sesión no devolvió 0 o 1 filas\");\n}\nif (filas.length === 0) {\n    node.log(\"Terminar sin sesión abierta: no cambia nada; se republica el estado real de la base\");\n    return [null, null, { fuente: \"reconciliar\", payload: null }, null];\n}\nconst id = filas[0].id;\nif (!Number.isSafeInteger(id) || id < 1) {\n    throw new Error(\"el UPDATE de cerrar la sesión no devolvió un id válido\");\n}\nnode.log(\"Sesión \" + id + \" terminada\");\nreturn [{ payload: JSON.stringify({ activa: false, id: id }) }, { sesion_id: id }, null, { payload: JSON.stringify({ activa: false }) }];",
+        "outputs": 4,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
@@ -1655,6 +1658,9 @@
             ],
             [
                 "a1f0c0de0000009d"
+            ],
+            [
+                "a1f0c0de000000d4"
             ]
         ]
     },
@@ -1679,9 +1685,9 @@
         "id": "a1f0c0de00000099",
         "type": "comment",
         "z": "a1f0c0de00000090",
-        "name": "Estado: aula/sesion/estado y reconciliación con la base",
+        "name": "Estado: aula/sesion/estado, aula/sesion/asistencia y reconciliación con la base",
         "info": "",
-        "x": 250,
+        "x": 290,
         "y": 300,
         "wires": []
     },
@@ -1701,6 +1707,24 @@
         "broker": "a1f0c0de00000002",
         "x": 1260,
         "y": 100,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000d4",
+        "type": "mqtt out",
+        "z": "a1f0c0de00000090",
+        "name": "Publicar asistencia de sesión",
+        "topic": "aula/sesion/asistencia",
+        "qos": "1",
+        "retain": "true",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 1270,
+        "y": 180,
         "wires": []
     },
     {
@@ -1724,7 +1748,7 @@
         "type": "function",
         "z": "a1f0c0de00000090",
         "name": "Al conectar: reconciliar",
-        "func": "// Llega el estado del nodo \"Publicar estado de sesión\". Solo interesa \"conectado\" (verde, punto):\n// es el estado que mqtt out emite cuando ya puede publicar, al arrancar, al desplegar y al\n// reconectar (también tras reiniciar Mosquitto). Entonces se reconcilia aula/sesion/estado con la\n// base: se publica la sesión abierta o el estado inactivo, para que la XIAO y la pantalla vean la\n// verdad aunque el broker haya perdido el retenido.\n// `reconciliar_pendiente` queda puesta hasta que \"Estado de la base\" publique: si la consulta\n// falla (la base no responde), \"Reintentar reconciliación\" la repite cada 15 s.\nconst s = msg.status || {};\nif (s.fill !== \"green\" || s.shape !== \"dot\") {\n    return null;\n}\nflow.set(\"reconciliar_pendiente\", true);\nnode.log(\"Conectado al broker: se reconcilia aula/sesion/estado con la base\");\nreturn { fuente: \"reconciliar\", payload: null };",
+        "func": "// Llega el estado del nodo \"Publicar estado de sesión\". Solo interesa \"conectado\" (verde, punto):\n// es el estado que mqtt out emite cuando ya puede publicar, al arrancar, al desplegar y al\n// reconectar (también tras reiniciar Mosquitto). Entonces se reconcilian aula/sesion/estado y\n// aula/sesion/asistencia con la base: se publica la sesión abierta o el estado inactivo, para que\n// la XIAO y la pantalla vean la verdad aunque el broker haya perdido el retenido.\n// `reconciliar_pendiente` queda puesta hasta que \"Estado de la base\" publique: si la consulta\n// falla (la base no responde), \"Reintentar reconciliación\" la repite cada 15 s.\nconst s = msg.status || {};\nif (s.fill !== \"green\" || s.shape !== \"dot\") {\n    return null;\n}\nflow.set(\"reconciliar_pendiente\", true);\nnode.log(\"Conectado al broker: se reconcilia aula/sesion/estado con la base\");\nreturn { fuente: \"reconciliar\", payload: null };",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -1744,7 +1768,7 @@
         "type": "postgresql",
         "z": "a1f0c0de00000090",
         "name": "SELECT sesión actual",
-        "query": "SELECT id, materia, grupo,\n       to_char(inicio AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"') AS inicio,\n       tolerancia_min AS tol_min,\n       (fin IS NULL) AS abierta\nFROM sesiones\nORDER BY (fin IS NULL) DESC, id DESC\nLIMIT 1",
+        "query": "SELECT s.id, s.materia, s.grupo,\n       to_char(s.inicio AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"+00:00\"') AS inicio,\n       s.tolerancia_min AS tol_min,\n       (s.fin IS NULL) AS abierta,\n       CASE WHEN s.fin IS NULL THEN (\n         SELECT count(*)::int FROM alumnos a JOIN asistencias x ON x.no_cuenta = a.no_cuenta AND x.sesion_id = s.id\n         WHERE a.grupo = s.grupo AND x.estado = 'presente'\n       ) END AS presentes,\n       CASE WHEN s.fin IS NULL THEN (\n         SELECT count(*)::int FROM alumnos a JOIN asistencias x ON x.no_cuenta = a.no_cuenta AND x.sesion_id = s.id\n         WHERE a.grupo = s.grupo AND x.estado = 'retardo'\n       ) END AS retardos,\n       CASE WHEN s.fin IS NULL THEN (\n         SELECT count(*)::int FROM alumnos a LEFT JOIN asistencias x ON x.no_cuenta = a.no_cuenta AND x.sesion_id = s.id\n         WHERE a.grupo = s.grupo AND x.id IS NULL\n       ) END AS faltantes,\n       CASE WHEN s.fin IS NULL THEN (\n         SELECT a.nombre FROM asistencias x JOIN alumnos a ON a.no_cuenta = x.no_cuenta\n         WHERE x.sesion_id = s.id AND a.grupo = s.grupo\n         ORDER BY x.hora DESC, x.id DESC LIMIT 1\n       ) END AS ultimo_nombre,\n       CASE WHEN s.fin IS NULL THEN (\n         SELECT x.estado FROM asistencias x JOIN alumnos a ON a.no_cuenta = x.no_cuenta\n         WHERE x.sesion_id = s.id AND a.grupo = s.grupo\n         ORDER BY x.hora DESC, x.id DESC LIMIT 1\n       ) END AS ultimo_estado\nFROM sesiones s\nORDER BY (s.fin IS NULL) DESC, s.id DESC\nLIMIT 1",
         "postgreSQLConfig": "a1f0c0de00000003",
         "split": false,
         "rowsPerMsg": 1,
@@ -1762,8 +1786,8 @@
         "type": "function",
         "z": "a1f0c0de00000090",
         "name": "Estado de la base",
-        "func": "// Respuesta de \"SELECT sesión actual\": a lo más una fila, la sesión abierta o, si no hay, la\n// última cerrada. Publica lo que dice la base (contrato MQTT, sección 5):\n//   - sesión abierta:  {\"activa\":true,\"id\",\"materia\",\"grupo\",\"inicio\",\"tol_min\"}\n//   - sin abierta:     {\"activa\":false,\"id\":<última>}\n//   - base sin sesiones: {\"activa\":false}\n// Quita la marca `reconciliar_pendiente` solo al publicar; si la respuesta es imposible, lanza y\n// la marca queda para el reintento.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"la consulta de la sesión actual no devolvió 0 o 1 filas\");\n}\nlet estado = { activa: false };\nif (filas.length === 1) {\n    const f = filas[0];\n    if (!Number.isSafeInteger(f.id) || f.id < 1) {\n        throw new Error(\"la consulta de la sesión actual no devolvió un id válido\");\n    }\n    estado = f.abierta === true\n        ? { activa: true, id: f.id, materia: f.materia, grupo: f.grupo, inicio: f.inicio, tol_min: f.tol_min }\n        : { activa: false, id: f.id };\n}\nflow.set(\"reconciliar_pendiente\", undefined);\nnode.log(\"Estado de la sesión reconciliado con la base: \" + (estado.activa ? \"activa \" + estado.id : \"inactiva\"));\nreturn { payload: JSON.stringify(estado) };",
-        "outputs": 1,
+        "func": "// Respuesta de \"SELECT sesión actual\": a lo más una fila, la sesión abierta o, si no hay, la\n// última cerrada. Publica lo que dice la base (contrato MQTT, sección 5):\n//   - salida 1 (aula/sesion/estado): {\"activa\":true,...} o {\"activa\":false,\"id\":<última>} o {\"activa\":false}\n//   - salida 2 (aula/sesion/asistencia): {\"activa\":true,\"id\",\"presentes\",\"retardos\",\"faltantes\",\"ultimo\"} o {\"activa\":false}\n// Quita la marca `reconciliar_pendiente` solo al publicar; si la respuesta es imposible, lanza y\n// la marca queda para el reintento.\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"la consulta de la sesión actual no devolvió 0 o 1 filas\");\n}\nlet estado = { activa: false };\nlet asistencia = { activa: false };\nif (filas.length === 1) {\n    const f = filas[0];\n    if (!Number.isSafeInteger(f.id) || f.id < 1) {\n        throw new Error(\"la consulta de la sesión actual no devolvió un id válido\");\n    }\n    if (f.abierta === true) {\n        if (!Number.isSafeInteger(f.presentes) || f.presentes < 0\n            || !Number.isSafeInteger(f.retardos) || f.retardos < 0\n            || !Number.isSafeInteger(f.faltantes) || f.faltantes < 0) {\n            throw new Error(\"la consulta de la sesión actual no devolvió conteos válidos\");\n        }\n        let ultimo = null;\n        const nom = f.ultimo_nombre;\n        const est = f.ultimo_estado;\n        if (nom !== null && nom !== undefined) {\n            if (typeof nom !== \"string\" || nom === \"\" || (est !== \"presente\" && est !== \"retardo\")) {\n                throw new Error(\"la consulta de la sesión actual no devolvió un último registro válido\");\n            }\n            ultimo = { nombre: nom, estado: est };\n        } else if (est !== null && est !== undefined) {\n            throw new Error(\"la consulta de la sesión actual devolvió estado sin alumno\");\n        }\n        estado = { activa: true, id: f.id, materia: f.materia, grupo: f.grupo, inicio: f.inicio, tol_min: f.tol_min };\n        asistencia = { activa: true, id: f.id, presentes: f.presentes, retardos: f.retardos, faltantes: f.faltantes, ultimo: ultimo };\n    } else {\n        estado = { activa: false, id: f.id };\n    }\n}\nflow.set(\"reconciliar_pendiente\", undefined);\nnode.log(\"Estado de la sesión reconciliado con la base: \" + (estado.activa ? \"activa \" + estado.id : \"inactiva\"));\nreturn [{ payload: JSON.stringify(estado) }, { payload: JSON.stringify(asistencia) }];",
+        "outputs": 2,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
@@ -1774,6 +1798,9 @@
         "wires": [
             [
                 "a1f0c0de0000009a"
+            ],
+            [
+                "a1f0c0de000000d4"
             ]
         ]
     },
@@ -2210,8 +2237,8 @@
         "type": "postgresql",
         "z": "a1f0c0de000000b0",
         "name": "Registrar asistencia o intento",
-        "info": "Pase de lista en una sola sentencia (una transacción): $1 = decision, $2 = cuenta, $3 = conf.\n`s` es la sesión abierta (no hay contexto que se desincronice). Sin sesión abierta no devuelve filas\ny no escribe nada. `alumno` solo existe para `reconocido` y solo si la cuenta es del grupo de la\nsesión y tiene consentimiento y rostro vigentes (un rostro retirado cuya `baja` la visión aún no\nprocesó cae en `fuera_de_grupo`). `ins` guarda la asistencia con el reloj de la base: presente si now() <= inicio + tolerancia,\nretardo si no; la UNIQUE (no_cuenta, sesion_id) hace que un duplicado, o dos resultados seguidos a la\nvez, no inserten fila (el segundo espera al primero y no hace nada). `res` dice qué pasó. `intento`\ndeja en `intentos` los rechazos: desconocido, imagen_insuficiente, duplicado y, como desconocido,\nel reconocido que no es del grupo, o que es del grupo pero ya no tiene rostro o consentimiento vigentes (`resultado` `fuera_de_grupo` cubre los dos casos; el CHECK de `motivo` no admite otro y la tabla no guarda la cuenta).\n`dudoso` no se guarda: ese CHECK tampoco tiene motivo para la zona gris.",
-        "query": "WITH s AS (\n  SELECT id, grupo, inicio, tolerancia_min FROM sesiones WHERE fin IS NULL\n), alumno AS (\n  SELECT a.no_cuenta, s.id AS sesion_id, s.inicio, s.tolerancia_min\n  FROM alumnos a JOIN s ON a.grupo = s.grupo\n  WHERE $1::text = 'reconocido' AND a.no_cuenta = $2::text AND a.consentimiento AND a.embedding IS NOT NULL\n), ins AS (\n  INSERT INTO asistencias (no_cuenta, sesion_id, estado, confianza, metodo)\n  SELECT no_cuenta, sesion_id,\n         CASE WHEN now() <= inicio + tolerancia_min * interval '1 minute' THEN 'presente' ELSE 'retardo' END,\n         $3::real, 'rostro'\n  FROM alumno\n  ON CONFLICT (no_cuenta, sesion_id) DO NOTHING\n  RETURNING estado\n), res AS (\n  SELECT s.id AS sesion_id,\n         CASE WHEN $1::text <> 'reconocido' THEN $1::text\n              WHEN NOT EXISTS (SELECT 1 FROM alumno) THEN 'fuera_de_grupo'\n              WHEN EXISTS (SELECT 1 FROM ins) THEN (SELECT estado FROM ins)\n              ELSE 'duplicado' END AS resultado\n  FROM s\n), intento AS (\n  INSERT INTO intentos (sesion_id, confianza_max, motivo)\n  SELECT sesion_id, $3::real,\n         CASE resultado WHEN 'fuera_de_grupo' THEN 'desconocido' ELSE resultado END\n  FROM res\n  WHERE resultado IN ('desconocido', 'imagen_insuficiente', 'duplicado', 'fuera_de_grupo')\n  RETURNING 1\n)\nSELECT resultado FROM res",
+        "info": "Pase de lista en una sola sentencia (una transacción): $1 = decision, $2 = cuenta, $3 = conf.\n`s` es la sesión abierta (no hay contexto que se desincronice). Sin sesión abierta no devuelve filas\ny no escribe nada. `alumno` solo existe para `reconocido` y solo si la cuenta es del grupo de la\nsesión y tiene consentimiento y rostro vigentes (un rostro retirado cuya `baja` la visión aún no\nprocesó cae en `fuera_de_grupo`). `ins` guarda la asistencia con el reloj de la base: presente si now() <= inicio + tolerancia,\nretardo si no; la UNIQUE (no_cuenta, sesion_id) hace que un duplicado, o dos resultados seguidos a la\nvez, no inserten fila (el segundo espera al primero y no hace nada). `res` dice qué pasó. `intento`\ndeja en `intentos` los rechazos: desconocido, imagen_insuficiente, duplicado y, como desconocido,\nel reconocido que no es del grupo, o que es del grupo pero ya no tiene rostro o consentimiento vigentes (`resultado` `fuera_de_grupo` cubre los dos casos; el CHECK de `motivo` no admite otro y la tabla no guarda la cuenta).\n`dudoso` no se guarda: ese CHECK tampoco tiene motivo para la zona gris.\nCuando `ins` inserta una fila, `previos` y `total_grupo` calculan los conteos actualizados de la sesión (sumando la fila recién insertada, porque en Postgres los CTE comparten la instantánea previa al INSERT) y `ultimo_nombre` devuelve el nombre del alumno para actualizar `aula/sesion/asistencia`.",
+        "query": "WITH s AS (\n  SELECT id, grupo, inicio, tolerancia_min FROM sesiones WHERE fin IS NULL\n), alumno AS (\n  SELECT a.no_cuenta, a.nombre, s.id AS sesion_id, s.grupo, s.inicio, s.tolerancia_min\n  FROM alumnos a JOIN s ON a.grupo = s.grupo\n  WHERE $1::text = 'reconocido' AND a.no_cuenta = $2::text AND a.consentimiento AND a.embedding IS NOT NULL\n), ins AS (\n  INSERT INTO asistencias (no_cuenta, sesion_id, estado, confianza, metodo)\n  SELECT no_cuenta, sesion_id,\n         CASE WHEN now() <= inicio + tolerancia_min * interval '1 minute' THEN 'presente' ELSE 'retardo' END,\n         $3::real, 'rostro'\n  FROM alumno\n  ON CONFLICT (no_cuenta, sesion_id) DO NOTHING\n  RETURNING sesion_id, no_cuenta, estado\n), res AS (\n  SELECT s.id AS sesion_id,\n         CASE WHEN $1::text <> 'reconocido' THEN $1::text\n              WHEN NOT EXISTS (SELECT 1 FROM alumno) THEN 'fuera_de_grupo'\n              WHEN EXISTS (SELECT 1 FROM ins) THEN (SELECT estado FROM ins)\n              ELSE 'duplicado' END AS resultado\n  FROM s\n), intento AS (\n  INSERT INTO intentos (sesion_id, confianza_max, motivo)\n  SELECT sesion_id, $3::real,\n         CASE resultado WHEN 'fuera_de_grupo' THEN 'desconocido' ELSE resultado END\n  FROM res\n  WHERE resultado IN ('desconocido', 'imagen_insuficiente', 'duplicado', 'fuera_de_grupo')\n  RETURNING 1\n), previos AS (\n  SELECT count(*) FILTER (WHERE x.estado = 'presente')::int AS presentes,\n         count(*) FILTER (WHERE x.estado = 'retardo')::int AS retardos\n  FROM asistencias x\n  JOIN alumnos a ON a.no_cuenta = x.no_cuenta\n  JOIN ins ON x.sesion_id = ins.sesion_id\n  WHERE a.grupo = (SELECT grupo FROM alumno) AND x.no_cuenta <> ins.no_cuenta\n), total_grupo AS (\n  SELECT count(*)::int AS total\n  FROM alumnos a\n  WHERE EXISTS (SELECT 1 FROM ins) AND a.grupo = (SELECT grupo FROM alumno)\n)\nSELECT res.resultado,\n       res.sesion_id,\n       CASE WHEN EXISTS (SELECT 1 FROM ins) THEN\n         previos.presentes + CASE WHEN (SELECT estado FROM ins) = 'presente' THEN 1 ELSE 0 END\n       END AS presentes,\n       CASE WHEN EXISTS (SELECT 1 FROM ins) THEN\n         previos.retardos + CASE WHEN (SELECT estado FROM ins) = 'retardo' THEN 1 ELSE 0 END\n       END AS retardos,\n       CASE WHEN EXISTS (SELECT 1 FROM ins) THEN\n         greatest(total_grupo.total - (previos.presentes + previos.retardos + 1), 0)\n       END AS faltantes,\n       (SELECT a.nombre FROM alumno a WHERE EXISTS (SELECT 1 FROM ins)) AS ultimo_nombre\nFROM res\nLEFT JOIN previos ON EXISTS (SELECT 1 FROM ins)\nLEFT JOIN total_grupo ON EXISTS (SELECT 1 FROM ins)",
         "postgreSQLConfig": "a1f0c0de00000003",
         "split": false,
         "rowsPerMsg": 1,
@@ -2229,8 +2256,8 @@
         "type": "function",
         "z": "a1f0c0de000000b0",
         "name": "Retroalimentación del pase",
-        "func": "// Respuesta de \"Registrar asistencia o intento\": una fila { resultado } si había una sesión abierta,\n// ninguna si no. `resultado` lo decide la sentencia con el reloj de la base:\n//   presente, retardo   → asistencia guardada (verde, el servo abre, pitido corto)\n//   duplicado           → ya estaba en la sesión (rojo, doble pitido; intento `duplicado`)\n//   fuera_de_grupo      → reconocido, pero no es del grupo de la sesión (rojo, doble pitido; intento `desconocido`)\n//   desconocido         → rojo, doble pitido (intento `desconocido`)\n//   imagen_insuficiente → ámbar, se repite la captura (intento `imagen_insuficiente`)\n//   dudoso              → ámbar; no registra (el marcado manual queda fuera)\n// Sin sesión abierta no se registra ni se manda nada: solo un aviso. La retroalimentación sale\n// DESPUÉS de escribir en la base. Valores de buzzer: 1 pitido corto de éxito, 2 doble pitido de\n// error (contrato MQTT, sección 3).\n// Salida 1: aula/actuador/cmd (QoS 1, sin retain, fijados en el nodo `mqtt out`). Salida 2: avisos.\n// Ni los avisos ni el log llevan la cuenta ni el nombre del alumno.\nconst RETROALIMENTACION = {\n    presente: { servo: \"abrir\", led: \"verde\", buzzer: 1 },\n    retardo: { servo: \"abrir\", led: \"verde\", buzzer: 1 },\n    duplicado: { led: \"rojo\", buzzer: 2 },\n    fuera_de_grupo: { led: \"rojo\", buzzer: 2 },\n    desconocido: { led: \"rojo\", buzzer: 2 },\n    imagen_insuficiente: { led: \"ambar\" },\n    dudoso: { led: \"ambar\" }\n};\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"la sentencia del pase de lista no devolvió 0 o 1 filas\");\n}\nif (filas.length === 0) {\n    return [null, { payload: \"Sin sesión abierta: no se registra ni se manda retroalimentación (\" + msg.decision + \")\" }];\n}\nconst resultado = filas[0].resultado;\nif (typeof resultado !== \"string\" || !Object.prototype.hasOwnProperty.call(RETROALIMENTACION, resultado)) {\n    throw new Error(\"la sentencia del pase de lista no devolvió un resultado válido\");\n}\nnode.log(\"Pase de lista: \" + resultado);\nreturn [{ payload: JSON.stringify(RETROALIMENTACION[resultado]) }, null];",
-        "outputs": 2,
+        "func": "// Respuesta de \"Registrar asistencia o intento\": una fila { resultado, ... } si había una sesión\n// abierta, ninguna si no. `resultado` lo decide la sentencia con el reloj de la base:\n//   presente, retardo   → asistencia guardada (verde, el servo abre, pitido corto) + conteos en aula/sesion/asistencia\n//   duplicado           → ya estaba en la sesión (rojo, doble pitido; intento `duplicado`)\n//   fuera_de_grupo      → reconocido, pero no es del grupo de la sesión (rojo, doble pitido; intento `desconocido`)\n//   desconocido         → rojo, doble pitido (intento `desconocido`)\n//   imagen_insuficiente → ámbar, se repite la captura (intento `imagen_insuficiente`)\n//   dudoso              → ámbar; no registra (el marcado manual queda fuera)\n// Sin sesión abierta no se registra ni se manda nada: solo un aviso. La retroalimentación y el\n// resumen de asistencia salen DESPUÉS de escribir en la base.\n// Salida 1: aula/actuador/cmd (QoS 1, sin retain). Salida 2: avisos. Salida 3: aula/sesion/asistencia (QoS 1, retain).\n// Ni los avisos ni el log llevan la cuenta ni el nombre del alumno.\nconst RETROALIMENTACION = {\n    presente: { servo: \"abrir\", led: \"verde\", buzzer: 1 },\n    retardo: { servo: \"abrir\", led: \"verde\", buzzer: 1 },\n    duplicado: { led: \"rojo\", buzzer: 2 },\n    fuera_de_grupo: { led: \"rojo\", buzzer: 2 },\n    desconocido: { led: \"rojo\", buzzer: 2 },\n    imagen_insuficiente: { led: \"ambar\" },\n    dudoso: { led: \"ambar\" }\n};\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"la sentencia del pase de lista no devolvió 0 o 1 filas\");\n}\nif (filas.length === 0) {\n    return [null, { payload: \"Sin sesión abierta: no se registra ni se manda retroalimentación (\" + msg.decision + \")\" }, null];\n}\nconst f = filas[0];\nconst resultado = f.resultado;\nif (typeof resultado !== \"string\" || !Object.prototype.hasOwnProperty.call(RETROALIMENTACION, resultado)) {\n    throw new Error(\"la sentencia del pase de lista no devolvió un resultado válido\");\n}\nlet asistencia = null;\nif (resultado === \"presente\" || resultado === \"retardo\") {\n    if (!Number.isSafeInteger(f.sesion_id) || f.sesion_id < 1\n        || !Number.isSafeInteger(f.presentes) || f.presentes < 0\n        || !Number.isSafeInteger(f.retardos) || f.retardos < 0\n        || !Number.isSafeInteger(f.faltantes) || f.faltantes < 0\n        || typeof f.ultimo_nombre !== \"string\" || f.ultimo_nombre === \"\") {\n        throw new Error(\"la sentencia del pase de lista no devolvió el resumen de asistencia\");\n    }\n    asistencia = {\n        payload: JSON.stringify({\n            activa: true,\n            id: f.sesion_id,\n            presentes: f.presentes,\n            retardos: f.retardos,\n            faltantes: f.faltantes,\n            ultimo: { nombre: f.ultimo_nombre, estado: resultado }\n        })\n    };\n}\nnode.log(\"Pase de lista: \" + resultado);\nreturn [{ payload: JSON.stringify(RETROALIMENTACION[resultado]) }, null, asistencia];",
+        "outputs": 3,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
@@ -2244,6 +2271,9 @@
             ],
             [
                 "a1f0c0de000000b7"
+            ],
+            [
+                "a1f0c0de000000bb"
             ]
         ]
     },
@@ -2263,6 +2293,24 @@
         "broker": "a1f0c0de00000002",
         "x": 1260,
         "y": 60,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000bb",
+        "type": "mqtt out",
+        "z": "a1f0c0de000000b0",
+        "name": "Publicar asistencia del pase",
+        "topic": "aula/sesion/asistencia",
+        "qos": "1",
+        "retain": "true",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 1270,
+        "y": 140,
         "wires": []
     },
     {
@@ -2317,6 +2365,348 @@
         "y": 260,
         "wires": [
             []
+        ]
+    },
+    {
+        "id": "a1f0c0de000000c0",
+        "type": "tab",
+        "label": "Asistencia",
+        "disabled": false,
+        "info": "API HTTP de solo lectura para la vista Métricas y asistencia del frontend: GET /api/sesiones, GET /api/sesiones/:id y GET /api/sesiones/:id/csv. La autenticación (HTTP Basic del profesor) la aplica el httpNodeMiddleware de settings.js. Ninguna ruta escribe en Postgres ni publica en MQTT."
+    },
+    {
+        "id": "a1f0c0de000000c1",
+        "type": "comment",
+        "z": "a1f0c0de000000c0",
+        "name": "API: GET /api/sesiones (lista de sesiones con conteos, intentos y confianza)",
+        "info": "Devuelve las sesiones de la más reciente a la más antigua, con presentes, retardos, faltas (o pendientes si sigue abierta), conteo de intentos rechazados y resumen de confianza. Parámetro opcional: limite (50 por defecto, máx. 200).",
+        "x": 280,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000c2",
+        "type": "http in",
+        "z": "a1f0c0de000000c0",
+        "name": "",
+        "url": "/api/sesiones",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 160,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000c3"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000c3",
+        "type": "function",
+        "z": "a1f0c0de000000c0",
+        "name": "Validar limite de sesiones",
+        "func": "// GET /api/sesiones[?limite=N]\n// limite: entero >= 1, 50 por defecto, tope de 200.\n// Salida 1: consulta de sesiones (msg.params = [limite]). Salida 2: error 400.\nconst POR_DEFECTO = 50;\nconst MAXIMO = 200;\nconst q = (msg.req && msg.req.query) ? msg.req.query : {};\n\nfunction rechazar(texto) {\n    msg.statusCode = 400;\n    msg.payload = { error: texto };\n    return [null, msg];\n}\n\nlet limite = POR_DEFECTO;\nif (q.limite !== undefined) {\n    if (typeof q.limite !== \"string\" || !/^[0-9]+$/.test(q.limite) || Number(q.limite) < 1) {\n        return rechazar(\"limite debe ser un entero mayor o igual a 1\");\n    }\n    limite = Math.min(Number(q.limite), MAXIMO);\n}\n\nmsg.rutaPlantilla = \"/api/sesiones\";\nmsg.params = [limite];\nmsg.payload = null;\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000c4"
+            ],
+            [
+                "a1f0c0de000000d0"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000c4",
+        "type": "postgresql",
+        "z": "a1f0c0de000000c0",
+        "name": "SELECT sesiones",
+        "query": "SELECT s.id,\n       s.materia,\n       s.grupo,\n       s.inicio,\n       s.fin,\n       (s.fin IS NULL) AS abierta,\n       s.tolerancia_min AS tol_min,\n       COALESCE(asis.total_grupo, 0)::int AS total_grupo,\n       COALESCE(asis.presentes, 0)::int AS presentes,\n       COALESCE(asis.retardos, 0)::int AS retardos,\n       COALESCE(asis.sin_registro, 0)::int AS sin_registro,\n       COALESCE(intn.desconocido, 0)::int AS intentos_desconocido,\n       COALESCE(intn.duplicado, 0)::int AS intentos_duplicado,\n       COALESCE(intn.imagen_insuficiente, 0)::int AS intentos_imagen_insuficiente,\n       asis.confianza_min,\n       asis.confianza_max,\n       asis.confianza_promedio\nFROM sesiones s\nLEFT JOIN LATERAL (\n  SELECT count(*)::int AS total_grupo,\n         count(*) FILTER (WHERE x.estado = 'presente')::int AS presentes,\n         count(*) FILTER (WHERE x.estado = 'retardo')::int AS retardos,\n         count(*) FILTER (WHERE x.estado IS NULL)::int AS sin_registro,\n         min(x.confianza)::float8 AS confianza_min,\n         max(x.confianza)::float8 AS confianza_max,\n         avg(x.confianza)::float8 AS confianza_promedio\n  FROM alumnos a\n  LEFT JOIN asistencias x ON x.no_cuenta = a.no_cuenta AND x.sesion_id = s.id\n  WHERE a.grupo = s.grupo\n) asis ON true\nLEFT JOIN LATERAL (\n  SELECT count(*) FILTER (WHERE i.motivo = 'desconocido')::int AS desconocido,\n         count(*) FILTER (WHERE i.motivo = 'duplicado')::int AS duplicado,\n         count(*) FILTER (WHERE i.motivo = 'imagen_insuficiente')::int AS imagen_insuficiente\n  FROM intentos i\n  WHERE i.sesion_id = s.id\n) intn ON true\nORDER BY s.inicio DESC, s.id DESC\nLIMIT $1::int",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 650,
+        "y": 80,
+        "wires": [
+            [
+                "a1f0c0de000000c5"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000c5",
+        "type": "function",
+        "z": "a1f0c0de000000c0",
+        "name": "Formatear sesiones",
+        "func": "// Convierte las filas de SELECT sesiones en el contrato JSON de GET /api/sesiones.\n// Distingue sesión abierta (los alumnos sin registro siguen pendientes, faltas = 0) de\n// sesión cerrada (los alumnos sin registro son faltas, pendientes = 0). Nunca lee ni\n// devuelve embeddings ni datos personales.\nfunction fechaIso(v, obligatorio) {\n    if (v === null || v === undefined) {\n        if (obligatorio) {\n            throw new Error(\"una sesión no tiene fecha de inicio\");\n        }\n        return null;\n    }\n    if (typeof v === \"object\" && typeof v.toISOString === \"function\") {\n        return v.toISOString();\n    }\n    if (typeof v === \"string\" && v !== \"\") {\n        return v;\n    }\n    throw new Error(\"fecha de sesión inválida\");\n}\n\nfunction enteroNoNeg(v, campo) {\n    if (!Number.isSafeInteger(v) || v < 0) {\n        throw new Error(\"conteo inválido en \" + campo);\n    }\n    return v;\n}\n\nfunction confianzaONull(v) {\n    if (v === null || v === undefined) {\n        return null;\n    }\n    if (typeof v !== \"number\" || !Number.isFinite(v)) {\n        throw new Error(\"confianza inválida en resumen de sesión\");\n    }\n    return v;\n}\n\nconst filas = msg.payload;\nif (!Array.isArray(filas)) {\n    throw new Error(\"la consulta de sesiones no devolvió filas\");\n}\n\nconst sesiones = filas.map((f) => {\n    if (f === null || typeof f !== \"object\") {\n        throw new Error(\"fila de sesión inválida\");\n    }\n    if (!Number.isSafeInteger(f.id) || f.id < 1 || typeof f.materia !== \"string\" || typeof f.grupo !== \"string\") {\n        throw new Error(\"campos básicos de sesión inválidos\");\n    }\n    const abierta = f.abierta === true;\n    const tolMin = enteroNoNeg(f.tol_min, \"tol_min\");\n    const totalGrupo = enteroNoNeg(f.total_grupo, \"total_grupo\");\n    const presentes = enteroNoNeg(f.presentes, \"presentes\");\n    const retardos = enteroNoNeg(f.retardos, \"retardos\");\n    const sinRegistro = enteroNoNeg(f.sin_registro, \"sin_registro\");\n    const desconocido = enteroNoNeg(f.intentos_desconocido, \"intentos_desconocido\");\n    const duplicado = enteroNoNeg(f.intentos_duplicado, \"intentos_duplicado\");\n    const imagenInsuficiente = enteroNoNeg(f.intentos_imagen_insuficiente, \"intentos_imagen_insuficiente\");\n    return {\n        id: f.id,\n        materia: f.materia,\n        grupo: f.grupo,\n        inicio: fechaIso(f.inicio, true),\n        fin: abierta ? null : fechaIso(f.fin, true),\n        abierta: abierta,\n        tol_min: tolMin,\n        total_grupo: totalGrupo,\n        presentes: presentes,\n        retardos: retardos,\n        faltas: abierta ? 0 : sinRegistro,\n        pendientes: abierta ? sinRegistro : 0,\n        intentos: {\n            desconocido: desconocido,\n            duplicado: duplicado,\n            imagen_insuficiente: imagenInsuficiente,\n            total: desconocido + duplicado + imagenInsuficiente\n        },\n        confianza: {\n            min: confianzaONull(f.confianza_min),\n            max: confianzaONull(f.confianza_max),\n            promedio: confianzaONull(f.confianza_promedio)\n        }\n    };\n});\n\nmsg.statusCode = 200;\nmsg.payload = sesiones;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 890,
+        "y": 80,
+        "wires": [
+            [
+                "a1f0c0de000000d0"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000c6",
+        "type": "comment",
+        "z": "a1f0c0de000000c0",
+        "name": "API: GET /api/sesiones/:id (lista nominal de la sesión e intentos recientes)",
+        "info": "Una sola sentencia SELECT devuelve la sesión, los alumnos de su grupo (orden escolar: nombre y cuenta) con estado presente, retardo, falta o pendiente, hora y confianza, y los últimos 200 intentos rechazados. Nunca toca la columna embedding.",
+        "x": 290,
+        "y": 200,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000c7",
+        "type": "http in",
+        "z": "a1f0c0de000000c0",
+        "name": "",
+        "url": "/api/sesiones/:id",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 170,
+        "y": 260,
+        "wires": [
+            [
+                "a1f0c0de000000c8"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000c8",
+        "type": "function",
+        "z": "a1f0c0de000000c0",
+        "name": "Validar id de sesión",
+        "func": "// GET /api/sesiones/:id\n// id: entero de 1 a 2147483647 (INT de Postgres). Otro valor responde 400.\nconst crudo = (msg.req && msg.req.params) ? msg.req.params.id : undefined;\nif (typeof crudo !== \"string\" || !/^[1-9][0-9]{0,9}$/.test(crudo) || Number(crudo) > 2147483647) {\n    msg.statusCode = 400;\n    msg.payload = { error: \"id debe ser un entero positivo válido\" };\n    return [null, msg];\n}\nconst id = Number(crudo);\nmsg.sesion_id = id;\nmsg.rutaPlantilla = \"/api/sesiones/:id\";\nmsg.params = [id];\nmsg.payload = null;\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 260,
+        "wires": [
+            [
+                "a1f0c0de000000c9"
+            ],
+            [
+                "a1f0c0de000000d0"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000c9",
+        "type": "postgresql",
+        "z": "a1f0c0de000000c0",
+        "name": "SELECT detalle de sesión",
+        "query": "SELECT s.id,\n       s.materia,\n       s.grupo,\n       s.inicio,\n       s.fin,\n       (s.fin IS NULL) AS abierta,\n       s.tolerancia_min AS tol_min,\n       COALESCE((\n         SELECT json_agg(\n           json_build_object(\n             'cuenta', a.no_cuenta,\n             'nombre', a.nombre,\n             'estado', COALESCE(x.estado, CASE WHEN s.fin IS NULL THEN 'pendiente' ELSE 'falta' END),\n             'hora', x.hora,\n             'confianza', x.confianza,\n             'metodo', x.metodo\n           )\n           ORDER BY a.nombre, a.no_cuenta\n         )\n         FROM alumnos a\n         LEFT JOIN asistencias x ON x.no_cuenta = a.no_cuenta AND x.sesion_id = s.id\n         WHERE a.grupo = s.grupo\n       ), '[]'::json) AS alumnos,\n       (\n         SELECT min(x.confianza)::float8\n         FROM alumnos a\n         JOIN asistencias x ON x.no_cuenta = a.no_cuenta AND x.sesion_id = s.id\n         WHERE a.grupo = s.grupo\n       ) AS confianza_min,\n       (\n         SELECT max(x.confianza)::float8\n         FROM alumnos a\n         JOIN asistencias x ON x.no_cuenta = a.no_cuenta AND x.sesion_id = s.id\n         WHERE a.grupo = s.grupo\n       ) AS confianza_max,\n       (\n         SELECT avg(x.confianza)::float8\n         FROM alumnos a\n         JOIN asistencias x ON x.no_cuenta = a.no_cuenta AND x.sesion_id = s.id\n         WHERE a.grupo = s.grupo\n       ) AS confianza_promedio,\n       COALESCE((\n         SELECT json_agg(\n           json_build_object(\n             'id', i.id,\n             'hora', i.hora,\n             'motivo', i.motivo,\n             'confianza_max', i.confianza_max\n           )\n           ORDER BY i.hora DESC, i.id DESC\n         )\n         FROM (\n           SELECT id, hora, motivo, confianza_max\n           FROM intentos\n           WHERE sesion_id = s.id\n           ORDER BY hora DESC, id DESC\n           LIMIT 200\n         ) i\n       ), '[]'::json) AS intentos,\n       (SELECT count(*)::int FROM intentos WHERE sesion_id = s.id AND motivo = 'desconocido') AS intentos_desconocido,\n       (SELECT count(*)::int FROM intentos WHERE sesion_id = s.id AND motivo = 'duplicado') AS intentos_duplicado,\n       (SELECT count(*)::int FROM intentos WHERE sesion_id = s.id AND motivo = 'imagen_insuficiente') AS intentos_imagen_insuficiente\nFROM sesiones s\nWHERE s.id = $1::int",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 660,
+        "y": 240,
+        "wires": [
+            [
+                "a1f0c0de000000ca"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000ca",
+        "type": "function",
+        "z": "a1f0c0de000000c0",
+        "name": "Formatear detalle de sesión",
+        "func": "// Respuesta de GET /api/sesiones/:id. Cero filas = 404. Una fila = { sesion, alumnos, intentos }.\n// Nunca copia campos desconocidos ni incluye cuentas o nombres en mensajes de error.\nconst ESTADOS = [\"presente\", \"retardo\", \"falta\", \"pendiente\"];\nconst METODOS = [\"rostro\", \"manual\"];\nconst MOTIVOS = [\"desconocido\", \"duplicado\", \"imagen_insuficiente\"];\n\nfunction fechaIso(v, obligatorio) {\n    if (v === null || v === undefined) {\n        if (obligatorio) {\n            throw new Error(\"falta una fecha obligatoria en el detalle de sesión\");\n        }\n        return null;\n    }\n    if (typeof v === \"object\" && typeof v.toISOString === \"function\") {\n        return v.toISOString();\n    }\n    if (typeof v === \"string\" && v !== \"\") {\n        return v;\n    }\n    throw new Error(\"fecha inválida en el detalle de sesión\");\n}\n\nfunction enteroNoNeg(v, campo) {\n    if (!Number.isSafeInteger(v) || v < 0) {\n        throw new Error(\"conteo inválido en \" + campo);\n    }\n    return v;\n}\n\nfunction confianzaONull(v) {\n    if (v === null || v === undefined) {\n        return null;\n    }\n    if (typeof v !== \"number\" || !Number.isFinite(v)) {\n        throw new Error(\"confianza inválida en el detalle de sesión\");\n    }\n    return v;\n}\n\nfunction leerArregloJson(v, nombre) {\n    if (Array.isArray(v)) {\n        return v;\n    }\n    if (typeof v === \"string\") {\n        const parsed = JSON.parse(v);\n        if (Array.isArray(parsed)) {\n            return parsed;\n        }\n    }\n    throw new Error(\"el campo \" + nombre + \" no es un arreglo\");\n}\n\nconst filas = msg.payload;\nif (!Array.isArray(filas) || filas.length > 1) {\n    throw new Error(\"la consulta de detalle de sesión no devolvió 0 o 1 filas\");\n}\nif (filas.length === 0) {\n    msg.statusCode = 404;\n    msg.payload = { error: \"No existe esa sesión\" };\n    return msg;\n}\n\nconst f = filas[0];\nif (f === null || typeof f !== \"object\" || !Number.isSafeInteger(f.id) || f.id < 1 || typeof f.materia !== \"string\" || typeof f.grupo !== \"string\") {\n    throw new Error(\"fila de detalle de sesión inválida\");\n}\nconst abierta = f.abierta === true;\nconst tolMin = enteroNoNeg(f.tol_min, \"tol_min\");\nconst crudoAlumnos = leerArregloJson(f.alumnos, \"alumnos\");\nconst crudoIntentos = leerArregloJson(f.intentos, \"intentos\");\n\nlet presentes = 0;\nlet retardos = 0;\nlet faltas = 0;\nlet pendientes = 0;\n\nconst alumnos = crudoAlumnos.map((a, pos) => {\n    if (a === null || typeof a !== \"object\" || typeof a.cuenta !== \"string\" || !/^[0-9]{9}$/.test(a.cuenta) || typeof a.nombre !== \"string\") {\n        throw new Error(\"alumno inválido en la posición \" + pos);\n    }\n    if (typeof a.estado !== \"string\" || !ESTADOS.includes(a.estado)) {\n        throw new Error(\"estado de asistencia inválido en la posición \" + pos);\n    }\n    if (a.metodo !== null && a.metodo !== undefined && (typeof a.metodo !== \"string\" || !METODOS.includes(a.metodo))) {\n        throw new Error(\"método de asistencia inválido en la posición \" + pos);\n    }\n    if (a.estado === \"presente\") {\n        presentes += 1;\n    } else if (a.estado === \"retardo\") {\n        retardos += 1;\n    } else if (a.estado === \"falta\") {\n        faltas += 1;\n    } else {\n        pendientes += 1;\n    }\n    return {\n        cuenta: a.cuenta,\n        nombre: a.nombre,\n        estado: a.estado,\n        hora: fechaIso(a.hora, false),\n        confianza: confianzaONull(a.confianza),\n        metodo: a.metodo === undefined ? null : a.metodo\n    };\n});\n\nconst intentos = crudoIntentos.map((i, pos) => {\n    if (i === null || typeof i !== \"object\" || !Number.isSafeInteger(i.id) || i.id < 1) {\n        throw new Error(\"intento inválido en la posición \" + pos);\n    }\n    if (typeof i.motivo !== \"string\" || !MOTIVOS.includes(i.motivo)) {\n        throw new Error(\"motivo de intento inválido en la posición \" + pos);\n    }\n    return {\n        id: i.id,\n        hora: fechaIso(i.hora, true),\n        motivo: i.motivo,\n        confianza_max: confianzaONull(i.confianza_max)\n    };\n});\n\nconst desconocido = enteroNoNeg(f.intentos_desconocido, \"intentos_desconocido\");\nconst duplicado = enteroNoNeg(f.intentos_duplicado, \"intentos_duplicado\");\nconst imagenInsuficiente = enteroNoNeg(f.intentos_imagen_insuficiente, \"intentos_imagen_insuficiente\");\n\nmsg.statusCode = 200;\nmsg.payload = {\n    sesion: {\n        id: f.id,\n        materia: f.materia,\n        grupo: f.grupo,\n        inicio: fechaIso(f.inicio, true),\n        fin: abierta ? null : fechaIso(f.fin, true),\n        abierta: abierta,\n        tol_min: tolMin,\n        total_grupo: alumnos.length,\n        presentes: presentes,\n        retardos: retardos,\n        faltas: faltas,\n        pendientes: pendientes,\n        intentos: {\n            desconocido: desconocido,\n            duplicado: duplicado,\n            imagen_insuficiente: imagenInsuficiente,\n            total: desconocido + duplicado + imagenInsuficiente\n        },\n        confianza: {\n            min: confianzaONull(f.confianza_min),\n            max: confianzaONull(f.confianza_max),\n            promedio: confianzaONull(f.confianza_promedio)\n        }\n    },\n    alumnos: alumnos,\n    intentos: intentos\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 920,
+        "y": 240,
+        "wires": [
+            [
+                "a1f0c0de000000d0"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000cb",
+        "type": "comment",
+        "z": "a1f0c0de000000c0",
+        "name": "API: GET /api/sesiones/:id/csv (descarga del reporte CSV ya generado)",
+        "info": "Valida :id como entero positivo y lee /data/reportes/sesion-<id>.csv (generado al cerrar la sesión por reporte_csv.py, con UTF-8 BOM, CRLF y fórmulas neutralizadas). Si el archivo no existe (sesión abierta o id inexistente), responde 404 JSON.",
+        "x": 280,
+        "y": 360,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000cc",
+        "type": "http in",
+        "z": "a1f0c0de000000c0",
+        "name": "",
+        "url": "/api/sesiones/:id/csv",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 180,
+        "y": 420,
+        "wires": [
+            [
+                "a1f0c0de000000cd"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000cd",
+        "type": "function",
+        "z": "a1f0c0de000000c0",
+        "name": "Validar id del CSV",
+        "func": "// GET /api/sesiones/:id/csv\n// Valida que :id sea un entero de 1 a 2147483647 y construye la ruta fija\n// /data/reportes/sesion-<id>.csv: nunca acepta nombres de archivo ni barras.\nconst crudo = (msg.req && msg.req.params) ? msg.req.params.id : undefined;\nif (typeof crudo !== \"string\" || !/^[1-9][0-9]{0,9}$/.test(crudo) || Number(crudo) > 2147483647) {\n    msg.statusCode = 400;\n    msg.payload = { error: \"id debe ser un entero positivo válido\" };\n    return [null, msg];\n}\nconst id = Number(crudo);\nmsg.sesion_id = id;\nmsg.rutaPlantilla = \"/api/sesiones/:id/csv\";\nmsg.filename = \"/data/reportes/sesion-\" + id + \".csv\";\nmsg.payload = null;\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 410,
+        "y": 420,
+        "wires": [
+            [
+                "a1f0c0de000000ce"
+            ],
+            [
+                "a1f0c0de000000d0"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000ce",
+        "type": "file in",
+        "z": "a1f0c0de000000c0",
+        "name": "Leer reporte CSV",
+        "filename": "filename",
+        "filenameType": "msg",
+        "format": "",
+        "chunk": false,
+        "sendError": false,
+        "encoding": "none",
+        "allProps": false,
+        "x": 650,
+        "y": 400,
+        "wires": [
+            [
+                "a1f0c0de000000cf"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000cf",
+        "type": "function",
+        "z": "a1f0c0de000000c0",
+        "name": "Responder CSV",
+        "func": "// Entrega los bytes exactos del CSV generado por reporte_csv.py (UTF-8 con BOM, CRLF y\n// fórmulas neutralizadas), con Content-Disposition de descarga y nombre fijo sesion-<id>.csv.\nconst id = msg.sesion_id;\nif (!Number.isSafeInteger(id) || id < 1 || id > 2147483647) {\n    throw new Error(\"id de sesión inválido al responder el CSV\");\n}\nif (!Buffer.isBuffer(msg.payload) && typeof msg.payload !== \"string\") {\n    throw new Error(\"el nodo de lectura no devolvió el contenido del CSV\");\n}\nmsg.statusCode = 200;\nmsg.headers = {\n    \"content-type\": \"text/csv; charset=utf-8\",\n    \"content-disposition\": \"attachment; filename=\\\"sesion-\" + id + \".csv\\\"\"\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 880,
+        "y": 400,
+        "wires": [
+            [
+                "a1f0c0de000000d1"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000d0",
+        "type": "http response",
+        "z": "a1f0c0de000000c0",
+        "name": "Respuesta JSON",
+        "statusCode": "",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 1140,
+        "y": 240,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000d1",
+        "type": "http response",
+        "z": "a1f0c0de000000c0",
+        "name": "Respuesta CSV",
+        "statusCode": "",
+        "headers": {},
+        "x": 1140,
+        "y": 400,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000d2",
+        "type": "catch",
+        "z": "a1f0c0de000000c0",
+        "name": "Errores de la API de asistencia",
+        "scope": [
+            "a1f0c0de000000c3",
+            "a1f0c0de000000c4",
+            "a1f0c0de000000c5",
+            "a1f0c0de000000c8",
+            "a1f0c0de000000c9",
+            "a1f0c0de000000ca",
+            "a1f0c0de000000cd",
+            "a1f0c0de000000ce",
+            "a1f0c0de000000cf"
+        ],
+        "uncaught": false,
+        "x": 200,
+        "y": 540,
+        "wires": [
+            [
+                "a1f0c0de000000d3"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000d3",
+        "type": "function",
+        "z": "a1f0c0de000000c0",
+        "name": "Responder error de asistencia",
+        "func": "// Manejador de errores de la pestaña Asistencia.\n// - Si Leer reporte CSV falla con ENOENT (la sesión sigue abierta, no existe o su archivo se\n//   limpió), responde 404 sin ruido de 500 en el log.\n// - Cualquier otro error registra solo la ruta plantilla y el SQLSTATE (o código POSIX de\n//   archivo, o mensaje truncado con cuentas de 9 dígitos enmascaradas) y responde 500 JSON.\nconst error = msg.error || {};\nconst codigo = typeof error.code === \"string\" ? error.code : \"\";\nconst ruta = typeof msg.rutaPlantilla === \"string\" ? msg.rutaPlantilla : \"/api/sesiones\";\n\nmsg.headers = undefined;\n\nif (ruta === \"/api/sesiones/:id/csv\" && (codigo === \"ENOENT\" || /\\bENOENT\\b/.test(String(error.message || \"\")))) {\n    msg.statusCode = 404;\n    msg.payload = { error: \"El reporte CSV de esa sesión no está disponible (la sesión sigue abierta o no existe)\" };\n    return msg;\n}\n\nlet causa;\nif (/^[0-9A-Z]{5}$/.test(codigo)) {\n    causa = \"SQLSTATE \" + codigo;\n} else if (/^E[A-Z0-9_]{1,15}$/.test(codigo)) {\n    causa = codigo;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nnode.warn(\"GET \" + ruta + \" falló: \" + causa);\nmsg.statusCode = 500;\nmsg.payload = {\n    error: ruta === \"/api/sesiones/:id/csv\"\n        ? \"No se pudo leer el reporte CSV\"\n        : \"No se pudo completar la operación en la base de datos\"\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 490,
+        "y": 540,
+        "wires": [
+            [
+                "a1f0c0de000000d0"
+            ]
         ]
     }
 ]

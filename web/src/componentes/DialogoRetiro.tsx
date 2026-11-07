@@ -62,7 +62,7 @@ export function DialogoRetiro({ alumno, retirando, alConfirmar, alCancelar }: Pr
             <button type="button" className="boton" data-foco-inicial aria-disabled={retirando} onClick={() => !retirando && alCancelar()}>
               Cancelar
             </button>
-            <button type="button" className="boton" aria-disabled={retirando} onClick={() => !retirando && alConfirmar()}>
+            <button type="button" className="boton boton--peligro" aria-disabled={retirando} onClick={() => !retirando && alConfirmar()}>
               Retirar rostro
             </button>
           </div>

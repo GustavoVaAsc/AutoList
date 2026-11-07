@@ -14,6 +14,7 @@ import unicodedata
 from datetime import datetime
 
 TOPICO_SESION_ESTADO = "aula/sesion/estado"
+TOPICO_SESION_ASISTENCIA = "aula/sesion/asistencia"
 TOPICO_ACTUADOR_ESTADO = "aula/actuador/estado"
 TOPICO_ENROLAMIENTO = "aula/vision/enrolamiento"
 TOPICO_REINICIO = "aula/pantalla/reinicio"
@@ -24,13 +25,14 @@ TOPICO_ACTUADOR_CMD = "aula/actuador/cmd"
 # contrato (sección 2).
 SUSCRIPCIONES = (
     (TOPICO_SESION_ESTADO, 1),
+    (TOPICO_SESION_ASISTENCIA, 1),
     (TOPICO_ACTUADOR_ESTADO, 1),
     (TOPICO_ENROLAMIENTO, 0),
     (TOPICO_REINICIO, 1),
 )
 
 # Tópicos con Retain = no en el contrato: se ignora todo mensaje con la bandera
-# retain (contrato, sección 1). Los dos de estado van retenidos a proposito:
+# retain (contrato, sección 1). Los tres de estado van retenidos a proposito:
 # asi se recupera lo ultimo que se sabe al conectar.
 SIN_RETAIN = (TOPICO_ENROLAMIENTO, TOPICO_REINICIO)
 
@@ -38,6 +40,7 @@ MAX_PAYLOAD = 65536     # el progreso del registro puede traer una miniatura
 MAX_TEXTO = 80
 MAX_PASOS = 20
 MAX_MARCAS = 2          # marcas combinantes seguidas que se conservan
+MAX_CUENTA_ASISTENCIA = 10000
 ESTADOS_FINALES = ("completado", "cancelado", "error")
 
 
@@ -102,6 +105,40 @@ def _sesion(d):
     })
 
 
+def _asistencia(d):
+    if not isinstance(d.get("activa"), bool):
+        return None
+    if not d["activa"]:
+        return ("asistencia", {"activa": False, "id": None,
+                               "asistencia": None, "ultimo": None})
+    for campo in ("presentes", "retardos", "faltantes"):
+        if not (_entero(d.get(campo))
+                and 0 <= d[campo] <= MAX_CUENTA_ASISTENCIA):
+            return None
+    ultimo_crudo = d.get("ultimo")
+    if ultimo_crudo is None:
+        ultimo = None
+    elif isinstance(ultimo_crudo, dict):
+        nombre = _texto(ultimo_crudo.get("nombre"))
+        est = _texto(ultimo_crudo.get("estado"))
+        if not nombre or not nombre.strip() \
+                or est not in ("presente", "retardo"):
+            return None
+        ultimo = {"nombre": nombre, "estado": est}
+    else:
+        return None
+    return ("asistencia", {
+        "activa": True,
+        "id": d["id"] if _entero(d.get("id")) and 0 < d["id"] < 2**31 else None,
+        "asistencia": {
+            "presentes": d["presentes"],
+            "retardos": d["retardos"],
+            "faltantes": d["faltantes"],
+        },
+        "ultimo": ultimo,
+    })
+
+
 def _actuadores(d):
     datos = {}
     for campo in ("servo", "led"):
@@ -149,6 +186,7 @@ def _reinicio(d):
 
 _LECTORES = {
     TOPICO_SESION_ESTADO: _sesion,
+    TOPICO_SESION_ASISTENCIA: _asistencia,
     TOPICO_ACTUADOR_ESTADO: _actuadores,
     TOPICO_ENROLAMIENTO: _enrolamiento,
     TOPICO_REINICIO: _reinicio,
@@ -180,12 +218,11 @@ class Estado:
     El tiempo (`ahora`) lo da quien llama, en segundos de un reloj monotono,
     para que las pruebas no esperen.
 
-    Hueco de datos: `asistencia` (presentes, retardos y faltantes) y
-    `ultimo_registro` (nombre y estado) no tienen fuente todavia: el contrato
-    no define un tópico para ellos (la sesión sí llega por aula/sesion/estado). Las
-    vistas muestran "sin datos" mientras valgan None. Para conectarlos, agrega
-    el tópico a SUSCRIPCIONES, un lector a _LECTORES y un caso en `aplicar`
-    que los asigne (y cambia el contrato y la ACL si hace falta).
+    La sesion llega por `aula/sesion/estado` y los conteos (`asistencia`:
+    presentes, retardos y faltantes) junto con `ultimo_registro` (nombre y
+    estado) llegan por `aula/sesion/asistencia` (ambos retenidos). Las vistas
+    muestran "sin datos" mientras valgan None (sin sesion activa o antes del
+    primer mensaje).
     """
 
     GUIA_FIN_S = 4.0        # cuanto se muestra el desenlace de un registro
@@ -204,6 +241,7 @@ class Estado:
         self._guia_vence_s = guia_vence_s
         self._guia_max_s = guia_max_s
         self._ultimo_toque = {}     # id del boton -> cuando se acepto el ultimo
+        self._asistencia_id = None  # sesion_id de la asistencia cargada
         self.conectado = False
         self.credenciales_rechazadas = False    # el broker rechazo usuario o clave
         self.sesion = None          # dict de _sesion; None = aun sin dato
@@ -211,8 +249,8 @@ class Estado:
         self.guia = None
         self.descartada = None      # (cuenta, ultimo mensaje) de una Guia cerrada
         self.vista = "sesion"       # la que eligio el usuario: "sesion" o "lista"
-        self.asistencia = None      # hueco de datos
-        self.ultimo_registro = None  # hueco de datos
+        self.asistencia = None      # dict {presentes, retardos, faltantes}
+        self.ultimo_registro = None  # dict {nombre, estado} o None
         self.armado = None          # (accion, vence) de iniciar o terminar
         self.sesion_bloqueo = None  # hasta cuando se espera la respuesta a una orden
         self.aviso = None           # (texto, vence)
@@ -256,9 +294,20 @@ class Estado:
             self.credenciales_rechazadas = bool(datos)
         elif tipo == "sesion":
             # llego la respuesta a la ultima orden (o un cambio de otro lado)
-            cambio = self.sesion != datos or self.sesion_bloqueo is not None
+            limpiar = (not datos["activa"]) or (
+                self._asistencia_id is not None and datos.get("id") is not None
+                and datos["id"] != self._asistencia_id)
+            cambio = (self.sesion != datos or self.sesion_bloqueo is not None
+                      or (limpiar and (self.asistencia is not None
+                                       or self.ultimo_registro is not None)))
             self.sesion = datos
             self.sesion_bloqueo = None
+            if limpiar:
+                self.asistencia = None
+                self.ultimo_registro = None
+                self._asistencia_id = None
+        elif tipo == "asistencia":
+            cambio = self._aplicar_asistencia(datos)
         elif tipo == "actuadores":
             nuevo = {**(self.actuadores or {}), **datos}
             cambio = nuevo != self.actuadores
@@ -272,6 +321,31 @@ class Estado:
             return
         if cambio:
             self.sucio = True
+
+    def _aplicar_asistencia(self, d):
+        """Devuelve True si cambia lo que se dibuja."""
+        if not d["activa"]:
+            cambio = (self.asistencia is not None
+                      or self.ultimo_registro is not None)
+            self.asistencia = None
+            self.ultimo_registro = None
+            self._asistencia_id = None
+            return cambio
+        # Un mensaje rezagado de una sesion anterior no pisa una sesion cerrada
+        # ni una mas nueva; uno con id mayor (sesion recien iniciada cuyo
+        # `aula/sesion/asistencia` llego antes que `aula/sesion/estado`) si pasa.
+        if self.sesion is not None and d["id"] is not None:
+            sid = self.sesion.get("id")
+            if not self.sesion["activa"] and sid is not None and d["id"] <= sid:
+                return False
+            if self.sesion["activa"] and sid is not None and d["id"] < sid:
+                return False
+        cambio = (self.asistencia != d["asistencia"]
+                  or self.ultimo_registro != d["ultimo"])
+        self.asistencia = d["asistencia"]
+        self.ultimo_registro = d["ultimo"]
+        self._asistencia_id = d["id"]
+        return cambio
 
     def _aplicar_enrolamiento(self, d, ahora):
         """Devuelve True si cambia lo que se dibuja."""

@@ -59,6 +59,7 @@ export const diaDe = (t: number) => claveDia.format(t)
 export const formatearVoltaje = (v: number) => dosDecimales.format(v)
 export const formatearCorriente = (i: number) => tresDecimales.format(i)
 export const formatearPotencia = (p: number) => dosDecimales.format(p)
+export const formatearConfianza = (c: number) => dosDecimales.format(c)
 
 /** "2 min", "45 s": antigüedad aproximada para avisos. */
 export function formatearAntiguedad(ms: number): string {

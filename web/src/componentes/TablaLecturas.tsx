@@ -31,7 +31,7 @@ export function TablaLecturas({ lecturas, idTitulo }: Props) {
   return (
     <>
       <div className="hoja__desplazable">
-        <table className="tabla" aria-labelledby={idTitulo}>
+        <table className="tabla tabla--lecturas" aria-labelledby={idTitulo}>
           <thead>
             <tr>
               <th scope="col">Hora</th>

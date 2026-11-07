@@ -24,6 +24,7 @@ const ID = {
     consulta: "a1f0c0de000000b4",
     retro: "a1f0c0de000000b5",
     publicar: "a1f0c0de000000b6",
+    publicarAsistencia: "a1f0c0de000000bb",
     avisos: "a1f0c0de000000b7",
     catch: "a1f0c0de000000b8",
     registrarError: "a1f0c0de000000b9"
@@ -289,9 +290,15 @@ test("sin_rostro y error con la cuenta o la confianza que sea no filtran nada en
 // Retroalimentación del pase
 // ---------------------------------------------------------------------------------------------
 
+const RESUMEN = { sesion_id: 23, presentes: 1, retardos: 0, faltantes: 9, ultimo_nombre: "Ana López" };
+const filaResultado = (resultado, extra = {}) => (
+    resultado === "presente" || resultado === "retardo"
+        ? { resultado, ...RESUMEN, ...extra }
+        : { resultado, ...extra }
+);
 const retro = (payload, extra = {}) => ejecutar(ID.retro, { payload, decision: "reconocido", params: ["reconocido", CUENTA, 0.8], ...extra });
 
-test("la retroalimentación sigue la tabla del contrato para cada resultado de la base", () => {
+test("la retroalimentación sigue la tabla del contrato para cada resultado de la base y solo presente/retardo publican asistencia", () => {
     const esperado = {
         presente: { servo: "abrir", led: "verde", buzzer: 1 },
         retardo: { servo: "abrir", led: "verde", buzzer: 1 },
@@ -302,35 +309,48 @@ test("la retroalimentación sigue la tabla del contrato para cada resultado de l
         dudoso: { led: "ambar" }
     };
     for (const [resultado, orden] of Object.entries(esperado)) {
-        const r = retro([{ resultado }]);
+        const r = retro([filaResultado(resultado)]);
         assert.deepEqual(JSON.parse(r.salida[0].payload), orden, resultado);
         assert.equal(r.salida[1], null);
+        if (resultado === "presente" || resultado === "retardo") {
+            assert.deepEqual(JSON.parse(r.salida[2].payload), {
+                activa: true, id: 23, presentes: 1, retardos: 0, faltantes: 9,
+                ultimo: { nombre: "Ana López", estado: resultado }
+            });
+        } else {
+            assert.equal(r.salida[2], null, resultado);
+        }
     }
 });
 
-test("la orden sale limpia: solo el payload, sin la cuenta ni los parámetros del mensaje original", () => {
-    const r = retro([{ resultado: "presente" }], { topic: "aula/vision/resultado", retain: true });
+test("las salidas salen limpias: solo el payload, sin la cuenta ni los parámetros del mensaje original", () => {
+    const r = retro([filaResultado("presente")], { topic: "aula/vision/resultado", retain: true });
     assert.deepEqual(Object.keys(r.salida[0]), ["payload"]);
-    assert.doesNotMatch(r.salida[0].payload, new RegExp(CUENTA));
+    assert.deepEqual(Object.keys(r.salida[2]), ["payload"]);
+    assert.doesNotMatch(r.salida[0].payload + r.salida[2].payload, new RegExp(CUENTA));
 });
 
-test("sin sesión abierta (cero filas) no se manda retroalimentación y queda un aviso sin contenido", () => {
+test("sin sesión abierta (cero filas) no se manda retroalimentación ni asistencia y queda un aviso sin contenido", () => {
     for (const decision of ["reconocido", "dudoso", "desconocido", "imagen_insuficiente"]) {
         const r = retro([], { decision });
         assert.equal(r.salida[0], null);
+        assert.equal(r.salida[2], null);
         assert.equal(r.salida[1].payload, "Sin sesión abierta: no se registra ni se manda retroalimentación (" + decision + ")");
         assert.doesNotMatch(r.salida[1].payload, new RegExp(CUENTA));
     }
 });
 
-test("el log de la retroalimentación lleva el resultado y nunca la cuenta", () => {
-    const r = retro([{ resultado: "presente" }]);
+test("el log de la retroalimentación lleva el resultado y nunca la cuenta ni el nombre", () => {
+    const r = retro([filaResultado("presente")]);
     assert.deepEqual(r.logs, ["Pase de lista: presente"]);
 });
 
 test("una respuesta imposible de la base lanza y no publica nada", () => {
-    for (const payload of [undefined, null, "x", {}, [{ resultado: "presente" }, { resultado: "presente" }], [{}], [{ resultado: "otro" }],
-        [{ resultado: 1 }], [{ resultado: "toString" }], [{ resultado: "__proto__" }], [{ resultado: "constructor" }]]) {
+    for (const payload of [
+        undefined, null, "x", {}, [filaResultado("presente"), filaResultado("presente")], [{}], [{ resultado: "otro" }],
+        [{ resultado: 1 }], [{ resultado: "toString" }], [{ resultado: "__proto__" }], [{ resultado: "constructor" }],
+        [{ resultado: "presente" }], [filaResultado("presente", { presentes: -1 })], [filaResultado("retardo", { ultimo_nombre: "" })]
+    ]) {
         assert.throws(() => retro(payload), undefined, JSON.stringify(payload));
     }
 });
@@ -393,18 +413,24 @@ test("el único mqtt in es aula/vision/resultado con QoS 1, del broker Mosquitto
     assert.deepEqual(m.wires, [[ID.validar]]);
 });
 
-test("el único mqtt out publica en aula/actuador/cmd con QoS 1, sin retain, y solo lo alimenta la retroalimentación", () => {
+test("los mqtt out publican solo en aula/actuador/cmd (sin retain) y aula/sesion/asistencia (con retain), con QoS 1, y solo los alimenta la retroalimentación", () => {
     const salidas = enPestana.filter((n) => n.type === "mqtt out");
-    assert.equal(salidas.length, 1);
-    const o = salidas[0];
-    assert.equal(o.id, ID.publicar);
+    assert.equal(salidas.length, 2);
+    const o = nodo(ID.publicar);
     assert.equal(o.topic, "aula/actuador/cmd");
     assert.equal(o.qos, "1");
     assert.equal(o.retain, "false");
     assert.equal(o.broker, "a1f0c0de00000002");
-    const alimentan = flujos.filter((n) => (n.wires || []).some((salida) => salida.includes(ID.publicar)));
-    assert.deepEqual(alimentan.map((n) => n.id), [ID.retro]);
-    assert.deepEqual(nodo(ID.retro).wires, [[ID.publicar], [ID.avisos]]);
+    const a = nodo(ID.publicarAsistencia);
+    assert.equal(a.topic, "aula/sesion/asistencia");
+    assert.equal(a.qos, "1");
+    assert.equal(a.retain, "true");
+    assert.equal(a.broker, "a1f0c0de00000002");
+    for (const id of [ID.publicar, ID.publicarAsistencia]) {
+        const alimentan = flujos.filter((n) => (n.wires || []).some((salida) => salida.includes(id)));
+        assert.deepEqual(alimentan.map((n) => n.id), [ID.retro]);
+    }
+    assert.deepEqual(nodo(ID.retro).wires, [[ID.publicar], [ID.avisos], [ID.publicarAsistencia]]);
 });
 
 test("la cadena es entrada → validar → límite → sentencia → retroalimentación, y los avisos van al debug de consola", () => {
@@ -510,7 +536,7 @@ test("cada resultado que la sentencia puede devolver tiene una retroalimentació
     const resultados = new Set([...literales, "presente", "retardo", "desconocido", "imagen_insuficiente", "dudoso"]);
     assert.deepEqual([...resultados].sort(), ["dudoso", "duplicado", "desconocido", "fuera_de_grupo", "imagen_insuficiente", "presente", "retardo"].sort());
     for (const resultado of resultados) {
-        assert.ok(ejecutar(ID.retro, { payload: [{ resultado }], decision: "x" }).salida[0], resultado);
+        assert.ok(ejecutar(ID.retro, { payload: [filaResultado(resultado)], decision: "x" }).salida[0], resultado);
     }
 });
 
@@ -525,7 +551,7 @@ test("el rol de Node-RED tiene los privilegios que la sentencia usa y ninguno de
     assert.doesNotMatch(roles, /GRANT UPDATE[^;]*ON (asistencias|intentos)/);
 });
 
-test("la ACL deja a vision publicar el resultado y a nodered publicar el actuador", () => {
+test("la ACL deja a vision publicar el resultado, a nodered publicar todo y a pantalla leer aula/sesion/asistencia", () => {
     const acl = fs.readFileSync(path.join(raiz, "orangepi", "mosquitto", "acl"), "utf8");
     const bloque = (usuario) => {
         const inicio = acl.indexOf("\nuser " + usuario + "\n");
@@ -536,6 +562,7 @@ test("la ACL deja a vision publicar el resultado y a nodered publicar el actuado
     };
     assert.match(bloque("vision"), /^topic write aula\/vision\/resultado$/m);
     assert.match(bloque("nodered"), /^topic readwrite aula\/#$/m);
+    assert.match(bloque("pantalla"), /^topic read aula\/sesion\/asistencia$/m);
 });
 
 test("ningún otro nodo de la hoja de flujos se suscribe a aula/vision/resultado", () => {

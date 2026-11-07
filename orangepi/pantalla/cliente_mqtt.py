@@ -27,10 +27,10 @@ RECONEXION_MAX_S = 30
 # Lo que paho llama a un CONNACK que rechaza el usuario o la clave (MQTT 3.1.1)
 CREDENCIALES_RECHAZADAS = ("Bad user name or password", "Not authorized")
 # Con la cola llena se expulsa primero lo que menos duele perder (el progreso del
-# registro se corrige con el siguiente mensaje, un estado de actuadores igual) y
-# al final la sesion y el reinicio.
-ORDEN_DE_EXPULSION = ("enrolamiento", "actuadores", "conexion", "credenciales",
-                      "sesion", "reinicio")
+# registro se corrige con el siguiente mensaje, un estado de actuadores o de
+# asistencia igual) y al final la sesion y el reinicio.
+ORDEN_DE_EXPULSION = ("enrolamiento", "actuadores", "asistencia", "conexion",
+                      "credenciales", "sesion", "reinicio")
 RESUSCRIBIR_MIN_S = 5.0     # entre dos suscripciones de recuperacion
 
 

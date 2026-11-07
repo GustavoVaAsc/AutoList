@@ -1,4 +1,4 @@
-export type TipoMarca = 'presente' | 'pendiente' | 'falta'
+export type TipoMarca = 'presente' | 'retardo' | 'pendiente' | 'falta'
 
 interface Props {
   tipo: TipoMarca
@@ -7,12 +7,13 @@ interface Props {
 /**
  * La marca de asistencia: una casilla de papel y lo que el profesor pone en
  * ella (web/DESIGN.md, "El motivo"). Presente es una palomita de pluma que
- * sale de la casilla, pendiente es la casilla vacía y falta es una tachita
- * roja. Está dibujada a mano, con trazos algo irregulares, para que se lea
- * como bolígrafo y no como un icono de biblioteca. El trazo lleva
- * `pathLength="1"`: así `stroke-dashoffset` lo recorre entero sin medir
- * (estilos.css, "Marca de asistencia"). Es decorativa: siempre va junto a un
- * texto que dice el estado, y por eso se oculta a los lectores de pantalla.
+ * sale de la casilla, retardo es una diagonal trazada en tinta de la hoja,
+ * pendiente es la casilla vacía y falta es una tachita roja. Está dibujada a
+ * mano, con trazos algo irregulares, para que se lea como bolígrafo y no como
+ * un icono de biblioteca. El trazo lleva `pathLength="1"`: así
+ * `stroke-dashoffset` lo recorre entero sin medir (estilos.css, "Marca de
+ * asistencia"). Es decorativa: siempre va junto a un texto que dice el estado,
+ * y por eso se oculta a los lectores de pantalla.
  */
 export function MarcaAsistencia({ tipo }: Props) {
   return (
@@ -23,6 +24,13 @@ export function MarcaAsistencia({ tipo }: Props) {
           className="marca-asistencia__trazo"
           pathLength="1"
           d="M6.4 12.3 C8.1 14 9.5 16 10.7 18.9 C12.9 12.3 17.1 6.2 22.4 2.3"
+        />
+      )}
+      {tipo === 'retardo' && (
+        <path
+          className="marca-asistencia__trazo"
+          pathLength="1"
+          d="M7.1 17.6 C10.4 14.1 13.8 10.6 16.9 7.2"
         />
       )}
       {tipo === 'falta' && (
