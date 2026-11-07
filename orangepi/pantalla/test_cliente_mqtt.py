@@ -365,12 +365,18 @@ class ColaAcotada(unittest.TestCase):
                          ["sesion", "reinicio", "enrolamiento", "conexion"])
         self.assertEqual(list(cola.queue)[2][1]["paso"], 2)     # quedo el mas nuevo
 
-    def test_sin_enrolamientos_se_expulsa_un_estado_de_actuadores(self):
+    def test_sin_enrolamientos_se_expulsa_actuadores_y_luego_asistencia(self):
         paho_falso, cola, _ = self.llena_con([
-            ("sesion", {}), ("actuadores", {"luz": 1}), ("reinicio", None)])
+            ("sesion", {}), ("asistencia", {"activa": False}),
+            ("actuadores", {"luz": 1}), ("reinicio", None)])
         with redirect_stderr(io.StringIO()):
             paho_falso.on_connect(paho_falso, None, {}, EXITO, None)
-        self.assertEqual(self.contenido(cola), ["sesion", "reinicio", "conexion"])
+        self.assertEqual(self.contenido(cola),
+                         ["sesion", "asistencia", "reinicio", "conexion"])
+        with redirect_stderr(io.StringIO()):
+            paho_falso.on_connect(paho_falso, None, {}, EXITO, None)
+        self.assertEqual(self.contenido(cola),
+                         ["sesion", "reinicio", "conexion", "conexion"])
 
     def test_reinicio_y_sesion_son_lo_ultimo_que_se_expulsa(self):
         paho_falso, cola, _ = self.llena_con([

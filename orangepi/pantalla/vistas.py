@@ -354,9 +354,11 @@ def _vista_lista(d, estado, fuentes):
             d.text((ANCHO - MARGEN - 12, y + 25), SIN_DATOS,
                    font=fuentes["texto"], fill=APAGADO, anchor="rm")
     if not a:
+        leyenda = ("Sin sesión activa."
+                   if estado.sesion and not estado.sesion["activa"]
+                   else "Esperando los conteos de la sesión.")
         for i, linea in enumerate(envolver(
-                "Aún no hay una fuente para la lista de la sesión.",
-                fuentes["pequeno"], INTERIOR, 2)):
+                leyenda, fuentes["pequeno"], INTERIOR, 2)):
             d.text((ANCHO // 2, 258 + i * 15), linea, font=fuentes["pequeno"],
                    fill=APAGADO, anchor="mm")
 

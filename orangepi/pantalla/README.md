@@ -116,8 +116,8 @@ Pantalla vertical de 240x320 (`PANTALLA_ROTACION` 0 o 2). Todas llevan arriba el
 
 | Vista | Contenido y controles |
 |---|---|
-| **Sesión** (la de arranque) | Estado de la sesión (`aula/sesion/estado`): "Sesión activa" con materia, grupo, tolerancia y hora de inicio, o "Sin sesión activa" con lo que se usaría al iniciar. "Presentes" y "Último", **sin datos** por ahora. Botón **Iniciar sesión** / **Terminar sesión** (se confirma con un segundo toque; apagado mientras no llegue el primer `aula/sesion/estado`, y unos segundos tras confirmar, hasta que llegue la respuesta), **Abrir puerta** y **Probar luz LED** (cada uno ignora un segundo toque en los 2 s siguientes, salvo el que apaga la luz de prueba, que nunca se bloquea). Debajo, el estado de los actuadores (`aula/actuador/estado`: puerta, LED y luz) o un aviso de lo último que se pidió. Sin conexión, los botones se ven apagados y un toque avisa "Sin conexión: no se envió" |
-| **Lista** | Presentes, retardos y faltantes de la sesión. **Sin datos** por ahora |
+| **Sesión** (la de arranque) | Estado de la sesión (`aula/sesion/estado`): "Sesión activa" con materia, grupo, tolerancia y hora de inicio, o "Sin sesión activa" con lo que se usaría al iniciar. "Presentes" y "Último" en vivo desde `aula/sesion/asistencia` ("sin datos" cuando no hay sesión activa o aún no registró nadie). Botón **Iniciar sesión** / **Terminar sesión** (se confirma con un segundo toque; apagado mientras no llegue el primer `aula/sesion/estado`, y unos segundos tras confirmar, hasta que llegue la respuesta), **Abrir puerta** y **Probar luz LED** (cada uno ignora un segundo toque en los 2 s siguientes, salvo el que apaga la luz de prueba, que nunca se bloquea). Debajo, el estado de los actuadores (`aula/actuador/estado`: puerta, LED y luz) o un aviso de lo último que se pidió. Sin conexión, los botones se ven apagados y un toque avisa "Sin conexión: no se envió" |
+| **Lista** | Presentes, retardos y faltantes de la sesión activa desde `aula/sesion/asistencia` ("sin datos" cuando no hay sesión activa) |
 | **Guía de registro** | Se activa sola con `aula/vision/enrolamiento`: nombre del alumno, progreso (3/5) con una casilla por pose, la pose que debe adoptar y el resultado (por ejemplo "Otra vez: la imagen salió borrosa"). El registro se controla desde el frontend: el único botón es **Salir de la guía**, que vuelve a Sesión y no la reabre con los mensajes de ese mismo registro. Al terminar (captura completa, cancelado o error) muestra el desenlace unos segundos y vuelve a Sesión |
 
 Las pestañas **Sesión** y **Lista** van abajo; la Guía las cambia por "Salir de la guía". Un toque se entrega al soltar el dedo (las primeras lecturas al apoyar son ruidosas).
@@ -129,6 +129,7 @@ Cliente paho-mqtt 2.1.0, MQTT 3.1.1, usuario `pantalla`, sin TLS (el listener 18
 | Tópico | Dirección | QoS | Qué hace la pantalla |
 |---|---|---|---|
 | `aula/sesion/estado` | lee (retenido) | 1 | Estado de la sesión. Acepta lo retenido: así se recupera al conectar |
+| `aula/sesion/asistencia` | lee (retenido) | 1 | Presentes, retardos, faltantes y último registro de la sesión abierta. Acepta lo retenido |
 | `aula/actuador/estado` | lee (retenido) | 1 | Estado de los actuadores. Acepta lo retenido |
 | `aula/vision/enrolamiento` | lee | 0 | Activa y actualiza la Guía. Descarta lo retenido y lo vacío |
 | `aula/pantalla/reinicio` | lee | 1 | `{"reiniciar": 1}` hace salir con 0. Descarta lo retenido y lo vacío |
@@ -155,16 +156,16 @@ Nunca publica con retain. Los mensajes que no son un objeto JSON válido, que su
 - **Solo pantalla vertical.** `PANTALLA_ROTACION` 1 y 3 (horizontal) ahora dan 78: las vistas están trazadas para 240x320.
 - **Sin teclado ni selección de alumnos ni "marcar" manual** (`aula/sesion/cmd` `marcar`, propuesta del contrato para la zona gris): no está en el alcance del menú base.
 
-## Huecos de datos
+## Asistencia en vivo (`aula/sesion/asistencia`)
 
-Dos datos no tienen fuente, y la pantalla no inventa tópicos ni cambia el contrato ni la ACL:
+Los conteos (`asistencia`: `presentes`, `retardos` y `faltantes`) y el último alumno registrado (`ultimo_registro`: `nombre` y `estado`) llegan por `aula/sesion/asistencia` (QoS 1, retenido; contrato v0.13), separado de `aula/sesion/estado` para no comprometer el búfer de 256 bytes de la XIAO:
 
 | Dato | Dónde se muestra | Atributo de `Estado` |
 |---|---|---|
-| Presentes, retardos y faltantes | Lista; "Presentes" en Sesión | `asistencia` (`{"presentes": n, "retardos": n, "faltantes": n}`, forma provisional) |
-| Último registro (nombre y estado) | Sesión | `ultimo_registro` (`{"nombre": ..., "estado": ...}`, forma provisional) |
+| Presentes, retardos y faltantes | Lista; "Presentes" en Sesión | `asistencia` (`{"presentes": n, "retardos": n, "faltantes": n}` o `None` sin sesión activa) |
+| Último registro (nombre y estado) | Sesión | `ultimo_registro` (`{"nombre": ..., "estado": ...}` o `None` si aún no registró nadie) |
 
-Mientras valgan `None`, las vistas dicen "sin datos". Para conectarlos cuando exista la fuente: agregar el tópico a `SUSCRIPCIONES` y un lector a `_LECTORES` en `estado.py`, y un caso en `Estado.aplicar` que los asigne (y, si el tópico es nuevo, cambiar el contrato, la ACL y el plan, sección 7.1, en el mismo cambio). Las vistas ya dibujan los datos si llegan (hay pruebas con ellos).
+Mientras valgan `None` (sin sesión activa o antes del primer mensaje retenido), las vistas dicen "sin datos". Un mensaje rezagado de una sesión ya cerrada o anterior se descarta comparando `id`.
 
 ## Configuración
 
