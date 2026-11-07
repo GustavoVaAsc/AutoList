@@ -25,6 +25,7 @@ const ID = {
     estadoTerminar: "a1f0c0de00000097",
     descartados: "a1f0c0de00000098",
     publicarEstado: "a1f0c0de0000009a",
+    publicarAsistencia: "a1f0c0de000000d4",
     alConectar: "a1f0c0de0000009c",
     seleccionar: "a1f0c0de0000009d",
     estadoBase: "a1f0c0de0000009e",
@@ -324,15 +325,19 @@ test("el descarte y el aviso nunca repiten el contenido del mensaje", () => {
 // Estado tras iniciar
 // ---------------------------------------------------------------------------------------------
 
-const FILA_INICIO = { id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10, cerrada_id: null };
+const FILA_INICIO = { id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10, cerrada_id: null, faltantes: 10 };
 
-test("tras iniciar se publica el estado del contrato y no hay reporte", () => {
+test("tras iniciar se publica el estado del contrato, la asistencia inicial y no hay reporte", () => {
     const r = ejecutar(ID.estadoIniciar, { payload: [FILA_INICIO], params: ["FSE", "1", 10] });
     assert.deepEqual(JSON.parse(r.salida[0].payload), {
         activa: true, id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10
     });
     assert.equal(r.salida[1], null);
+    assert.deepEqual(JSON.parse(r.salida[2].payload), {
+        activa: true, id: 12, presentes: 0, retardos: 0, faltantes: 10, ultimo: null
+    });
     assert.equal(r.salida[0].topic, undefined, "el tópico, el QoS y el retain los fija el mqtt out");
+    assert.equal(r.salida[2].topic, undefined);
 });
 
 test("el estado publicado cabe en el búfer de 256 bytes de la XIAO con el peor caso aceptado", () => {
@@ -347,11 +352,12 @@ test("si iniciar cerró una sesión olvidada, pide su reporte", () => {
     const r = ejecutar(ID.estadoIniciar, { payload: [{ ...FILA_INICIO, id: 13, cerrada_id: 12 }] });
     assert.equal(JSON.parse(r.salida[0].payload).id, 13);
     assert.deepEqual(r.salida[1], { sesion_id: 12 });
+    assert.equal(JSON.parse(r.salida[2].payload).id, 13);
     assert.ok(r.logs.some((l) => /olvidada/.test(l)));
 });
 
 test("tras iniciar, una respuesta sin una fila válida no publica nada: lanza", () => {
-    for (const payload of [[], undefined, null, "x", [FILA_INICIO, FILA_INICIO], [{ ...FILA_INICIO, id: "12" }], [{ ...FILA_INICIO, id: 0 }]]) {
+    for (const payload of [[], undefined, null, "x", [FILA_INICIO, FILA_INICIO], [{ ...FILA_INICIO, id: "12" }], [{ ...FILA_INICIO, id: 0 }], [{ ...FILA_INICIO, faltantes: -1 }], [{ ...FILA_INICIO, faltantes: null }]]) {
         assert.throws(() => ejecutar(ID.estadoIniciar, { payload }));
     }
 });
@@ -360,11 +366,12 @@ test("tras iniciar, una respuesta sin una fila válida no publica nada: lanza", 
 // Estado tras terminar
 // ---------------------------------------------------------------------------------------------
 
-test("terminar con sesión abierta publica inactivo con el id y pide el reporte", () => {
+test("terminar con sesión abierta publica inactivo en estado y asistencia y pide el reporte", () => {
     const r = ejecutar(ID.estadoTerminar, { payload: [{ id: 12 }], fuente: "terminar" });
     assert.deepEqual(JSON.parse(r.salida[0].payload), { activa: false, id: 12 });
     assert.deepEqual(r.salida[1], { sesion_id: 12 });
     assert.equal(r.salida[2], null);
+    assert.deepEqual(JSON.parse(r.salida[3].payload), { activa: false });
 });
 
 test("terminar sin sesión abierta no cambia nada: sin reporte y republica el estado real", () => {
@@ -373,6 +380,7 @@ test("terminar sin sesión abierta no cambia nada: sin reporte y republica el es
     assert.equal(r.salida[1], null, "no hay reporte");
     assert.equal(r.salida[2].payload, null);
     assert.equal(r.salida[2].fuente, "reconciliar", "el SELECT lleva el estado de la base al broker");
+    assert.equal(r.salida[3], null);
     assert.ok(r.logs.length >= 1);
 });
 
@@ -403,26 +411,48 @@ test("otros estados del mqtt out no reconcilian", () => {
     }
 });
 
-test("la base con una sesión abierta publica activa:true con la forma del contrato", () => {
+test("la base con una sesión abierta publica activa:true en estado y asistencia con la forma del contrato", () => {
     const flow = nuevoFlow();
     flow.set("reconciliar_pendiente", true);
-    const r = ejecutar(ID.estadoBase, { payload: [{ id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10, abierta: true }] }, { flow });
-    assert.deepEqual(JSON.parse(r.salida.payload), { activa: true, id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10 });
+    const r = ejecutar(ID.estadoBase, {
+        payload: [{
+            id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10, abierta: true,
+            presentes: 2, retardos: 1, faltantes: 7, ultimo_nombre: "Ana López", ultimo_estado: "presente"
+        }]
+    }, { flow });
+    assert.deepEqual(JSON.parse(r.salida[0].payload), { activa: true, id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10 });
+    assert.deepEqual(JSON.parse(r.salida[1].payload), {
+        activa: true, id: 12, presentes: 2, retardos: 1, faltantes: 7, ultimo: { nombre: "Ana López", estado: "presente" }
+    });
     assert.equal(flow.get("reconciliar_pendiente"), undefined, "ya no hace falta reintentar");
+    const sinUltimo = ejecutar(ID.estadoBase, {
+        payload: [{
+            id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10, abierta: true,
+            presentes: 0, retardos: 0, faltantes: 10, ultimo_nombre: null, ultimo_estado: null
+        }]
+    });
+    assert.equal(JSON.parse(sinUltimo.salida[1].payload).ultimo, null);
 });
 
-test("la base sin sesión abierta publica inactivo con el id de la última", () => {
+test("la base sin sesión abierta publica inactivo con el id de la última y limpia asistencia", () => {
     const r = ejecutar(ID.estadoBase, { payload: [{ id: 12, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10, abierta: false }] });
-    assert.deepEqual(JSON.parse(r.salida.payload), { activa: false, id: 12 });
+    assert.deepEqual(JSON.parse(r.salida[0].payload), { activa: false, id: 12 });
+    assert.deepEqual(JSON.parse(r.salida[1].payload), { activa: false });
 });
 
-test("la base sin ninguna sesión publica inactivo sin id", () => {
+test("la base sin ninguna sesión publica inactivo sin id y limpia asistencia", () => {
     const r = ejecutar(ID.estadoBase, { payload: [] });
-    assert.deepEqual(JSON.parse(r.salida.payload), { activa: false });
+    assert.deepEqual(JSON.parse(r.salida[0].payload), { activa: false });
+    assert.deepEqual(JSON.parse(r.salida[1].payload), { activa: false });
 });
 
 test("el estado de la base: una respuesta imposible lanza y deja la reconciliación pendiente", () => {
-    for (const payload of [undefined, null, "x", [{ id: 1, abierta: true }, { id: 2, abierta: false }], [{ id: "1", abierta: true }]]) {
+    const baseAbierta = { id: 1, materia: "FSE", grupo: "1", inicio: INICIO, tol_min: 10, abierta: true, presentes: 0, retardos: 0, faltantes: 10, ultimo_nombre: null, ultimo_estado: null };
+    for (const payload of [
+        undefined, null, "x", [{ id: 1, abierta: true }, { id: 2, abierta: false }], [{ id: "1", abierta: true }],
+        [{ ...baseAbierta, presentes: -1 }], [{ ...baseAbierta, ultimo_nombre: "Ana", ultimo_estado: "falta" }],
+        [{ ...baseAbierta, ultimo_nombre: null, ultimo_estado: "presente" }]
+    ]) {
         const flow = nuevoFlow();
         flow.set("reconciliar_pendiente", true);
         assert.throws(() => ejecutar(ID.estadoBase, { payload }, { flow }));
@@ -658,13 +688,19 @@ test("el nodo file escribe en /data/reportes por una ruta que fija la función",
     assert.match(nodo(ID.prepararEntrada).func, /"\/data\/reportes\/\.entrada-" \+ id \+ "\.json"/);
 });
 
-test("el estado de sesión se publica retenido con QoS 1 y en el tópico del contrato", () => {
+test("el estado y la asistencia de sesión se publican retenidos con QoS 1 y en los tópicos del contrato", () => {
     const m = nodo(ID.publicarEstado);
     assert.equal(m.type, "mqtt out");
     assert.equal(m.topic, "aula/sesion/estado");
     assert.equal(m.qos, "1");
     assert.equal(m.retain, "true");
     assert.equal(m.broker, "a1f0c0de00000002");
+    const a = nodo(ID.publicarAsistencia);
+    assert.equal(a.type, "mqtt out");
+    assert.equal(a.topic, "aula/sesion/asistencia");
+    assert.equal(a.qos, "1");
+    assert.equal(a.retain, "true");
+    assert.equal(a.broker, "a1f0c0de00000002");
 });
 
 test("aula/sesion/cmd se consume con QoS 1 y el nodo de entrada va a la validación", () => {
