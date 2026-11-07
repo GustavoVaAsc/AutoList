@@ -143,13 +143,13 @@
   --serif: 'Source Serif 4', 'Source Serif Pro', Georgia, 'Times New Roman', serif;
   --fuente: 'Libre Franklin', 'Franklin Gothic Medium', 'Helvetica Neue', Arial, sans-serif;
   --mono: ui-monospace, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-  --t-cifra: 56px;            /* la cifra protagonista de una vista */
-  --t-titulo: 34px;           /* título de la hoja o de la vista (h1) */
-  --t-seccion: 22px;          /* título de sección (h2) */
-  --t-cifra-media: 30px;      /* conteos del encabezado de la hoja */
-  --t-cuerpo: 16px;           /* cuerpo y tablas (en proyector se lee desde el fondo del aula) */
-  --t-ui: 15px;               /* botones, campos y avisos */
-  --t-caption: 13px;          /* etiquetas de campo y pies */
+  --t-cifra: 3.5rem;          /* 56 px: la cifra protagonista de una vista */
+  --t-titulo: 2.125rem;       /* 34 px: título de la hoja o de la vista (h1) */
+  --t-seccion: 1.375rem;      /* 22 px: título de sección (h2) */
+  --t-cifra-media: 1.875rem;  /* 30 px: conteos del encabezado de la hoja */
+  --t-cuerpo: 1rem;           /* 16 px: cuerpo y tablas (en proyector se lee desde el fondo del aula) */
+  --t-ui: 0.9375rem;          /* 15 px: botones, campos y avisos */
+  --t-caption: 0.8125rem;     /* 13 px: etiquetas de campo y pies */
 
   /* Movimiento. Curva de salida fuerte para entradas y salidas, sin rebotes
      (el único resorte es el del diálogo). Las salidas son más rápidas que las
@@ -161,14 +161,14 @@
      acabaría en una décima y no se vería. */
   --ease-escribir: cubic-bezier(0.45, 0.05, 0.3, 1);
   --d-pulsar: 100ms;          /* botón presionado */
-  --d-realce: 160ms;          /* puntero encima de un botón o una fila */
-  --d-salida: 180ms;          /* quitar el puntero; salida del diálogo */
-  --d-salir-vista: 120ms;     /* la vista que se va */
-  --d-entrada: 300ms;         /* bloques de una vista */
-  --escalon: 50ms;            /* entre bloques */
-  --d-fila: 360ms;            /* renglón que se escribe (el escalón, de 40 ms, está en TablaAlumnos) */
-  --d-trazo: 560ms;           /* la palomita que se traza */
-  --d-indicador: 260ms;       /* subrayado activo de la navegación */
+  --d-realce: 140ms;          /* puntero encima de un botón o una fila */
+  --d-salida: 160ms;          /* quitar el puntero; salida del diálogo */
+  --d-salir-vista: 90ms;      /* la vista que se va */
+  --d-entrada: 220ms;         /* bloques de una vista */
+  --escalon: 35ms;            /* entre bloques */
+  --d-fila: 240ms;            /* renglón que se escribe (el escalón, de 25 ms, está en la tabla) */
+  --d-trazo: 480ms;           /* la palomita o diagonal que se traza */
+  --d-indicador: 220ms;       /* subrayado activo de la navegación */
   --d-toast: 320ms;           /* avisos de Sonner al entrar y al reubicarse */
   --d-resorte: 420ms;         /* diálogo: lo que tarda el resorte en asentarse */
   /* Resorte subamortiguado (ζ = 0.55, asentado en 420 ms, rebote de 12.6 %),
@@ -195,10 +195,10 @@
 @media (max-width: 640px) {
   :root {
     --margen: var(--e-4);
-    --t-titulo: 28px;
-    --t-seccion: 20px;
-    --t-cifra: 44px;
-    --t-cifra-media: 26px;
+    --t-titulo: 1.75rem;
+    --t-seccion: 1.25rem;
+    --t-cifra: 2.75rem;
+    --t-cifra-media: 1.625rem;
   }
 }
 
@@ -210,6 +210,22 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+  scrollbar-color: var(--borde-control) var(--fondo);
+}
+
+::selection {
+  background: var(--pluma);
+  color: var(--sobre-pluma);
+}
+
+input,
+textarea,
+select {
+  caret-color: var(--pluma);
+}
+
+a {
+  text-underline-offset: 0.18em;
 }
 
 body {
@@ -349,6 +365,10 @@ code {
   stroke: var(--pluma);
 }
 
+.marca-asistencia--retardo .marca-asistencia__trazo {
+  stroke: var(--tinta);
+}
+
 .marca-asistencia--falta .marca-asistencia__trazo {
   stroke: var(--error);
 }
@@ -419,8 +439,8 @@ code {
 .marca {
   grid-area: marca;
   font-family: var(--serif);
-  font-size: 26px;
-  line-height: 32px;
+  font-size: 1.625rem;
+  line-height: 1.23;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--tinta);
@@ -472,9 +492,14 @@ code {
   transition: color var(--d-realce) var(--ease-entrada), transform var(--d-realce) var(--ease-entrada);
 }
 
-.navegacion__enlace:hover,
 .navegacion__enlace[aria-current='page'] {
   color: var(--tinta);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .navegacion__enlace:hover {
+    color: var(--tinta);
+  }
 }
 
 .navegacion__enlace:active {
@@ -495,21 +520,21 @@ code {
   }
 }
 
-/* Subrayado activo: el recuadro lo coloca App con el DOM y aquí solo se dibuja
-   su borde inferior. */
+/* Subrayado activo: línea de 1 px escalada en GPU (transform únicamente, sin
+   recalcular layout en cada fotograma). */
 .navegacion__indicador {
   position: absolute;
   left: 0;
   top: 0;
-  border-bottom: 3px solid var(--tinta);
+  width: 1px;
+  height: 3px;
+  background: var(--tinta);
+  transform-origin: left center;
   pointer-events: none;
 }
 
 .navegacion__indicador--animado {
-  transition:
-    transform var(--d-indicador) var(--ease-entrada),
-    width var(--d-indicador) var(--ease-entrada),
-    height var(--d-indicador) var(--ease-entrada);
+  transition: transform var(--d-indicador) var(--ease-entrada);
 }
 
 /* Estado de la placa: marca un hecho real (la API respondió o no). La marca de
@@ -562,8 +587,10 @@ code {
   transition: background-color var(--d-realce) var(--ease-entrada), transform var(--d-realce) var(--ease-entrada);
 }
 
-.selector:hover {
-  background: var(--papel2);
+@media (hover: hover) and (pointer: fine) {
+  .selector:hover {
+    background: var(--papel2);
+  }
 }
 
 .selector:active {
@@ -578,6 +605,7 @@ code {
 @media (max-width: 959px) {
   .selector {
     min-height: 44px;
+    font-size: 1rem;
   }
 }
 
@@ -648,6 +676,14 @@ code {
 .hoja__encabezado {
   padding: var(--e-8) var(--e-8) var(--e-6);
   border-bottom: 1px solid var(--regla);
+}
+
+.hoja__barra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--e-3) var(--e-6);
 }
 
 .hoja__encabezado--tabla {
@@ -737,14 +773,16 @@ code {
     grid-column: auto;
   }
 
-  .campos--dos {
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  .campos--dos,
+  .hoja--asistencia .campos {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
   .campos,
-  .campos--dos {
+  .campos--dos,
+  .hoja--asistencia .campos {
     grid-template-columns: minmax(0, 1fr);
     margin-top: var(--e-4);
   }
@@ -767,7 +805,7 @@ code {
 .campo__valor {
   padding-bottom: var(--e-1);
   border-bottom: 1px solid var(--tinta);
-  font-size: 18px;
+  font-size: 1.125rem;
   line-height: 1.4;
   color: var(--tinta);
   overflow-wrap: anywhere;
@@ -778,7 +816,7 @@ code {
   border-bottom: 0;
   font-family: var(--serif);
   font-weight: 600;
-  font-size: 20px;
+  font-size: 1.25rem;
   line-height: 1.3;
   padding-bottom: var(--e-2);
 }
@@ -792,12 +830,14 @@ code {
   border-bottom: 1px solid var(--tinta);
   border-radius: 0;
   background: transparent;
-  font-size: 18px;
+  font-size: 1.125rem;
   line-height: 1.4;
 }
 
-.selector--campo:hover {
-  background: var(--papel2);
+@media (hover: hover) and (pointer: fine) {
+  .selector--campo:hover {
+    background: var(--papel2);
+  }
 }
 
 @media (max-width: 959px) {
@@ -838,11 +878,19 @@ code {
 }
 
 .resumen__valor .marca-asistencia {
-  font-size: 18px;
+  font-size: 1.125rem;
 }
 
 .resumen__valor--presente {
   color: var(--pluma);
+}
+
+.resumen__valor--retardo {
+  color: var(--tinta);
+}
+
+.resumen__valor--falta {
+  color: var(--error);
 }
 
 /* Cifras. Una vista tiene una cifra protagonista (56 px, la serif de documento)
@@ -868,7 +916,7 @@ code {
 }
 
 .cifra__numero {
-  font-size: 22px;
+  font-size: 1.375rem;
   line-height: 1.2;
   font-weight: 600;
   color: var(--tinta);
@@ -924,7 +972,7 @@ code {
 }
 
 .cifras--renglones .cifra__numero {
-  font-size: 18px;
+  font-size: 1.125rem;
 }
 
 /* La unidad ocupa un hueco fijo, y el renglón sin unidad (un conteo) lo deja
@@ -1024,12 +1072,12 @@ code {
 }
 
 .estado > .marca-asistencia {
-  font-size: 26px;
+  font-size: 1.625rem;
   margin-top: 2px;
 }
 
 .estado--grande > .marca-asistencia {
-  font-size: 48px;
+  font-size: 3rem;
 }
 
 .estado__cuerpo {
@@ -1137,8 +1185,10 @@ code {
     transform var(--d-realce) var(--ease-entrada);
 }
 
-.boton:hover {
-  background: var(--papel2);
+@media (hover: hover) and (pointer: fine) {
+  .boton:hover {
+    background: var(--papel2);
+  }
 }
 
 .boton:active {
@@ -1160,14 +1210,29 @@ code {
   color: var(--sobre-pluma);
 }
 
-.boton--primario:hover {
-  border-color: var(--pluma-hover);
-  background: var(--pluma-hover);
+@media (hover: hover) and (pointer: fine) {
+  .boton--primario:hover {
+    border-color: var(--pluma-hover);
+    background: var(--pluma-hover);
+  }
 }
 
 .boton--primario:active {
   border-color: var(--pluma-pulsada);
   background: var(--pluma-pulsada);
+}
+
+/* Acción destructiva (confirmación de retiro de rostro): borde y texto en tinta de error. */
+.boton--peligro {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .boton--peligro:hover {
+    border-color: var(--error);
+    background: var(--error-fondo);
+  }
 }
 
 @media (max-width: 640px) {
@@ -1277,8 +1342,19 @@ code {
   }
 }
 
-.tabla .numerico {
+.tabla .numerico,
+.tabla .tabla__derecha {
   text-align: right;
+}
+
+.tabla__vacio {
+  color: var(--suave);
+  font-size: var(--t-caption);
+  font-weight: 400;
+}
+
+.tabla--lecturas .numerico {
+  width: 9.5rem;
 }
 
 /* Número de renglón, como en la hoja impresa. */
@@ -1298,7 +1374,7 @@ code {
   height: clamp(320px, 22vw, 460px);
   overflow: hidden;
   margin-top: var(--e-4);
-  animation: revelar-grafica 800ms var(--ease-entrada) both;
+  animation: revelar-grafica 450ms var(--ease-entrada) both;
 }
 
 @keyframes revelar-grafica {
@@ -1419,7 +1495,7 @@ code {
 
 .zona__titulo {
   font-family: var(--serif);
-  font-size: 19px;
+  font-size: 1.1875rem;
   line-height: 1.3;
   font-weight: 600;
   color: var(--tinta);
@@ -1516,8 +1592,112 @@ code {
 }
 
 .tabla__cuenta {
-  font-size: 15px;
+  font-size: var(--t-ui);
   color: var(--cuerpo);
+}
+
+/* Asistencia por sesión: tabla nominal e intentos rechazados. */
+.tabla--asistencia th:not(.tabla__nombre-col),
+.tabla--asistencia td:not(.tabla__nombre) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.tabla--asistencia .tabla__nombre-col {
+  width: auto;
+}
+
+.tabla--asistencia tbody > tr > * {
+  vertical-align: middle;
+}
+
+.tabla--asistencia .tabla__texto,
+.tabla--intentos .tabla__texto {
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+
+.tabla--asistencia .tabla__nombre {
+  color: var(--tinta);
+}
+
+.tabla__hora-celda {
+  white-space: nowrap;
+  font-size: var(--t-ui);
+  color: var(--cuerpo);
+}
+
+@media (max-width: 640px) {
+  .tabla--asistencia tr > :nth-child(2),
+  .tabla--asistencia .tabla__hora-col,
+  .tabla--asistencia .tabla__hora-celda,
+  .tabla--asistencia .tabla__confianza-col,
+  .tabla--asistencia .tabla__confianza-celda {
+    display: none;
+  }
+
+  .tabla--asistencia .tabla__n {
+    padding-right: 0;
+  }
+
+  .tabla--asistencia .tabla__nombre {
+    padding-left: var(--e-3);
+  }
+
+  .tabla--asistencia .tabla__sub {
+    display: block;
+  }
+}
+
+.hoja--intentos {
+  display: grid;
+  grid-template-columns: minmax(0, 26rem) minmax(0, 1fr);
+}
+
+.intentos__resumen,
+.intentos__detalle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-4);
+  min-width: 0;
+  padding: var(--e-6) var(--e-8);
+}
+
+.intentos__detalle {
+  border-left: 1px solid var(--regla);
+}
+
+.intentos__vacio {
+  color: var(--suave);
+  font-size: var(--t-ui);
+}
+
+.tabla--intentos th:first-child,
+.tabla--intentos td:first-child {
+  padding-left: 0;
+}
+
+.tabla--intentos th:last-child,
+.tabla--intentos td:last-child {
+  padding-right: 0;
+}
+
+@media (max-width: 960px) {
+  .hoja--intentos {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .intentos__detalle {
+    border-left: 0;
+    border-top: 1px solid var(--regla);
+  }
+}
+
+@media (max-width: 640px) {
+  .intentos__resumen,
+  .intentos__detalle {
+    padding: var(--e-5) var(--e-4);
+  }
 }
 
 /* Búsqueda de la hoja de alumnos: como el filtro de grupo, un espacio por llenar,
@@ -1542,14 +1722,21 @@ code {
   border-bottom: 1px solid var(--tinta);
   border-radius: 0;
   background: transparent;
-  font-size: 18px;
+  font-size: 1.125rem;
 }
 
-.entrada--campo:hover {
-  background: var(--papel2);
+@media (hover: hover) and (pointer: fine) {
+  .entrada--campo:hover {
+    background: var(--papel2);
+  }
 }
 
 @media (max-width: 959px) {
+  .entrada {
+    min-height: 44px;
+    font-size: 1rem;
+  }
+
   .entrada--campo {
     min-height: 44px;
   }
@@ -1568,7 +1755,7 @@ code {
 .boton--fila {
   min-height: 32px;
   padding: 0 var(--e-3);
-  font-size: 15px;
+  font-size: var(--t-ui);
 }
 
 @media (max-width: 959px) {
@@ -1725,7 +1912,7 @@ code {
 }
 
 .estado-registro > .marca-asistencia {
-  font-size: 30px;
+  font-size: 1.875rem;
   margin-top: 2px;
 }
 
@@ -1822,22 +2009,37 @@ code {
   align-items: center;
   gap: var(--e-2);
   color: var(--suave);
-  font-size: 15px;
+  font-size: var(--t-ui);
   white-space: nowrap;
 }
 
-.rostro--registrado {
+.rostro--registrado,
+.rostro--presente {
   color: var(--pluma);
   font-weight: 600;
 }
 
-/* Cuando un alumno pasa a "registrado" la palomita se traza: comunica el cambio
-   de estado y es lo único que se espera ver en vivo. La fila resalta una vez. */
-.tabla__fila[data-cambio] > * {
+.rostro--retardo {
+  color: var(--tinta);
+  font-weight: 600;
+}
+
+.rostro--falta {
+  color: var(--error);
+  font-weight: 600;
+}
+
+/* Cuando un alumno cambia de estado en vivo o una pose pasa a aceptada, la marca
+   se traza y la fila resalta una sola vez. */
+.tabla__fila[data-cambio] > *,
+.tabla__fila[data-recien-aceptada] > * {
   animation: resaltar-cambio 1200ms var(--ease-entrada);
 }
 
-.tabla__fila[data-cambio] .rostro--registrado .marca-asistencia__trazo {
+.tabla__fila[data-cambio] .rostro--registrado .marca-asistencia__trazo,
+.tabla__fila[data-cambio] .rostro--presente .marca-asistencia__trazo,
+.tabla__fila[data-cambio] .rostro--retardo .marca-asistencia__trazo,
+.tabla__fila[data-recien-aceptada] .rostro--pose-aceptada .marca-asistencia__trazo {
   stroke-dasharray: 1;
   animation: trazar var(--d-trazo) var(--ease-escribir) backwards;
 }
@@ -2120,9 +2322,31 @@ code {
   color: var(--tinta);
 }
 
-[data-sonner-toast][data-styled='true']:hover [data-close-button]:hover {
-  border-color: var(--borde-control);
-  background: var(--papel2);
+@media (hover: hover) and (pointer: fine) {
+  [data-sonner-toast][data-styled='true']:hover [data-close-button]:hover {
+    border-color: var(--borde-control);
+    background: var(--papel2);
+  }
+}
+
+/* Puntero grueso (tableta en horizontal, pantalla táctil grande): objetivos de
+   al menos 44 px y campos de 16 px para evitar el acercamiento automático. */
+@media (pointer: coarse) {
+  .boton,
+  .boton--fila,
+  .selector,
+  .selector--campo,
+  .entrada,
+  .entrada--campo,
+  .casilla,
+  .eleccion__fila {
+    min-height: 44px;
+  }
+
+  .selector,
+  .entrada {
+    font-size: max(1rem, var(--t-ui));
+  }
 }
 
 /* Movimiento de las vistas. Propósito: marcar que el contenido cambió y en qué
@@ -2173,20 +2397,31 @@ code {
   animation-delay: calc(var(--escalon) * 6);
 }
 
-/* Movimiento reducido: sin transiciones, sin animaciones y sin escalonado. La
-   página queda quieta y completa (ningún estado inicial oculta contenido, así
-   que al quitar las animaciones todo se ve; la palomita queda trazada). Alcanza
-   a los avisos de Sonner, al esqueleto y al diálogo (su fondo, ::backdrop, no es
-   hijo de nada, por eso se nombra). Las cifras que cuentan lo comprueban en JS y
-   muestran el valor final. El código del diálogo cierra al instante cuando la
-   transición dura 0 s. */
+/* Movimiento reducido: se eliminan desplazamientos espaciales, resortes, barridos
+   y escalonados, conservando fundidos breves de opacidad y color (120 ms) para que
+   los cambios de estado se perciban con suavidad sin provocar mareo. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after,
   ::backdrop {
     animation: none !important;
-    transition: none !important;
     scroll-behavior: auto !important;
+    transition-duration: 120ms !important;
+    transition-timing-function: ease !important;
+    transition-delay: 0ms !important;
+  }
+
+  .navegacion__indicador--animado {
+    transition: none !important;
+  }
+
+  .vista--sale,
+  .dialogo,
+  .zona[data-estado='encima'],
+  .boton:active,
+  .navegacion__enlace:active,
+  .selector:active {
+    transform: none !important;
   }
 }

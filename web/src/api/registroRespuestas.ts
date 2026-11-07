@@ -451,7 +451,7 @@ export function normalizarBusqueda(texto: string): string {
  * cualquier orden. El texto se toma literal (no es una expresión regular).
  * Búsqueda vacía: la misma lista.
  */
-export function filtrarAlumnos<T extends AlumnoBuscable>(alumnos: T[], consulta: string): T[] {
+export function filtrarAlumnos<T extends { cuenta: string; nombre: string }>(alumnos: T[], consulta: string): T[] {
   const palabras = normalizarBusqueda(consulta).split(/\s+/).filter((p) => p !== '')
   if (palabras.length === 0) {
     return alumnos

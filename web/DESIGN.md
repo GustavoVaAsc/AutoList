@@ -90,16 +90,17 @@ Una casilla de papel y la marca que el profesor pone en ella. Se dibuja con un S
 
 | Marca | Dibujo | Dónde |
 |---|---|---|
-| Presente | Casilla con una palomita de pluma que sale por arriba | Alumno con rostro registrado; "Placa conectada"; avisos de éxito; foto aceptada de una pose; "Registro completado" |
-| Pendiente | Casilla vacía, en tinta suave | Alumno con rostro pendiente; "Conectando" y "Sin sesión"; estados vacíos; pose pendiente, esperando o tomándose; registro en espera o en curso |
-| Falta | Casilla con una tachita en rojo | Fallo real: "Sin conexión con la placa"; avisos de error; foto rechazada de una pose; registro terminado con error |
+| Presente | Casilla con una palomita de pluma que sale por arriba | Alumno con rostro registrado o asistencia a tiempo; "Placa conectada"; avisos de éxito; foto aceptada de una pose; "Registro completado" |
+| Retardo | Casilla con una diagonal en tinta de la hoja (`--tinta`) | Asistencia registrada después de la tolerancia, siempre junto a la palabra "Retardo" (sin introducir ámbar) |
+| Pendiente | Casilla vacía, en tinta suave | Alumno con rostro pendiente o aún sin registro en una sesión abierta; "Conectando" y "Sin sesión"; estados vacíos; pose pendiente, esperando o tomándose; registro en espera o en curso |
+| Falta | Casilla con una tachita en rojo | Falta al cierre de la sesión o fallo real: "Sin conexión con la placa"; avisos de error; foto rechazada de una pose; registro terminado con error |
 
 Es el gesto repetido: columna del rostro de Alumnos, resumen de la hoja, indicador de la cabecera, estados vacíos y avisos. Siempre acompaña a un texto que dice el estado: la marca refuerza y nunca es la única señal. El logo sigue siendo la palabra "AutoList" en texto, en la serif; no hay logotipo.
 
 ## Composición
 
 - **Alumnos** (foco: la lista). Una hoja con encabezado de documento: título "Lista de alumnos", los campos de formulario Materia ("Fundamentos de Sistemas Embebidos", del plan) y Grupo, y los conteos reales de lo que se ve (alumnos, con rostro, pendientes). Como en un formulario impreso, la materia es texto preimpreso: va en la serif, sin línea de llenado. Solo el grupo, el espacio por llenar (el filtro), lleva su línea de tinta. Debajo, los renglones con su regla, numerados, con las columnas alineadas. La importación del CSV vive en el margen de la hoja (19 rem fijos, no crece con la ventana), a la derecha desde 1000 px de ancho y debajo en las angostas, como acción secundaria. En una pantalla angosta caben nombre y estado; la cuenta y el grupo pasan debajo del nombre.
-- **Métricas y asistencia.** Cabecera de la vista y una hoja de energía en dos columnas: a la izquierda la potencia (cifra protagonista) y las demás cifras como renglones con puntos guía, como un recibo; a la derecha la gráfica, una línea de tinta sin relleno. Debajo, la hoja de lecturas recientes y el estado vacío de asistencia.
+- **Métricas y asistencia.** Cabecera de la vista, seguida de la hoja de asistencia por sesión (selector de sesión, materia y grupo, horario y tolerancia, búsqueda por nombre o cuenta, botón de descarga de CSV cuando la sesión cerró, resumen de inscritos/presentes/retardos/faltas o pendientes y tabla nominal con hora y similitud coseno), la hoja de confianza e intentos rechazados en dos columnas (cifras con puntos guía y tabla de rechazos), la hoja de energía en dos columnas (potencia protagonista con cifras en renglones y gráfica de tinta sin relleno), la hoja de lecturas recientes y el estado vacío honesto de latencia de inferencia.
 - **Alumnos, búsqueda y acciones.** El campo de búsqueda va en el encabezado, junto al grupo, como otro espacio por llenar: sin caja, sobre su línea de tinta. Los tres campos (materia, grupo, búsqueda) comparten renglón cuando la hoja mide 44 rem o más (consulta de contenedor, porque el ancho que importa es el de la hoja y no el de la ventana); con menos, la materia va arriba. En cada renglón, la celda del Rostro lleva el estado y su acción ("Registrar rostro" o "Retirar rostro", botón de 32 px en pantallas anchas y de 44 px en táctiles y angostas, apilado bajo el estado en un teléfono). La confirmación de retirar es el mismo diálogo de las cuentas existentes, de la misma hoja con su regla doble.
 - **Registro.** La composición de Alumnos: hoja y margen de 19 rem (debajo de la hoja bajo 1000 px). Con la vista libre, la hoja es la lista para elegir (renglones con una casilla de opción, los pendientes primero; los registrados en tinta suave y sin poder elegirse) con la búsqueda en su encabezado, y el margen es una hoja chica con el alumno elegido, la casilla de consentimiento, el aviso de que el formato está pendiente y "Iniciar registro", la única acción principal. Con un registro abierto, el encabezado lleva alumno, cuenta y grupo como campos del formulario; debajo, el resumen (la marca de asistencia que toca y el título en la serif: "Esperando al servicio de visión", "Registro en curso", "Guardando el rostro", "Registro completado"...), la advertencia de parecido si la hay y las cinco poses como renglones numerados con su regla: lo que se le pide al alumno, y la marca con el estado en palabras. Una foto rechazada lleva debajo el motivo. El margen lleva "Cancelar registro" o, al terminar, "Registrar a otro alumno". Sin miniaturas de las fotos: el contrato no define su transporte, y un espacio de relleno sería una imagen inventada.
 
@@ -115,17 +116,18 @@ No hay cuadrícula, renglones ni papel milimétrico de fondo (R-07): las reglas 
 
 ## Movimiento
 
-Curva de salida fuerte (`cubic-bezier(0.23, 1, 0.32, 1)`) para entradas y salidas, y una curva suave de principio a fin (`cubic-bezier(0.45, 0.05, 0.3, 1)`) para lo que se escribe (el renglón y la palomita), porque con la fuerte el trazo terminaría en una décima y no se vería. Sin rebotes. Las salidas son más rápidas que las entradas. Todo se apaga con `prefers-reduced-motion: reduce` y ningún estado inicial oculta contenido.
+Curva de salida fuerte (`cubic-bezier(0.23, 1, 0.32, 1)`) para entradas y salidas, y una curva suave de principio a fin (`cubic-bezier(0.45, 0.05, 0.3, 1)`) para lo que se escribe (el renglón y la marca), porque con la fuerte el trazo terminaría en una décima y no se vería. Sin rebotes salvo el diálogo. Las salidas son más rápidas que las entradas. Con `prefers-reduced-motion: reduce` se eliminan animaciones espaciales, barridos, resortes y escalonados, dejando solo fundidos breves de opacidad y color (120 ms) y ningún estado inicial oculta contenido.
 
 | Qué | Cómo | Para qué |
 |---|---|---|
-| Renglones de la lista | Entran de arriba abajo, cada uno con un barrido de izquierda a derecha (360 ms, escalón de 40 ms, solo los 12 primeros, solo al abrir la vista) | Se leen como si se escribieran en la hoja y dicen en qué orden leer |
-| Marca de presente | La palomita se traza (`stroke-dashoffset`, 560 ms) cuando un alumno pasa a "registrado" | Comunica el cambio de estado: es lo único que el profesor espera ver en vivo |
-| Cambio de vista | La que se va sale en 120 ms con un fundido; la nueva entra en 300 ms con 6 px de subida y un escalón de 50 ms entre bloques | Marca que el contenido cambió |
+| Renglones de la lista | Entran de arriba abajo, cada uno con un barrido de izquierda a derecha (240 ms, escalón de 25 ms, solo los 8 primeros, solo al abrir la vista) | Se leen como si se escribieran en la hoja y dicen en qué orden leer |
+| Marca trazada en vivo | La palomita o diagonal se traza (`stroke-dashoffset`, 480 ms) cuando un alumno pasa a "registrado", marca asistencia en vivo o una pose pasa a "aceptada" | Comunica el cambio de estado en tiempo real |
+| Subrayado de navegación | Línea de 1 px escalada en GPU (`translate3d` y `scaleX`, 220 ms) | Continuidad espacial entre vistas sin recalcular layout |
+| Cambio de vista | La que se va sale en 90 ms con un fundido; la nueva entra en 220 ms con 6 px de subida y un escalón de 35 ms entre bloques | Marca que el contenido cambió con rapidez de herramienta |
 | Zona del CSV | Al arrastrar encima crece 1,5 % y se pinta de pluma; al soltar rebota una vez; si rechaza el archivo, se sacude | Dice que la zona oye el arrastre, que recibió el archivo o que lo rechazó |
 | Cifras | Cuentan hasta su valor (800 ms la primera vez, 300 ms al cambiar) | Muestran que el dato es nuevo |
 | Esqueleto de carga | Pulso de opacidad, 4 ciclos de 1,2 s y se detiene | Dice que se espera una respuesta, sin bucle infinito |
-| Diálogo y avisos | Entrada breve (diálogo con un resorte corto, avisos de 320 ms) y salida rápida | Son lo único que flota |
+| Diálogo y avisos | Entrada breve (diálogo con un resorte corto, avisos de 320 ms) y salida rápida (160 ms) | Son lo único que flota |
 
 Se quitaron la tarjeta que sube al pasar el cursor, las sombras de realce y la barra de progreso.
 

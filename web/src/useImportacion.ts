@@ -85,12 +85,24 @@ function avisarSinVista(resultado: Exclude<ResultadoImportacion, { tipo: 'exito'
  * la API ya escribió): termina, no toca el estado de un componente desmontado
  * y deja su resultado en un toast.
  */
+// Guardia de módulo: si la persona sale de Alumnos mientras un POST de importación
+// sigue en vuelo y vuelve antes de que responda, no se lanza un segundo POST encima
+// del primero y el remonte refleja el archivo que sigue subiéndose.
+let importacionGlobalEnCurso = false
+let archivoGlobalEnCurso: string | null = null
+const oyentesImportacion = new Set<(enCurso: boolean, nombre: string | null) => void>()
+
+function fijarImportacionGlobal(enCurso: boolean, nombre: string | null) {
+  importacionGlobalEnCurso = enCurso
+  archivoGlobalEnCurso = nombre
+  oyentesImportacion.forEach((fn) => fn(enCurso, nombre))
+}
+
 export function useImportacion(alEscribir: () => void, sinSesion: boolean): EstadoImportacion {
-  const [enviando, setEnviando] = useState(false)
-  const [archivo, setArchivo] = useState<string | null>(null)
+  const [enviando, setEnviando] = useState(() => importacionGlobalEnCurso)
+  const [archivo, setArchivo] = useState<string | null>(() => archivoGlobalEnCurso)
   const [aviso, setAviso] = useState<AvisoVisible | null>(null)
   const [porDecidir, setPorDecidirEstado] = useState<PorDecidir | null>(null)
-  const enCurso = useRef(false)
   const montado = useRef(false)
   const numeroDeAviso = useRef(0)
   // Espejo de `porDecidir` para decidir y cancelar sin leer el estado de React.
@@ -101,8 +113,15 @@ export function useImportacion(alEscribir: () => void, sinSesion: boolean): Esta
   }, [alEscribir, sinSesion])
   useEffect(() => {
     montado.current = true
+    const sincronizar = (ocupado: boolean, nombre: string | null) => {
+      setEnviando(ocupado)
+      setArchivo(nombre)
+    }
+    sincronizar(importacionGlobalEnCurso, archivoGlobalEnCurso)
+    oyentesImportacion.add(sincronizar)
     return () => {
       montado.current = false
+      oyentesImportacion.delete(sincronizar)
     }
   }, [])
 
@@ -118,12 +137,10 @@ export function useImportacion(alEscribir: () => void, sinSesion: boolean): Esta
 
   const enviar = useCallback(
     async (aImportar: File, decision?: Decision) => {
-      if (enCurso.current) {
+      if (importacionGlobalEnCurso) {
         return
       }
-      enCurso.current = true
-      setEnviando(true)
-      setArchivo(aImportar.name)
+      fijarImportacionGlobal(true, aImportar.name)
       mostrar(null)
       try {
         const resultado = await enviarImportacion(aImportar, decision, actuales.current.sinSesion ? TIEMPO_INICIAL_MS : undefined)
@@ -167,11 +184,7 @@ export function useImportacion(alEscribir: () => void, sinSesion: boolean): Esta
             mostrar(resultado)
         }
       } finally {
-        enCurso.current = false
-        if (montado.current) {
-          setEnviando(false)
-          setArchivo(null)
-        }
+        fijarImportacionGlobal(false, null)
       }
     },
     [fijarPorDecidir, mostrar],
@@ -179,7 +192,7 @@ export function useImportacion(alEscribir: () => void, sinSesion: boolean): Esta
 
   const elegir = useCallback(
     (archivos: readonly File[]): Entrega => {
-      if (enCurso.current || pendiente.current !== null) {
+      if (importacionGlobalEnCurso || pendiente.current !== null) {
         return 'ocupado'
       }
       const [nuevo, ...otros] = archivos
@@ -200,7 +213,7 @@ export function useImportacion(alEscribir: () => void, sinSesion: boolean): Esta
 
   const decidir = useCallback(
     (decision: Decision) => {
-      if (enCurso.current || pendiente.current === null) {
+      if (importacionGlobalEnCurso || pendiente.current === null) {
         return
       }
       void enviar(pendiente.current.archivo, decision)
@@ -209,7 +222,7 @@ export function useImportacion(alEscribir: () => void, sinSesion: boolean): Esta
   )
 
   const cancelar = useCallback(() => {
-    if (enCurso.current || pendiente.current === null) {
+    if (importacionGlobalEnCurso || pendiente.current === null) {
       return
     }
     fijarPorDecidir(null)

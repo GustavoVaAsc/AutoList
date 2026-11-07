@@ -10,15 +10,33 @@ import react from '@vitejs/plugin-react'
 // autofirmado de Node-RED.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '')
+  const destino = env.PLACA_URL || 'https://localhost:1880'
+  const origenDestino = new URL(destino).origin
   return {
     base: '/app/',
     plugins: [react()],
     server: {
       proxy: {
         '/api': {
-          target: env.PLACA_URL || 'https://localhost:1880',
+          target: destino,
           changeOrigin: true,
           secure: false,
+          configure: (proxy) => {
+            const emisor = proxy as unknown as {
+              on(
+                evento: 'proxyReq',
+                manejador: (
+                  proxyReq: { setHeader(nombre: string, valor: string): void },
+                  req: { headers: { origin?: string } },
+                ) => void,
+              ): void
+            }
+            emisor.on('proxyReq', (proxyReq, req) => {
+              if (req.headers.origin !== undefined) {
+                proxyReq.setHeader('origin', origenDestino)
+              }
+            })
+          },
         },
       },
     },

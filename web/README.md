@@ -17,7 +17,7 @@ Panel del profesor, en Vite + React + TypeScript (plan, sección 6.7). Se compil
 
 | Vista | Estado |
 |---|---|
-| Métricas y asistencia | Funciona solo la sección de energía: potencia actual y datos de la ventana de 30 min, gráfica de la potencia y tabla de lecturas recientes, más un estado vacío de asistencia. Consulta `GET /api/metricas/energia` cada 5 s. |
+| Métricas y asistencia | Funciona la asistencia por sesión (`GET /api/sesiones`, `GET /api/sesiones/:id` y descarga del reporte `GET /api/sesiones/:id/csv` al cerrar la sesión), el desglose de similitud coseno e intentos rechazados (`desconocido`, `duplicado`, `imagen_insuficiente`) y la sección de energía (`GET /api/metricas/energia`, cada 5 s): potencia actual, gráfica de los últimos 30 min y tabla de lecturas recientes. La latencia de inferencia muestra estado vacío mientras no se almacene `origen = 'npu'` en la base. |
 | Alumnos | Funciona: lista de alumnos con filtro por grupo, búsqueda por nombre o cuenta (en el cliente, sin acentos ni mayúsculas) y estado del rostro (`GET /api/alumnos`, cada 10 s); en cada renglón, "Registrar rostro" (va a Registro con la cuenta elegida) si está pendiente o "Retirar rostro" (confirmación con `<dialog>` y `DELETE /api/alumnos/:cuenta/rostro`) si ya está registrado; e importación de la lista maestra en CSV (`POST /api/alumnos/importar`) con zona para soltar el archivo, diálogo para las cuentas existentes y avisos. La búsqueda y el retiro del rostro se verificaron en el navegador el 3 nov (paso 23 de la verificación de `orangepi/AGENTS.md`). |
 | Registro | Funciona; verificado en el navegador el 3 nov (paso 24 de la verificación de `orangepi/AGENTS.md`): elegir al alumno (pendientes primero, con búsqueda), casilla de consentimiento, iniciar (`POST /api/enrolamiento`), las 5 poses con su estado y motivo, advertencia de parecido, resultado final y "Cancelar registro" (`POST /api/enrolamiento/cancelar`). El progreso es un sondeo de `GET /api/enrolamiento/estado` cada 1 s mientras hay un registro abierto, y se retoma al recargar la página. Sin miniaturas de las fotos (el contrato no define su transporte), sin prueba inmediata ni control de actuadores. |
 
@@ -25,7 +25,7 @@ El frontend no se conecta a MQTT en esta etapa: no usa `mqtt.js` ni el puerto 90
 
 La API exige HTTP Basic (usuario del profesor, `NODERED_PROFESOR_USER`): al abrir `/app/`, el navegador muestra su diálogo de usuario y contraseña en la primera consulta a `/api/...` y reenvía las credenciales por su cuenta, porque el frontend es del mismo origen. No hay pantalla de inicio de sesión propia. `/app/` en sí es público. Si la persona cancela el diálogo (401), la vista de energía, la lista de alumnos y el progreso del registro detienen su sondeo y muestran "Reintentar", en lugar de reabrir el diálogo cada pocos segundos.
 
-**Todo `POST`, `PUT`, `PATCH` o `DELETE` que haga el frontend debe mandar la cabecera `X-Pase-Lista: 1`** (el middleware de la API la exige como defensa contra CSRF; sin ella, 403). Los `GET` no la necesitan; la importación de la vista Alumnos (`src/api/alumnos.ts`) envía `Content-Type: text/csv; charset=utf-8` y `X-Pase-Lista: 1`; iniciar el registro (`src/api/registro.ts`) envía `Content-Type: application/json` y la misma cabecera, y cancelar el registro y retirar el rostro (`DELETE`) solo la cabecera. Esa petición exige además el mismo origen: con `npm run dev` el navegador manda `Origin: http://localhost:5173` y la API responde 403, así que la importación solo se prueba desde `https://<ip-de-la-placa>:1880/app/` (la lista y el resto de la vista sí funcionan con el proxy de desarrollo).
+**Todo `POST`, `PUT`, `PATCH` o `DELETE` que haga el frontend debe mandar la cabecera `X-Pase-Lista: 1`** (el middleware de la API la exige como defensa contra CSRF; sin ella, 403). Los `GET` no la necesitan; la importación de la vista Alumnos (`src/api/alumnos.ts`) envía `Content-Type: text/csv; charset=utf-8` y `X-Pase-Lista: 1`; iniciar el registro (`src/api/registro.ts`) envía `Content-Type: application/json` y la misma cabecera, y cancelar el registro y retirar el rostro (`DELETE`) solo la cabecera. Esa petición exige además el mismo origen: en `npm run dev`, `vite.config.ts` ajusta la cabecera `Origin` hacia `PLACA_URL` en el proxy local sin relajar el middleware en producción.
 
 ## Requisitos
 
@@ -106,28 +106,32 @@ web/
     lecturasContexto.ts    reparte el estado del sondeo a la cabecera y a las vistas
     serie.ts               ventana visible y huecos de la gráfica
     App.tsx                encabezado, navegación por hash (#/metricas) y vistas
+    api/asistencia.ts      cliente de GET /api/sesiones, GET /api/sesiones/:id y GET /api/sesiones/:id/csv
+    api/asistenciaRespuestas.ts  lógica pura de asistencia por sesión e intentos rechazados (sin imports; la prueba web/pruebas)
     api/energia.ts         cliente de /api/metricas/energia y validación de la respuesta
     api/alumnos.ts         cliente de GET /api/alumnos y de POST /api/alumnos/importar (solo el fetch)
     api/alumnosRespuestas.ts  lógica pura de Alumnos: interpreta 200, 400, 409 (los dos), 413, 415 y demás, revisa el archivo, valida la lista (sin imports; la prueba web/pruebas)
     api/registro.ts        cliente de GET /api/enrolamiento/estado, POST /api/enrolamiento, POST /api/enrolamiento/cancelar y DELETE /api/alumnos/:cuenta/rostro (solo el fetch)
     api/registroRespuestas.ts  lógica pura de Registro: lee el estado, traduce poses y motivos, interpreta las respuestas, busca y ordena alumnos y es la máquina de la vista (sin imports; la prueba web/pruebas)
+    useAsistencia.ts       sondeo de sesiones y detalle nominal (5 s, en pausa con la pestaña oculta)
     useLecturas.ts         consulta periódica (5 s, en pausa con la pestaña oculta)
     useAlumnos.ts          consulta periódica de la lista (10 s), mismo patrón que useLecturas
-    useImportacion.ts      flujo de la importación: revisión local, envío, diálogo de decisión, avisos
+    useImportacion.ts      flujo de la importación: revisión local, envío con guardia de módulo, diálogo de decisión, avisos
     useRegistro.ts         sondeo del registro (1 s con uno abierto, en pausa con la pestaña oculta), iniciar, cancelar y retomar
     useRetiro.ts           retiro del rostro: confirmación, envío y aviso
-    useDialogo.ts          apertura y cierre animado de un <dialog> nativo (DialogoRetiro lo usa; DialogoExistentes conserva su copia)
+    useDialogo.ts          apertura y cierre animado de un <dialog> nativo (lo usan DialogoRetiro y DialogoExistentes)
     formato.ts             horas (America/Mexico_City) y cifras
     vistas/                Alumnos, Registro, Metricas
-    componentes/           Pagina, Cifra, NumeroAnimado, MarcaAsistencia, GraficaPotencia,
+    componentes/           Pagina, Cifra, NumeroAnimado, MarcaAsistencia, HojaAsistencia, GraficaPotencia,
                            TablaLecturas, EstadoVacio, AvisoObsoleta, IndicadorEstado, SelectorTema;
                            de Alumnos: TablaAlumnos, EsqueletoTabla, ZonaCSV,
                            AvisoImportacion, DialogoExistentes, DialogoRetiro, CampoBusqueda;
                            de Registro: SeleccionAlumno, ProgresoRegistro; Avisos (Sonner)
   pruebas/
-    alumnos-respuestas.test.js   node:test de api/alumnosRespuestas.ts
-    registro-respuestas.test.js  node:test de api/registroRespuestas.ts
-    animacion.test.js            node:test de animacion.ts
+    alumnos-respuestas.test.js     node:test de api/alumnosRespuestas.ts
+    asistencia-respuestas.test.js  node:test de api/asistenciaRespuestas.ts
+    registro-respuestas.test.js    node:test de api/registroRespuestas.ts
+    animacion.test.js              node:test de animacion.ts
   public/
     tema.js                aplica el tema guardado antes de pintar (archivo externo por la CSP)
 ```
