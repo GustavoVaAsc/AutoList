@@ -127,7 +127,7 @@ services:
       context: ../nodered
       additional_contexts:
         web: ../web
-    image: pase-lista/nodered:5.0.9-20
+    image: pase-lista/nodered:5.0.9-21
     restart: unless-stopped
     logging: *logging
     # Solo recibe lo que usa: la contraseña de su usuario MQTT (nodered), el rol

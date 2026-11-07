@@ -1,6 +1,6 @@
 # Contrato MQTT
 
-> **Borrador v0.12.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
+> **Borrador v0.13.** Fuente de verdad de los tópicos y payloads del sistema. Deriva de la sección 7.1 de `HIGH-LEVEL-PLAN.md`; cuando este documento y el plan difieran, manda este. Las marcas **[propuesta]** son cambios o huecos detectados respecto al plan que el equipo tiene que aprobar; las marcas **[decidir]** son preguntas abiertas.
 
 ## 1. Convenciones generales
 
@@ -32,6 +32,7 @@
 | `aula/vision/galeria/baja` | Node-RED | visión | 1 | no |
 | `aula/sesion/cmd` | pantalla, Node-RED (a nombre del frontend) | Node-RED | 1 | no |
 | `aula/sesion/estado` | Node-RED | XIAO, pantalla | 1 | sí |
+| `aula/sesion/asistencia` | Node-RED | pantalla | 1 | sí |
 | `aula/pantalla/reinicio` | Node-RED | pantalla | 1 | no |
 | `aula/sistema/metricas` | Node-RED | Node-RED | 0 | no |
 
@@ -152,7 +153,7 @@ Un mensaje por intento de reconocimiento, sea del pase de lista o de una prueba 
 | `dudoso` | | `{"led":"ambar"}` | nada (el marcado manual, `marcar`, sigue como propuesta; el `CHECK` de `intentos.motivo` no tiene un motivo para la zona gris) |
 | `sin_rostro`, `error` | | nada (casi siempre fue un disparo del PIR sin nadie enfrente) | nada; solo un aviso |
 
-Un límite de entrada deja pasar a lo más 1 resultado cada 200 ms (5 por segundo) hacia la base y descarta los que lleguen antes (no los encola; la visión tarda unos 240 ms por ciclo, así que un resultado legítimo no se pierde): acota `intentos` a unas 430 000 filas al día (unos 43 MB). Si la escritura en la base falla no se publica retroalimentación: se registra el SQLSTATE y la persona puede volver a intentarlo. La lista de asistencia y el "último registro" de la pantalla necesitarían un tópico nuevo y un cambio de la ACL: quedan fuera de v0.11.
+Un límite de entrada deja pasar a lo más 1 resultado cada 200 ms (5 por segundo) hacia la base y descarta los que lleguen antes (no los encola; la visión tarda unos 240 ms por ciclo, así que un resultado legítimo no se pierde): acota `intentos` a unas 430 000 filas al día (unos 43 MB). Si la escritura en la base falla no se publica retroalimentación: se registra el SQLSTATE y la persona puede volver a intentarlo. Cuando el resultado es `presente` o `retardo`, Node-RED publica además `aula/sesion/asistencia` (retenido, sección 5) para actualizar los conteos y el último registro en la pantalla ILI9341 (v0.13).
 
 ### `aula/vision/cmd`
 Órdenes de Node-RED al servicio de visión.
@@ -275,6 +276,22 @@ Va retenido, con QoS 1, para que la XIAO y la pantalla recuperen el estado al re
 
 Node-RED lo publica **después** de escribir en la base, así que el retenido nunca adelanta a la base. Se publica `{"activa": true, ...}` al iniciar y `{"activa": false, "id": N}` al terminar (el reporte se genera de la sesión cerrada `N`). Si `iniciar` cierra una sesión olvidada, también se genera el reporte de esa. **`terminar` sin sesión abierta** no cambia la base ni genera reporte; Node-RED lee el estado real de la base y lo vuelve a publicar (inactivo con el `id` de la última sesión), lo que corrige un retenido viejo. Si una escritura falla (por ejemplo, dos `iniciar` simultáneos que violan el índice de una sola sesión abierta), no se publica el estado que se esperaba: se publica el que dice la base. **Reconciliación:** en cada conexión de Node-RED al broker (al arrancar, al desplegar y al reconectar, por ejemplo tras reiniciar Mosquitto) y mientras la consulta falle (cada 15 s), Node-RED publica el estado de la base: la sesión abierta, o el inactivo.
 
+### `aula/sesion/asistencia` (retenido)
+```json
+{"activa": true, "id": 12, "presentes": 5, "retardos": 1, "faltantes": 4, "ultimo": {"nombre": "Ana López", "estado": "presente"}}
+{"activa": false}
+```
+Resumen en vivo de la asistencia de la sesión abierta para las vistas **Sesión** y **Lista** de la pantalla ILI9341 (v0.13). Va en un tópico aparte de `aula/sesion/estado` para no comprometer el búfer de 256 bytes de PubSubClient en la XIAO, que no se suscribe a este tópico. QoS 1 y retenido: al conectar o reiniciar, la pantalla recupera el estado actual.
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `activa` | bool | `true` si hay sesión abierta; `false` si no |
+| `id` | int | Solo con `activa: true`: `sesiones.id` |
+| `presentes`, `retardos`, `faltantes` | int | Solo con `activa: true`: enteros `>= 0` sobre el grupo de la sesión |
+| `ultimo` | object \| null | Solo con `activa: true`: `{"nombre": string, "estado": "presente" \| "retardo"}` del último registro de esa sesión, o `null` si aún no ha registrado nadie. Nunca lleva número de cuenta ni embeddings |
+
+Node-RED lo publica **después** de escribir en la base: en `0 / 0 / <total>` con `ultimo: null` al iniciar sesión, actualizado tras cada `presente` o `retardo` en `Pase de lista`, `{"activa": false}` al terminar sesión, y reconciliado junto con `aula/sesion/estado` en cada conexión al broker.
+
 ### `aula/pantalla/reinicio`
 ```json
 {"reiniciar": 1}
@@ -297,7 +314,7 @@ La aplica `orangepi/mosquitto/acl` (versionado, sin secretos) con `acl_file`, y 
 | `xiao` | `aula/actuador/cmd`, `aula/sesion/estado` | `aula/camara/pir`, `aula/camara/energia`, `aula/camara/estado`, `aula/actuador/estado` |
 | `vision` | `aula/camara/pir`, `aula/vision/cmd`, `aula/vision/galeria/#` | `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/embedding`, `aula/vision/estado`, `aula/actuador/cmd` |
 | `nodered` | `aula/#` | `aula/#` |
-| `pantalla` | `aula/sesion/estado`, `aula/vision/enrolamiento`, `aula/actuador/estado`, `aula/pantalla/reinicio` | `aula/sesion/cmd`, `aula/actuador/cmd` |
+| `pantalla` | `aula/sesion/estado`, `aula/sesion/asistencia`, `aula/vision/enrolamiento`, `aula/actuador/estado`, `aula/pantalla/reinicio` | `aula/sesion/cmd`, `aula/actuador/cmd` |
 | `simulador` | nada | `aula/camara/energia` |
 
 Notas:
@@ -327,3 +344,4 @@ Notas:
 | v0.9 | **Sin cambios en los tópicos, la ACL ni la forma de los payloads.** Cambia la semántica de `aula/vision/galeria/alta` (sección 4): además de "se guardó el embedding de esa cuenta", Node-RED la publica tras un retiro tardío que no afectó ninguna fila, para que la visión recargue la galería completa desde la base y quede igual que ella (si el rostro se retiró, desaparece; si hay un registro posterior válido, se conserva). La visión ya recarga con cualquier `alta` y no necesita cambios (`gallery_store.cpp`, `apply_add`). Con una fila afectada se sigue publicando `baja`. Se corrige además el estado de `GET /api/galeria` con token: desplegado y verificado en la placa el 2 de noviembre de 2026. |
 | v0.10 | **Sin cambios en los tópicos, la ACL ni la forma de los payloads de la tabla.** Node-RED implementa las sesiones (pestaña `Sesiones`) y precisa el contrato de la sección 5: (1) `aula/sesion/cmd` solo trae `iniciar` y `terminar`; `marcar` sigue como propuesta y se descarta con un aviso; la validación de `iniciar` (`materia` y `grupo` de 1 a 40 caracteres sin caracteres de control, `tol_min` entero de 0 a 600, todo obligatorio, y que el estado quepa en el búfer de 256 bytes de la XIAO); (2) la forma de `aula/sesion/estado` (`materia`, `grupo`, `inicio` y `tol_min` con la sesión activa; `id` de la última cerrada con la inactiva, omitido si no hay ninguna; `inicio` en UTC con `+00:00`); (3) `terminar` sin sesión abierta no genera reporte y republica el estado real; (4) la reconciliación de `aula/sesion/estado` con la base en cada conexión al broker; (5) un segundo `iniciar` válido a menos de 5 s del último aceptado se descarta; (6) `aula/pantalla/reinicio` lo publica un `inject` del editor, con QoS 1 y sin retain. Los consumidores de `aula/pantalla/reinicio` y `aula/sesion/cmd` ya descartaban lo retenido (sección 1); Node-RED descarta retain y lo vacío en `aula/sesion/cmd` |
 | v0.11 | **Sin cambios en los tópicos, la ACL ni la forma de los payloads de la tabla.** Node-RED implementa el pase de lista (pestaña `Pase de lista`): consume `aula/vision/resultado` y publica la retroalimentación en `aula/actuador/cmd` (sección 4). (1) Se cierra el **[decidir]** de `buzzer`: `1` = pitido corto de éxito, `2` = doble pitido de error. (2) `ts` es obligatorio en `aula/vision/resultado` y debe estar a menos de 60 s del reloj de Node-RED, hacia atrás o hacia adelante: con el `1970` de reserva de la visión el resultado se descarta (**afecta a la visión (Gustavo)**). (3) Solo `modo: "pase"` registra asistencia; `modo: "prueba"` se ignora (el reenvío al frontend queda pendiente). (4) La retroalimentación sigue la tabla de la sección 4; sin sesión abierta no se registra ni se manda nada. (5) Node-RED descarta retain y lo vacío también en `aula/vision/resultado`, y la limpieza de retenidos agrega ese tópico a su lista (el mensaje vacío en vivo que provoca en cada conexión lo descarta la validación, en silencio; ningún otro consumidor lee ese tópico). (6) `reconocido` exige que la cuenta tenga consentimiento y rostro vigentes en la base, además de ser del grupo de la sesión. (7) Límite de entrada de 5 resultados por segundo (200 ms entre mensajes), con descarte. La lista y el "último registro" de la pantalla quedan pendientes: necesitan un tópico nuevo y un cambio de ACL |
+| v0.13 | Se añade `aula/sesion/asistencia` (QoS 1, retenido; sección 5) para alimentar los conteos (`presentes`, `retardos`, `faltantes`) y el `ultimo` registro (`nombre`, `estado`) en las vistas **Sesión** y **Lista** de la pantalla ILI9341, sin tocar `aula/sesion/estado` ni el búfer de 256 bytes de la XIAO. En la ACL (`orangepi/mosquitto/acl`), `pantalla` recibe `topic read aula/sesion/asistencia`. Node-RED lo publica al iniciar, cerrar o reconciliar sesión y en cada `presente` o `retardo` del pase de lista |

@@ -242,6 +242,10 @@ La importación del CSV de la lista maestra se hace desde la vista de Alumnos, c
 ```
 GET    /api/alumnos?grupo=          lista con estado de rostro
 POST   /api/alumnos/importar        CSV de la lista maestra
+GET    /api/sesiones?limite=        historial de sesiones con conteos, confianza e intentos
+GET    /api/sesiones/:id            detalle nominal de asistencia e intentos rechazados de la sesión
+GET    /api/sesiones/:id/csv        descarga de /data/reportes/sesion-<id>.csv (solo lectura)
+GET    /api/metricas/energia        lecturas recientes de voltaje, corriente y potencia
 POST   /api/enrolamiento            {"cuenta":"320068234","consentimiento":true}
 POST   /api/enrolamiento/cancelar
 GET    /api/enrolamiento/estado     progreso del registro (sondeo del frontend)
@@ -299,6 +303,7 @@ aula/vision/galeria/baja Node-RED → visión       {"cuenta":"320068234"}   (Qo
 aula/sesion/cmd          pantalla, Node-RED → Node-RED     {"accion":"iniciar","materia":"FSE","grupo":"1","tol_min":10}
 aula/pantalla/reinicio   Node-RED → pantalla     {"reiniciar":1}
 aula/sesion/estado       Node-RED → XIAO, pantalla        {"activa":true,"id":12,"materia":"FSE","grupo":"1","inicio":"2026-11-04T15:10:00+00:00","tol_min":10}  |  {"activa":false,"id":12}   (retenido)
+aula/sesion/asistencia   Node-RED → pantalla              {"activa":true,"id":12,"presentes":5,"retardos":1,"faltantes":4,"ultimo":{"nombre":"Ana López","estado":"presente"}}  |  {"activa":false}   (retenido)
 aula/sistema/metricas    Node-RED → Node-RED    {"ts":"...","temp":52.1,"cpu":34,"ram":61}   (cada 10 s; temperatura, CPU y RAM de la placa)
 ```
 

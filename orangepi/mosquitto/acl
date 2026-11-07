@@ -41,6 +41,7 @@ topic readwrite aula/#
 # Programa de la pantalla ILI9341.
 user pantalla
 topic read aula/sesion/estado
+topic read aula/sesion/asistencia
 topic read aula/vision/enrolamiento
 topic read aula/actuador/estado
 topic read aula/pantalla/reinicio
