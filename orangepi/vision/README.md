@@ -361,7 +361,7 @@ El modo inseguro es un riesgo conocido y aceptado (ver "Limitaciones conocidas")
 
 ## Recorrido en seco
 
-`build/vision_dry_run` es un arnés de recorrido en seco sobre los dobles: cablea la máquina de estados real con los dobles en memoria y reproduce un pase de lista y un registro. No hay broker, cámara ni modelos. Los adaptadores reales ya existen (`MosquittoBus`, `HttplibClient`, `GalleryStore`, `NpuFaceDetector` y `NpuFaceEmbedder`) y el proceso de producción los usa; lo que sigue sin existir son los modelos `.nb`.
+`build/vision_dry_run` es un arnés de recorrido en seco sobre los dobles: cablea la máquina de estados real con los dobles en memoria y reproduce un pase de lista y un registro. No hay broker, cámara ni modelos. Los adaptadores reales ya existen (`MosquittoBus`, `HttplibClient`, `GalleryStore`, `NpuFaceDetector` y `NpuFaceEmbedder`) y el proceso de producción los usa con los modelos compilados `detector.nb` y `w600k_mbf-uint8-v1.nb` validados en hardware NPU real.
 
 ## La unidad systemd
 
@@ -404,7 +404,7 @@ Notas:
 - `TimeoutStopSec=30`: la salida ordenada necesita margen (el bucle puede estar en una recarga de la galería o en una captura), y 30 s lo dan.
 - `RestartPreventExitStatus=78`: el código 78 (`EX_CONFIG`) es el de los errores de configuración (faltan los modelos `.nb`, el `.nb` no encaja con el código, el archivo de configuración no es válido, falta una variable de entorno). Son fallos de configuración, no del proceso: sin esta línea systemd lo relanzaría cada 5 s para siempre y llenaría el journal.
 - Endurecimiento del núcleo (`LimitCORE=0` para no dejar volcados de core y `UMask=0077` para que los archivos que cree el servicio solo los vea su usuario): está decidido, pero todavía no está en la unidad. Queda pendiente.
-- Sin los modelos `.nb`, el proceso no arranca: avisa por stderr y sale con el código 78. Es lo esperado hasta que existan (ver "Lo que falta"). Con `--dry-run` en el `ExecStart` se puede verificar el cableado sin modelos.
+- Sin los modelos `.nb`, el proceso no arranca: avisa por stderr y sale con el código 78 (los modelos ya compilados deben residir en `/opt/autolist/models/`). Con `--dry-run` en el `ExecStart` se puede verificar el cableado sin invocar la NPU.
 
 ## Las herramientas de prueba
 

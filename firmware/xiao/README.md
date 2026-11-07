@@ -79,7 +79,7 @@ La cámara del Sense (OV3660, o el OV5640 de las placas más nuevas) la maneja e
 
 | Cabecera | Qué es |
 |---|---|
-| `X-Captura-TS` | Epoch en segundos del reloj del **borde** (la XIAO no tiene reloj confiable: el RTC está en la Orange Pi) |
+| `X-Captura-TS` | Epoch en segundos del reloj del **borde** (la XIAO no tiene reloj confiable; la Orange Pi sincroniza su hora por red mediante NTP con systemd-timesyncd) |
 | `X-Captura-Nonce` | Entero aleatorio de 64 bits, en decimal |
 | `X-Captura-HMAC` | 64 caracteres hex en minúscula |
 

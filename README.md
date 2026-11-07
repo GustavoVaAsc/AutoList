@@ -85,7 +85,7 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 | Entregable | Estado | Evidencia |
 |---|---|---|
 | Especificación del proyecto | Hecho | [`docs/HIGH-LEVEL-PLAN.md`](docs/HIGH-LEVEL-PLAN.md) |
-| Exposición | Hecho | |
+| Exposición | Hecho | Presentación presencial en clase |
 | Repositorio y estructura | Hecho | `orangepi/`, `nodered/`, `herramientas/` y guías para agentes (`AGENTS.md`) |
 
 ### 4 nov: Primer avance
@@ -148,7 +148,7 @@ Las fechas tentativas salen del [plan, sección 12.1](docs/HIGH-LEVEL-PLAN.md#12
 
 ## Próximos pasos
 
-El 4 nov, después de la presentación de avances, se hicieron las compras, salvo el INA219, que aún falta. Ya tenemos la Orange Pi, la pantalla y la XIAO con su cámara; el servo, el PIR, el MOSFET y la tira LED de 12 V se compraron ese día, y sin el INA219 no avanza la lectura de energía de la XIAO.
+El 4 nov se adquirieron el servo, el PIR, el MOSFET y la tira LED de 12 V, sumándose a la Orange Pi, la pantalla y la XIAO Sense con cámara. La integración de mediciones de energía permanece en espera de la compra del sensor INA219.
 
 Con la inferencia NPU (`detector.nb` y `w600k_mbf-uint8-v1.nb`), la galería y el pase de lista punto a punto ya validados en la Orange Pi ([`docs/RESULTADOS-PRUEBAS.md`](docs/RESULTADOS-PRUEBAS.md)), el siguiente paso clave es integrar la captura física desde la cámara de la XIAO ESP32S3 Sense (`/capture` real) en sustitución de `camara_falsa`. A su vez, los sensores y actuadores de campo (servo, LEDs y tira) esperan su conexión física y validación en placa, y la lectura de energía, a la compra y conexión del INA219. Dependencias completas: [sección 12.3](docs/HIGH-LEVEL-PLAN.md#123-dependencias-entre-tareas).
 

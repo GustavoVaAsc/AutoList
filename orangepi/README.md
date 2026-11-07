@@ -400,7 +400,7 @@ curl -sk -u profesor -H 'X-Pase-Lista: 1' -H 'Content-Type: text/csv; charset=ut
 
 ### Registro del rostro y retiro del consentimiento
 
-Cuatro endpoints del flujo `Registro` de `nodered/flows/flows.json`. El contrato completo (códigos, cuerpos y cómo avanza la inscripción) está en el [plan, sección 6.7](../docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript); aquí, cómo probarlos. Los que cambian datos llevan `X-Pase-Lista: 1` (sin ella, 403, ver [Autenticación](#autenticación)). **Para probar usa solo cuentas de prueba** (las `99900xxxx` de la importación): el registro escribe el consentimiento y, si llega un embedding, el rostro. Sin el servicio de visión corriendo en la placa, un registro queda en `esperando_vision` y se cancela solo a los 5 minutos.
+Cuatro endpoints del flujo `Registro` de `nodered/flows/flows.json`. El contrato completo (códigos, cuerpos y cómo avanza la inscripción) está en el [plan, sección 6.7](../docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript); aquí, cómo probarlos. Los que cambian datos llevan `X-Pase-Lista: 1` (sin ella, 403, ver [Autenticación](#autenticación)). **Para verificar la API usa solo cuentas del rango sintético** (las `99900xxxx` de la importación): el registro escribe el consentimiento y, si llega un embedding, el rostro. Sin el servicio de visión corriendo en la placa, un registro queda en `esperando_vision` y se cancela solo a los 5 minutos.
 
 ```bash
 # Progreso del registro (solo lectura; sin ningún registro: "abierto": false y "estado": "sin_registro")
@@ -617,8 +617,8 @@ No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: No
 | Pendiente | Estado en el repo |
 |---|---|
 | Sesiones y reporte CSV | Hecho (pestaña `Sesiones`, `nodered/reporte_csv.py`) y verificado en la placa el 5 nov con `5.0.9-19` (`orangepi/AGENTS.md`, pasos 27 a 33, 35 y 36; `02-roles.sh` aplicado). Falta el paso 34: pulsar "Reiniciar pantalla" en el editor. |
-| Pase de lista en Node-RED | Hecho (pestaña `Pase de lista`, imagen `5.0.9-20`); los caminos que no registran asistencia se verificaron en la placa el 5 nov (`orangepi/AGENTS.md`, pasos 37 a 42); el camino `reconocido` → asistencia es el paso 43, pendiente. La lista y el "último registro" de la pantalla, el marcado manual (`marcar`) y el reenvío de `modo: "prueba"` al frontend siguen pendientes. |
-| `GALERIA_TOKEN` | Node-RED lo recibe por el compose. `GET /api/galeria` solo acepta el encabezado `X-Galeria-Token`; solo Node-RED y el servicio de visión tienen el token. Falta copiarlo a `/etc/pase-lista/vision.env` y verificarlo en la placa. |
+| Pase de lista en Node-RED | Hecho (pestaña `Pase de lista`, imagen `5.0.9-20`); verificado de punta a punta en la placa el 6 nov con la NPU (reconocido con retardo y asistencia registrada en Postgres, documentado en `docs/RESULTADOS-PRUEBAS.md`). La lista y el "último registro" de la pantalla, el marcado manual (`marcar`) y el reenvío de `modo: "prueba"` al frontend siguen pendientes. |
+| `GALERIA_TOKEN` | Node-RED lo recibe por el compose. `GET /api/galeria` solo acepta el encabezado `X-Galeria-Token`; configurado y validado en la placa entre Node-RED y el servicio de visión en `/etc/pase-lista/vision.env`. |
 
 #### Sin fecha (sin decidir)
 
@@ -642,7 +642,7 @@ Retirar el consentimiento de un alumno borra su embedding de la base al instante
 
 Si el acceso pudo llegar al host, revisar también `POSTGRES_PASSWORD` y la cuenta de Portainer.
 
-## Next steps
+## Próximos pasos
 
 - Para el diseño del sistema y los tópicos MQTT, ver [docs/HIGH-LEVEL-PLAN.md](../docs/HIGH-LEVEL-PLAN.md), sección 7.
 - Para el esquema de la base de datos, ver `orangepi/sql/schema.sql`.
