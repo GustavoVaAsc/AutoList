@@ -82,8 +82,6 @@ El siguiente diagrama ilustra el flujo de extremo a extremo ejecutado durante la
 
 ![Flujo de Pruebas de Integración Punto a Punto](docs/diagramas/flujo-pruebas.png)
 
-*El diagrama fuente en formato editable se encuentra en [flujo-pruebas.excalidraw](file:///home/orangepi/work-gus/docs/diagramas/flujo-pruebas.excalidraw), generado y validado con la herramienta hand-drawn diagrams.*
-
 ---
 
 ## 4. Ejecución Detallada del Flujo de Pruebas

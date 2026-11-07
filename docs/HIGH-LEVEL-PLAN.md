@@ -57,12 +57,12 @@ El pase de lista manual consume tiempo de clase y es propenso a errores. El proy
 
 ![Arquitectura del sistema](diagramas/arquitectura-sistema.png)
 
-Los diagramas de este documento están en `diagramas/`. Cada uno tiene su fuente editable `.excalidraw`, que se abre en [excalidraw.com](https://excalidraw.com), y su exportación en `.png`.
+Los diagramas de este documento están en `diagramas/`.
 
 | Capa | Dispositivo | Responsabilidad |
 |---|---|---|
 | Campo | XIAO ESP32S3 | Fotos bajo demanda (HTTP); PIR e INA219 (MQTT); servo, LEDs RGB, buzzer y MOSFET de la tira LED de 12 V (MQTT) |
-| Edge | Orange Pi Zero 3W | Servicio de visión (NPU, systemd), Docker (Mosquitto, Node-RED, Postgres con pgvector y Portainer), pantalla ILI9341, RTC DS3231, frontend web (servido por Node-RED) |
+| Edge | Orange Pi Zero 3W | Servicio de visión (NPU, systemd), Docker (Mosquitto, Node-RED, Postgres con pgvector y Portainer), pantalla ILI9341, frontend web (servido por Node-RED) |
 | Administración | Navegador de la laptop del profesor | Frontend web de registro de alumnos; la laptop solo abre el navegador |
 
 **Protocolos:**
@@ -202,7 +202,7 @@ El registro tiene dos partes: primero se da de alta al alumno en la lista maestr
 
 ### 6.5 Pantalla ILI9341 (`orangepi/pantalla`, Python, táctil XPT2046)
 
-- Programa Python ejecutado en el host por systemd. La pantalla y el táctil XPT2046 comparten el bus SPI, con dos líneas CS distintas, y el RTC DS3231 va por I²C: el proceso necesita permisos de `spi`, `gpio` e `i2c`. La pantalla (interfaz y programa Python) la mantiene Yordi, junto con el frontend; el hardware de la pantalla (overlays de SPI, unidad systemd y RTC DS3231) lo mantiene Arnau.
+- Programa Python ejecutado en el host por systemd. La pantalla y el táctil XPT2046 comparten el bus SPI, con dos líneas CS distintas: el proceso necesita permisos de `spi` y `gpio` (el RTC DS3231 por I²C se descartó porque la Orange Pi cuenta con conexión de red y hora sincronizada por NTP). La pantalla (interfaz y programa Python) la mantiene Yordi, junto con el frontend; el hardware de la pantalla (overlays de SPI y unidad systemd) lo mantiene Arnau.
 
 | Pantalla | Contenido |
 |---|---|
@@ -212,7 +212,7 @@ El registro tiene dos partes: primero se da de alta al alumno en la lista maestr
 
 La pantalla conserva los botones "Abrir puerta" y "Probar luz LED" porque el PDF exige el flujo inverso, de la pantalla hasta el actuador. El control completo del servo, los LEDs y el buzzer vive además en el frontend web, que ya tiene la sesión y el registro. Las vistas de imagen y de sistema quedan fuera de la pantalla: esa información vive en la pestaña de métricas del frontend.
 
-Estado (5 nov): el menú base con las tres vistas, el táctil XPT2046 calibrado y el cliente MQTT están validados en la placa con la pantalla física conectada (`orangepi/pantalla/README.md`). El táctil responde fluidamente con la calibración medida fijada en `CONFIG`, las tres vistas se despliegan y los botones responden. "Iniciar sesión" y "Terminar" interactúan con Node-RED (creó y cerró sesión con reporte CSV comprobado) y el reinicio por MQTT cierra limpio. La Guía de registro se validó con mensajes simulados de visión. Falta la prueba bajo systemd con la unidad instalada. Lista, "último registro" y contador de presentes muestran "sin datos" hasta que exista su fuente: el flujo de pase de lista de Node-RED ya guarda las asistencias (hecho en el repo), pero la pantalla no tiene cómo recibirlas, porque eso necesita un tópico nuevo y un cambio de ACL, que quedan pendientes. El flujo de sesiones publica `aula/sesion/estado` (verificado en la placa el 5 nov).
+Estado (6 nov): el menú base con las tres vistas, el táctil XPT2046 calibrado y el cliente MQTT están validados en la placa con la pantalla física conectada (`orangepi/pantalla/README.md`). El 6 nov se validó punto a punto con inferencia NPU y pase de lista real ([`docs/RESULTADOS-PRUEBAS.md`](RESULTADOS-PRUEBAS.md)): la pantalla reflejó el estado del alumno enrolado en verde, desplegó el aviso de bienvenida con estatus `retardo` al identificarlo, incrementó el contador de presentes en vivo, y el botón táctil "Terminar sesión" concluyó la sesión y generó `sesion-20.csv`. Falta únicamente la prueba bajo systemd y verificar la interacción de actuadores ("Abrir puerta" y "Probar luz LED") con la XIAO física en campo.
 
 ### 6.6 Almacenamiento y gráficas (en la Orange Pi)
 - Postgres con la imagen `pgvector/pgvector`: alumnos, sesiones, asistencias e intentos, más la tabla `metricas_energia` con las lecturas del INA219, las latencias y la temperatura del SoC.
@@ -429,7 +429,7 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
 | Orange Pi Zero 3W 4 GB + microSD | Edge | Inferencia, Docker, pantalla |
 | XIAO ESP32S3 | Campo | Cámara (sensor OV3660, hasta 2048×1536), PIR, INA219 y actuadores |
 | ILI9341 con táctil XPT2046 | Edge (SPI) | Interfaz |
-| RTC DS3231 (rescatado) | Edge (I²C) | Hora confiable si no hay NTP |
+| RTC DS3231 (descartado) | Edge (I²C) | Descartado: la placa cuenta con conexión de red y sincronización NTP |
 | PIR HC-SR501 | XIAO | Disparo de captura |
 | INA219 | XIAO (I²C) | Potencia del sistema, en serie con la entrada de 12 V |
 | Servo SG90 o MG90S + capacitor de 470 µF | XIAO | Puerta simulada |
@@ -493,7 +493,7 @@ Es una consulta ad hoc: `$1` es el embedding recién calculado y `$2` la cuenta 
   reporte_csv.py         programa de Python del reporte CSV (lo ejecuta el nodo exec; la imagen lo copia a /etc/nodered); sus pruebas están en pruebas/test_reporte_csv.py
 /web                     frontend de registro (Vite + React + TypeScript)
 /herramientas            enrolamiento por lote (experimentos), calibración LFW y plantillas
-  alumnos_grupo_1.csv    plantilla CSV con 10 alumnos de prueba del grupo 1 en formato escolar (Apellidos, Nombre(s))
+  alumnos_grupo_1.csv    plantilla CSV con la lista de 10 alumnos del grupo 1 en formato escolar (Apellidos, Nombre(s))
   simular_energia.sh     publica lecturas simuladas de energía en aula/camara/energia
 /docs                    diagramas, mediciones, consentimiento, reporte
 ```
@@ -517,7 +517,7 @@ El trabajo se reparte en tres carriles: **visión y campo** (Gustavo), **hardwar
 |---|---|---|---|---|
 | **28 oct** | Proyecto y planeación | Especificación y exposición | — | Repo y estructura |
 | **4 nov** | Primer avance | NPU verificada en la imagen oficial de Orange Pi (hecho: `vipcore` 1.13.0, `vpm_run` a 2.76 ms); adaptadores reales de MQTT y HTTP, proceso de producción y unidad systemd del servicio de visión | Overlays de SPI (`ls /dev/spidev*`) y unidad systemd de la pantalla (hecho: `/dev/spidev3.0` y `/dev/spidev3.1`; `orangepi-pantalla.service`) | Compose de la Orange Pi (Mosquitto, Node-RED, Postgres, Portainer); esquema de Postgres; arranque del esqueleto del frontend; ACL de Mosquitto y usuarios por rol; autenticación de la API en Node-RED (`httpNodeMiddleware`) y `GALERIA_TOKEN`; API de alumnos e importación de CSV |
-| **11 nov** | Segundo avance | Toolchain Pegasus en la PC y modelo de la NPU convertido a `.nb`; detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; orquestación luz–captura; XIAO (la placa y su cámara ya están; las compras se hicieron el 4 nov salvo el INA219, del que depende la lectura de energía): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | Lista de compras; RTC DS3231 e integración del hardware de la pantalla; prueba de la unidad systemd con la pantalla conectada | Flujos de pase de lista (hecho en el repo; verificación completa en la placa cuando la visión publique resultados reales) y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; esqueleto del frontend con datos de prueba del grupo 1 en Postgres (10 alumnos en formato escolar Apellidos, Nombre(s), plantilla en `herramientas/alumnos_grupo_1.csv`); menú base de la pantalla (sesión, lista y guía de registro; validado en la placa con la pantalla física el 5 nov, táctil calibrado, falta bajo systemd con la unidad instalada); guía de conversión a `.nb` y landmarks de RetinaFace en repo (`orangepi/vision/conversion/`); ingesta a `metricas_energia` y primer gráfico de energía con el INA219; MOSFET y tira LED de 12 V (firmware de la tira y etapa de potencia, antes de Gustavo; en curso) |
+| **11 nov** | Segundo avance | Toolchain Pegasus en la PC y modelo de la NPU convertido a `.nb`; detección, alineación y embedding en la NPU; galería; publicación del resultado; orden de enrolar con captura de 5 poses; orquestación luz–captura; XIAO (la placa y su cámara ya están; las compras se hicieron el 4 nov salvo el INA219, del que depende la lectura de energía): `/capture`, PIR e INA219 por MQTT, y servo y LEDs por MQTT; pruebas unitarias; prueba temprana: servo moviéndose mientras la cámara captura (valida el reparto de canales LEDC y que el servo no frena la captura) | Lista de compras; RTC DS3231 descartado (sincronización horaria vía NTP); prueba de la unidad systemd con la pantalla conectada | Flujos de pase de lista (hecho en el repo; verificación completa en la placa cuando la visión publique resultados reales) y de sesiones; reinicio de la pantalla por MQTT y nodo `exec` del reporte CSV; esqueleto del frontend con la lista de 10 alumnos del grupo 1 en Postgres en formato escolar Apellidos, Nombre(s) (plantilla en `herramientas/alumnos_grupo_1.csv`); menú base de la pantalla (sesión, lista y guía de registro; validado en la placa con la pantalla física el 5 nov, táctil calibrado, falta bajo systemd con la unidad instalada); guía de conversión a `.nb` y landmarks de RetinaFace en repo (`orangepi/vision/conversion/`); ingesta a `metricas_energia` y primer gráfico de energía con el INA219; MOSFET y tira LED de 12 V (firmware de la tira y etapa de potencia, antes de Gustavo; en curso) |
 | **18 nov** | Tercer avance | Filtro de calidad y mejora de imagen; validaciones y chequeo antifraude del registro; E1–E5; umbral con LFW | — | Frontend de registro completo, con la pestaña de Métricas y Asistencia; pantalla completa con sus 3 vistas y los botones de control |
 | **25 nov** | Entrega | Integración, video y reporte de costo y consumo; comprimido de código | | Pulido del frontend y de la pantalla; E6 |
 
@@ -530,7 +530,7 @@ La fila del 25 de noviembre es de integración: el comprimido de código lo apor
 | Persona | Rol | Módulos |
 |---|---|---|
 | **Gustavo** | Visión y campo | Servicio de visión en la NPU, conversión de modelos, mejora de imagen, antifraude, firmware de la XIAO (cámara, sensores y actuadores, salvo la tira LED), pruebas unitarias, E1–E5, calibración LFW |
-| **Arnau** | Hardware de la pantalla y documentación | Overlays de SPI, unidad systemd de la pantalla (`orangepi-pantalla.service`), RTC DS3231, y documentación y presentaciones del proyecto (con la colaboración de todo el equipo) |
+| **Arnau** | Hardware de la pantalla y documentación | Overlays de SPI, unidad systemd de la pantalla (`orangepi-pantalla.service`), y documentación y presentaciones del proyecto (con la colaboración de todo el equipo; RTC DS3231 descartado) |
 | **Yordi** | Edge, datos, frontend y pantalla | Docker, Node-RED, Postgres, API HTTP, frontend web de registro con las gráficas de métricas y asistencia, pantalla ILI9341 (3 vistas y botones), firmware de la tira LED de 12 V y su etapa de potencia, E6 |
 
 El firmware de la tira LED y su etapa de potencia eran de Gustavo y pasaron a Yordi, con el acuerdo de Gustavo. El resto del firmware de la XIAO (cámara, PIR, INA219, servo, LEDs RGB y buzzer) sigue siendo de Gustavo, que además flashea la placa.
@@ -593,10 +593,10 @@ La Orange Pi Zero 3W y la XIAO ESP32S3 son equipos físicos únicos, así que la
 | Suplantación con foto | Detección de vida por parpadeo entre cuadros (opcional) o documentarlo como limitación |
 | Privacidad de datos biométricos | Consentimiento con fecha en la base (formato en `docs/consentimiento.md`, pendiente), solo embeddings de alumnos registrados (los intentos no reconocidos no guardan embedding), sin fotos en el repo. Retirar el consentimiento borra el embedding de la base al instante y de los archivos de datos tras el autovacuum; los bytes pueden sobrevivir en el WAL o en espacio libre hasta que se sobrescriban, y cualquier `pg_dump` o copia del volumen los conserva |
 | El nodo `exec` ejecuta comandos dentro del contenedor de Node-RED | El editor exige `adminAuth`; el comando del único `exec` es fijo (`/usr/bin/python3 -I -B /etc/nodered/reporte_csv.py`, sin shell) y solo recibe el `id` entero que devolvió la base, validado en cuatro puntos; el programa vive en `/etc/nodered`, de root, y no lo puede reescribir el contenedor; las filas pasan por un archivo, no por la línea de comandos, y el CSV neutraliza la inyección de fórmulas. Un `iniciar` a menos de 5 s del anterior se descarta, los reportes pasan por una cola de 1 cada 2 s (arranca a lo más un `python3` cada 2 s; si uno tarda más, se solapan hasta el límite de 30 s del `exec`) y el contenedor tiene `pids_limit: 256`. **Riesgo que queda:** no hay purga de reportes (`/data/reportes`) ni de `sesiones`; cada sesión suma un CSV de unos pocos KB y una fila en `sesiones`, así que a la larga la microSD se llenaría; la limpieza es manual (`orangepi/README.md`, Reportes CSV). **Riesgo aceptado:** la reconciliación de `aula/sesion/estado` al conectar al broker corre en una ventana de milisegundos en la que un `iniciar` o `terminar` en vuelo podría publicar un estado anterior un instante; no se arregla porque solo corre al conectar |
-| La pantalla necesita SPI, GPIO e I²C | Corre en el host como servicio systemd, fuera de Docker; Node-RED la reinicia por MQTT: el script de Python hace `sys.exit(0)` y systemd, con `Restart=always`, lo levanta |
+| La pantalla necesita SPI y GPIO | Corre en el host como servicio systemd, fuera de Docker; Node-RED la reinicia por MQTT: el script de Python hace `sys.exit(0)` y systemd, con `Restart=always`, lo levanta (sin I²C al descartar el RTC DS3231) |
 | Todo el stack concentrado en la Orange Pi (4 GB de RAM) | Vigilar la RAM con las métricas del SoC y dejar margen para el servicio de visión y el frontend; a cambio, la laptop dejó de ser una dependencia del sistema |
 | Los overlays de SPI no exponen `/dev/spidev*` | Verificar en la semana 1 con `ls /dev/spidev*`; los overlays se activan con `orangepi-config` o en `/boot/orangepiEnv.txt` |
-| Hora incorrecta sin internet | RTC DS3231 en la Orange Pi |
+| Hora incorrecta sin internet | Sincronización NTP en la Orange Pi (conexión de red/internet garantizada en el aula; RTC DS3231 descartado) |
 | El frontend queda en la ruta crítica del registro | Probar los endpoints desde la semana 2 con un cliente HTTP; la herramienta de enrolamiento por lote sirve de respaldo |
 | Acceso no autorizado a datos biométricos desde el frontend | Autenticación de la API y `GALERIA_TOKEN` en Node-RED (desplegada y verificada en la placa, 2 nov) y ACL en Mosquitto (activa desde la v0.5 del contrato); los embeddings nunca llegan al navegador y el consentimiento solo lo escribe el endpoint HTTP del profesor. No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`. No se registra a ninguna persona real sin esa autenticación verificada en la placa y sin las ACL de Mosquitto (4 nov); antes de eso, solo identidades de prueba (LFW y miembros del equipo). |
 | Un registro dispara el pase de lista | El servicio de visión ignora el PIR mientras hay un registro en curso |
