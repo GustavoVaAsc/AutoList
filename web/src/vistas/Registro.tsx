@@ -15,8 +15,10 @@ import { MarcaAsistencia } from '../componentes/MarcaAsistencia'
 import { Pagina } from '../componentes/Pagina'
 import { ProgresoRegistro } from '../componentes/ProgresoRegistro'
 import { SeleccionAlumno } from '../componentes/SeleccionAlumno'
+import { VistaPrevia } from '../componentes/VistaPrevia'
 import { formatearHora } from '../formato'
 import { useAlumnos } from '../useAlumnos'
+import { usePrevia } from '../usePrevia'
 import { useRegistro } from '../useRegistro'
 
 // La lista de alumnos de esta vista se consulta como en Alumnos (10 s): el rostro cambia
@@ -58,6 +60,10 @@ function AvisoDeAccion({ aviso, alCerrar }: { aviso: AvisoRegistro; alCerrar: ()
 export function Registro() {
   const alumnos = useAlumnos(CONSULTA_ALUMNOS_S * 1000)
   const registro = useRegistro()
+  // La vista previa de la cámara se consulta cada segundo, como el progreso del
+  // registro: es la guía de colocación que el profesor mira mientras el alumno
+  // se acomoda.
+  const previa = usePrevia()
   const { vista } = registro
   const [busqueda, setBusqueda] = useState('')
   // La cuenta elegida y la cuenta para la que se marcó el consentimiento.
@@ -142,6 +148,11 @@ export function Registro() {
               </>
             )}
           </header>
+
+          {/* La vista previa va arriba, antes de la lista y de las poses: es la guía de colocación que se mira mientras el alumno se acomoda. */}
+          <div className="hoja__cuerpo">
+            <VistaPrevia estado={previa} />
+          </div>
 
           {registro.error !== null && (
             <div className="hoja__cuerpo">

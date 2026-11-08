@@ -1936,6 +1936,77 @@ code {
   max-width: 62ch;
 }
 
+/* Vista previa de la cámara: el cuadro a la izquierda, el estado y el aviso a la
+   derecha. Es una guía de colocación, no un dato: el marco es una casilla de
+   papel con su regla y sin sombra, y el cuadro se recorta para no deformarse.
+   En pantallas angostas el texto pasa debajo de la imagen. */
+.previa {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--e-4) var(--e-6);
+}
+
+.previa__marco {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15rem;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid var(--regla);
+  border-radius: var(--r-papel);
+  background: var(--papel2);
+}
+
+.previa__imagen {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.previa__vacia {
+  padding: var(--e-2);
+  font-size: var(--t-caption);
+  color: var(--suave);
+  text-align: center;
+}
+
+.previa__texto {
+  flex: 1 1 20rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--e-2);
+}
+
+.previa__titulo {
+  font-family: var(--serif);
+  font-size: var(--t-seccion);
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.previa__estado {
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.previa__texto p {
+  max-width: 62ch;
+}
+
+/* El aviso de privacidad va aparte, con su regla: es la letra pequeña del panel. */
+.previa__aviso {
+  max-width: 62ch;
+  padding-top: var(--e-2);
+  border-top: 1px solid var(--regla);
+}
+
 /* Las cinco poses: renglones de la hoja. El estado va en palabras, con su marca. */
 .tabla--poses tbody > tr > * {
   vertical-align: middle;
