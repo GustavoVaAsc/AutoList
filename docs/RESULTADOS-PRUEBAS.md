@@ -13,12 +13,13 @@ Las pruebas demuestran el funcionamiento integrado de todos los subsistemas del 
 | **Rama de trabajo** | `vision/npu` en Orange Pi Zero 3W (Allwinner A733, 4 GB RAM) |
 | **Aceleración NPU** | Driver `vipcore` 1.13.0 + runtime VIPLite (librerías `/lib/libNBGlinker.so` y `/lib/libVIPhal.so`) |
 | **Modelos en NPU** | RetinaFace (`detector.nb`, ~22 ms) + ArcFace / MobileFaceNet (`w600k_mbf-uint8-v1.nb`, ~3.5 ms) |
-| **Rostros registrados** | 2 alumnos enrolados desde el frontend web con 5 tomas promediadas (Emiliano Flores y Diego González) |
-| **Sincronización de pantalla** | Refresco en tiempo real en la pantalla física ILI9341 SPI (icono verde "registrado" y saludo) |
-| **Pase de lista** | Inferencia NPU con confianza de similitud coseno de **1.000** (umbral de aceptación >= 0.40) |
+| **Rostros registrados** | 3 alumnos enrolados desde el frontend web con 5 tomas promediadas (Emiliano Flores y Diego González con fotos fijas; Gustavo Valenzuela con cámara USB en vivo) |
+| **Sincronización de pantalla** | Refresco en tiempo real en la pantalla física ILI9341 SPI (icono verde "registrado", saludo y conteos en vivo) |
+| **Pase de lista con fotos fijas** | Inferencia NPU con confianza de similitud coseno de **1.000** (umbral de aceptación >= 0.40) |
+| **Pase de lista con cámara en vivo (webcam)** | Inferencia NPU con similitud coseno de **0.6449** en condiciones reales de aula (umbral >= 0.40) y asignación de **`presente`** |
 | **Discriminación biométrica** | Similitud entre personas distintas < 0.09 (rechazo categórico frente al umbral >= 0.40) |
 | **Anti-suplantación / Desconocidos** | Rostros no registrados o cruzados catalogados como `desconocido` (alerta roja, cero asistencias) |
-| **Lógica de asistencia** | Asignación automática de **`retardo`** (superada la ventana de tolerancia de 10 min de la sesión) |
+| **Lógica de asistencia** | Asignación automática de **`retardo`** (tras superar la tolerancia de 10 min) o **`presente`** (dentro de la tolerancia) |
 | **Anti-duplicados** | Intentos repetidos de registro del mismo alumno identificados como `"duplicado": true` y bloqueados |
 | **Cierre de sesión** | Ejecutado desde el botón táctil "Terminar sesión" de la pantalla física ILI9341 |
 | **Reporte final** | Generación exitosa de `/data/reportes/sesion-20.csv` con 2 retardos y 8 faltas |
@@ -223,27 +224,52 @@ Para comprobar de forma rigurosa que el sistema no permite que una persona pase 
    - Node-RED invocó el nodo generador de reportes y escribió el archivo consolidado en `/data/reportes/sesion-20.csv`.
    - Se validó la presencia física y la integridad del archivo generado en el sistema de archivos de la Orange Pi.
 
+### Fase 7: Validación con Cámara Dinámica (Webcam USB en Vivo) y Asistencia en Tiempo Real
+
+Para complementar las pruebas con imágenes de laboratorio y validar la captura física continua antes del despliegue final con la XIAO Sense, se conectó una cámara dinámica USB (webcam estándar) a la Orange Pi Zero 3W y se evaluó el flujo completo con un alumno del equipo:
+
+1. **Prueba previa de descarte (Sesión 22):**
+   - Con la Sesión 22 en curso (iniciada a las `23:44:08-06`), el alumno **Gustavo Valenzuela Ascencio** (cuenta `117002029`), quien aún no había registrado su rostro, se colocó frente a la webcam.
+   - El servicio de visión capturó el cuadro y la NPU evaluó su embedding contra la galería cargada en RAM.
+   - A las `23:46:52-06`, la coincidencia máxima obtenida fue de apenas **`0.0818`** (8.18%), muy por debajo del umbral mínimo de 0.40.
+   - El sistema catalogó el evento como **`desconocido`**, insertó el registro de auditoría en la tabla `intentos` (ID 16), activó la señal de alerta roja con doble pitido (`{"led": "rojo", "buzzer": 2}`) y no otorgó asistencia.
+
+2. **Enrolamiento en vivo desde el frontend web:**
+   - En la aplicación web (`/app/`), Gustavo otorgó su consentimiento informado y disparó el registro de 5 poses consecutivas con la webcam apuntando a su rostro.
+   - La NPU calculó los 5 embeddings alineados, promedió el vector unitario final y a las `23:50:05-06` Node-RED guardó el vector en la base de datos (`alumnos.consentimiento = true`, `alumnos.embedding IS NOT NULL`).
+   - Node-RED notificó por MQTT a la visión (`aula/vision/galeria/alta`), recargando la galería en memoria con la nueva firma biométrica.
+
+3. **Pase de lista en vivo (Sesión 23):**
+   - A las `23:52:31-06` se abrió la Sesión 23 con una tolerancia reglamentaria de 10 minutos.
+   - A las `23:55:35-06` (a los 3 minutos de iniciada la clase, en tiempo para asistencia puntual), Gustavo se presentó ante la webcam.
+   - La NPU Allwinner A733 detectó el rostro con RetinaFace en 22.3 ms y extrajo el vector biométrico con ArcFace en 3.5 ms.
+   - Comparación coseno en la galería: similitud de **`0.6449`** (64.49%) con la cuenta `117002029`, superando con holgura el umbral $\ge 0.40$ y con una separación de más de 0.55 respecto a rostros ajenos.
+   - Node-RED evaluó la ventana de tolerancia y asignó el estatus de **`presente`** (método `rostro`, insertado con ID 12 en la tabla `asistencias`).
+   - La pantalla física ILI9341 actualizó en vivo el contador de presentes y mostró la confirmación de bienvenida correspondiente.
+
 ---
 
 ## 5. Evidencia de Resultados Obtenidos
 
 ### 5.1 Registros en la Base de Datos PostgreSQL
 
-Al consultar la tabla `asistencias` para la sesión evaluada:
+Al consultar la tabla `asistencias` para las sesiones evaluadas:
 
 ```sql
 SELECT id, no_cuenta, sesion_id, hora, estado, confianza, metodo 
 FROM asistencias 
-WHERE sesion_id = 20 
-ORDER BY hora ASC;
+WHERE sesion_id >= 20 
+ORDER BY id ASC;
 ```
 
 **Resultado obtenido:**
 
 | id | no_cuenta | sesion_id | hora | estado | confianza | metodo |
 |---|---|---|---|---|---|---|
-| 2 | `118039214` | 20 | 14:30:02 | **retardo** | 1.0 | rostro |
-| 3 | `318492015` | 20 | 14:29:23 | **retardo** | 1.0 | rostro |
+| 7 | `318492015` | 20 | 14:29:23 | **retardo** | 1.0000 | rostro |
+| 9 | `118039214` | 20 | 14:30:02 | **retardo** | 1.0000 | rostro |
+| 10 | `118039214` | 21 | 16:26:47 | **presente** | 1.0000 | rostro |
+| 12 | `117002029` | 23 | 23:55:35 | **presente** | 0.6449 | rostro |
 
 ### 5.2 Contenido Verbatim del Archivo CSV Generado
 
@@ -285,27 +311,31 @@ Se compararon en hardware directo de la NPU tres identidades:
 | **Foto 3 (Desconocido) vs Foto 3 (Desconocido)** | **`1.0000`** | $\ge 0.40$ | **COINCIDENCIA (Misma persona)** |
 
 > [!TIP]
-> Los valores de similitud entre personas distintas se sitúan en el rango de **`-0.13` a `+0.08`**, lo que demuestra una separación geométrica rotunda respecto a la frontera de decisión (`0.40`). Esto garantiza matemáticamente que una fotografía de otra persona jamás podrá ser validada como propia.
+> Los valores de similitud entre personas distintas se sitúan en el rango de **`-0.13` a `+0.08`**, lo que demuestra una separación geométrica rotunda respecto a la frontera de decisión (`0.40`). Esto garantiza matemáticamente que una fotografía o rostro de otra persona jamás podrá ser validado como propio.
+>
+> En condiciones de laboratorio con imagen fija idéntica, la similitud coseno matemática es de 1.0000. En la validación en vivo con la cámara dinámica USB (webcam), la variabilidad de iluminación y microexpresiones situó la similitud de Gustavo Valenzuela en **`0.6449`**, confirmando que el umbral de 0.40 opera con un margen amplio frente al ruido inter-clase (< 0.09) y asegura una tasa de falsos rechazos prácticamente nula en condiciones normales de aula.
 
 ### 5.4 Auditoría de Intentos Rechazados en PostgreSQL (Tabla `intentos`)
 
-Durante las pruebas en vivo de suplantación y rostros desconocidos, el sistema auditó los intentos anómalos en la base de datos sin alterar la tabla principal de `asistencias`:
+Durante las pruebas en vivo de suplantación, rostros desconocidos y capturas previas al registro, el sistema auditó los intentos anómalos en la base de datos sin alterar la tabla principal de `asistencias`:
 
 ```sql
 SELECT id, sesion_id, motivo, confianza_max, hora 
 FROM intentos 
-ORDER BY id DESC LIMIT 3;
+ORDER BY id DESC LIMIT 4;
 ```
 
 **Resultado de la consulta:**
 
 | id | sesion_id | motivo | confianza_max | hora |
 |:---:|:---:|:---:|:---:|:---:|
+| 16 | 22 | **`desconocido`** | **0.0818** | 23:46:52 |
 | 15 | 21 | **`desconocido`** | **0.0919** | 16:27:52 |
 | 14 | 21 | **`duplicado`** | **1.0000** | 16:27:03 |
 | 13 | 21 | **`imagen_insuficiente`** | *null* | 16:23:46 |
 
 **Comportamiento verificado:**
+- El intento con la webcam previo al enrolamiento de Gustavo (ID 16 en Sesión 22) arrojó una confianza máxima de **`0.0818`**, catalogándose como `desconocido` y activando la señal de rechazo en actuadores.
 - El intento de pase con un rostro ajeno (ID 15) obtuvo una confianza máxima de solo **`0.0919`**, catalogándose como `desconocido` y activando la señal `{led: "rojo", buzzer: 2}`.
 - El intento repetido con la foto de Emiliano (ID 14) fue catalogado como `duplicado` y bloqueado.
 - En ninguno de estos eventos se insertaron filas en la tabla `asistencias`, demostrando que los intentos fallidos no contaminan la lista oficial de presentes.

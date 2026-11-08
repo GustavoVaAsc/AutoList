@@ -617,7 +617,7 @@ No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: No
 | Pendiente | Estado en el repo |
 |---|---|
 | Sesiones y reporte CSV | Hecho (pestaña `Sesiones`, `nodered/reporte_csv.py`) y verificado en la placa el 5 nov con `5.0.9-19` (`orangepi/AGENTS.md`, pasos 27 a 33, 35 y 36; `02-roles.sh` aplicado). Falta el paso 34: pulsar "Reiniciar pantalla" en el editor. |
-| Pase de lista en Node-RED | Hecho (pestaña `Pase de lista`, imagen `5.0.9-20`); verificado de punta a punta en la placa el 6 nov con la NPU (reconocido con retardo y asistencia registrada en Postgres, documentado en `docs/RESULTADOS-PRUEBAS.md`). La lista y el "último registro" de la pantalla, el marcado manual (`marcar`) y el reenvío de `modo: "prueba"` al frontend siguen pendientes. |
+| Pase de lista en Node-RED | Hecho (pestaña `Pase de lista`, imagen `5.0.9-21`); verificado de punta a punta en la placa el 6 nov con la NPU (reconocido con fotos fijas y con cámara dinámica USB en vivo, retardo y presente registrados en Postgres, documentado en `docs/RESULTADOS-PRUEBAS.md`). La lista y el "último registro" de la pantalla ya se sincronizan en vivo mediante `aula/sesion/asistencia` (contrato v0.13). El marcado manual (`marcar`) y el reenvío de `modo: "prueba"` al frontend siguen pendientes. |
 | `GALERIA_TOKEN` | Node-RED lo recibe por el compose. `GET /api/galeria` solo acepta el encabezado `X-Galeria-Token`; configurado y validado en la placa entre Node-RED y el servicio de visión en `/etc/pase-lista/vision.env`. |
 
 #### Sin fecha (sin decidir)
