@@ -10,7 +10,7 @@ const CONSULTA_MS = 1000
 export interface EstadoPrevia {
   /** Lo que respondió la placa en la última consulta; null mientras no llegue nada. */
   resultado: ResultadoPrevia | null
-  /** Dirección del cuadro recibido (una URL de objeto); null si no hay cuadro. */
+  /** URL de datos del cuadro recibido; null si no hay cuadro. */
   imagenUrl: string | null
   /** Vuelve a consultar ya y retoma el sondeo; abre otra vez el diálogo de credenciales si hace falta. */
   reintentar: () => void
@@ -22,32 +22,19 @@ export interface EstadoPrevia {
  * con la pestaña oculta (y consulta de inmediato al volver) y se detiene con un 401
  * (reintentar solo reabriría el diálogo de credenciales del navegador).
  *
- * La imagen no se guarda: cada cuadro recibido sustituye al anterior y se
- * revoca su URL de objeto. Al desmontar la vista se aborta la petición en vuelo
- * y se revoca la URL que quedara.
+ * La imagen no se guarda: cada cuadro recibido sustituye al anterior en el estado.
+ * Su URL es de datos (`data:`), no de objeto (`blob:`), porque la CSP de `/app/`
+ * (`img-src 'self' data:`) no admite el esquema `blob:`; por eso no hay ninguna
+ * URL que revocar. Al desmontar la vista se aborta la petición en vuelo.
  */
 export function usePrevia(): EstadoPrevia {
   const [resultado, setResultado] = useState<ResultadoPrevia | null>(null)
   const [imagenUrl, setImagenUrl] = useState<string | null>(null)
   const [intento, setIntento] = useState(0)
-  const urlActual = useRef<string | null>(null)
   // Vale mientras ninguna consulta de este montaje haya salido bien: la primera
   // espera al diálogo de credenciales del navegador y necesita más margen.
   const primeraPendiente = useRef(true)
   const reintentar = useCallback(() => setIntento((n) => n + 1), [])
-
-  // La URL que quede al desmontar se revoca aquí, y no en el efecto del sondeo:
-  // ese efecto también se repite al reintentar, y revocar entonces dejaría sin
-  // imagen lo que se está viendo.
-  useEffect(
-    () => () => {
-      if (urlActual.current !== null) {
-        URL.revokeObjectURL(urlActual.current)
-        urlActual.current = null
-      }
-    },
-    [],
-  )
 
   useEffect(() => {
     const cancelacion = new AbortController()
@@ -59,7 +46,7 @@ export function usePrevia(): EstadoPrevia {
       enCurso = true
       sinSesion = false
       try {
-        const { resultado: nuevo, imagen } = await pedirPrevia(
+        const { resultado: nuevo, imagenUrl } = await pedirPrevia(
           cancelacion.signal,
           primeraPendiente.current ? TIEMPO_INICIAL_MS : undefined,
         )
@@ -72,13 +59,8 @@ export function usePrevia(): EstadoPrevia {
           primeraPendiente.current = false
         }
         sinSesion = nuevo.tipo === 'sin-sesion'
-        if (imagen !== null) {
-          const url = URL.createObjectURL(imagen)
-          if (urlActual.current !== null) {
-            URL.revokeObjectURL(urlActual.current)
-          }
-          urlActual.current = url
-          setImagenUrl(url)
+        if (imagenUrl !== null) {
+          setImagenUrl(imagenUrl)
         }
         setResultado(nuevo)
       } catch (error) {

@@ -1,16 +1,18 @@
 // Pruebas de la lógica pura de la vista previa de la cámara (src/api/previa.ts):
 // interpretación de la respuesta del borde (200, 401, 404, 503 y el resto), los
-// textos de cada estado, el formateo de la antigüedad del cuadro y el aviso de
-// privacidad.
+// textos de cada estado, el formateo de la antigüedad del cuadro, la conversión
+// del cuadro a URL de datos y el aviso de privacidad.
 // Sin dependencias, desde la raíz del repo: node --test web/pruebas/*.test.js
 // (Node 22.18 o posterior carga el .ts quitando los tipos).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   AVISO_PRIVACIDAD,
+  base64DeBytes,
   formatearEdadCuadro,
   interpretarPrevia,
   textoEstadoPrevia,
+  urlDeImagen,
 } from '../src/api/previa.ts'
 
 // ------------------------------------------------------------ interpretarPrevia
@@ -101,6 +103,46 @@ test('formatearEdadCuadro: segundos, y minutos con los segundos que falten', () 
 
 test('formatearEdadCuadro: sin antigüedad del borde no hay texto', () => {
   assert.equal(formatearEdadCuadro(null), null)
+})
+
+// ------------------------------------------------------------ base64DeBytes
+
+test('base64DeBytes: los bytes de "hola" se codifican en base64', () => {
+  const bytes = new Uint8Array([104, 111, 108, 97])
+  assert.equal(base64DeBytes(bytes), 'aG9sYQ==')
+})
+
+test('base64DeBytes: un cuadro grande no revienta la pila y sale completo', () => {
+  // Un cuadro de la cámara pesa cientos de KiB: la codificación va troceada,
+  // porque `String.fromCharCode(...bytes)` sobre el arreglo entero revienta la
+  // pila de llamadas.
+  const bytes = new Uint8Array(300_000)
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = (i * 31) % 256
+  }
+  const base64 = base64DeBytes(bytes)
+  assert.equal(base64, Buffer.from(bytes).toString('base64'))
+  assert.equal(base64.length, 4 * Math.ceil(bytes.length / 3))
+})
+
+// ------------------------------------------------------------ urlDeImagen
+
+test('urlDeImagen: arma la URL de datos del cuadro con su tipo de medio', () => {
+  const bytes = new Uint8Array([104, 111, 108, 97])
+  assert.equal(urlDeImagen(bytes, 'image/jpeg'), 'data:image/jpeg;base64,aG9sYQ==')
+})
+
+test('urlDeImagen: el tipo de medio se toma sin sus parámetros', () => {
+  const bytes = new Uint8Array([104, 111, 108, 97])
+  assert.equal(urlDeImagen(bytes, 'image/jpeg; charset=binary'), 'data:image/jpeg;base64,aG9sYQ==')
+})
+
+test('urlDeImagen: una respuesta que no es imagen no arma ninguna URL', () => {
+  const bytes = new Uint8Array([104, 111, 108, 97])
+  assert.equal(urlDeImagen(bytes, 'text/html; charset=utf-8'), null)
+  assert.equal(urlDeImagen(bytes, 'application/json'), null)
+  assert.equal(urlDeImagen(bytes, null), null)
+  assert.equal(urlDeImagen(bytes, ''), null)
 })
 
 // ------------------------------------------------------------ aviso de privacidad

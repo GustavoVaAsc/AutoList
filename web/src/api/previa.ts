@@ -5,6 +5,10 @@
 // milisegundos. Aquí vive el fetch y la interpretación de la respuesta; lo que la
 // vista dice sale de textoEstadoPrevia.
 //
+// El cuadro se devuelve como URL de datos (`data:image/jpeg;base64,...`), no como
+// URL de objeto (`blob:`): la CSP de `/app/` es `img-src 'self' data:` y no
+// admite el esquema `blob:`. La conversión está en urlDeImagen.
+//
 // Sin imports: la prueba `node --test web/pruebas/*.test.js` carga este archivo
 // directo (Node 22.18 o posterior quita los tipos), como alumnosRespuestas.ts y
 // asistenciaRespuestas.ts. Por eso lleva su propia clase de error.
@@ -129,8 +133,58 @@ export const AVISO_PRIVACIDAD =
 
 export interface ConsultaPrevia {
   resultado: ResultadoPrevia
-  /** El cuadro recibido; null si no hay cuadro. */
-  imagen: Blob | null
+  /** URL de datos del cuadro recibido; null si no hay cuadro. */
+  imagenUrl: string | null
+}
+
+/**
+ * Tamaño de los trozos en que se codifica el cuadro. Un cuadro de la cámara
+ * pesa cientos de KiB y `String.fromCharCode(...bytes)` sobre el arreglo entero
+ * revienta la pila de llamadas; troceando, no hay problema.
+ */
+const TAMANO_TROZO = 8192
+
+/**
+ * Base64 de los bytes de la imagen. Es puro y no toca el DOM: la prueba
+ * `node --test web/pruebas/*.test.js` lo puede comprobar en Node.
+ */
+export function base64DeBytes(bytes: Uint8Array): string {
+  let binario = ''
+  for (let inicio = 0; inicio < bytes.length; inicio += TAMANO_TROZO) {
+    binario += String.fromCharCode(...bytes.subarray(inicio, inicio + TAMANO_TROZO))
+  }
+  return btoa(binario)
+}
+
+/**
+ * El tipo de medio de la cabecera `Content-Type`, sin sus parámetros:
+ * `image/jpeg; charset=binary` es `image/jpeg`. Null si la cabecera no trae
+ * tipo.
+ */
+export function tipoMedio(contentType: string | null): string | null {
+  if (contentType === null) {
+    return null
+  }
+  const tipo = contentType.split(';')[0]?.trim().toLowerCase() ?? ''
+  return tipo === '' ? null : tipo
+}
+
+/**
+ * URL de datos del cuadro (`data:image/jpeg;base64,...`), o null si la
+ * respuesta no es una imagen.
+ *
+ * Se usa una URL de datos y no una URL de objeto (`blob:`) porque la CSP que
+ * fija Node-RED para `/app/` es `img-src 'self' data:`, y `'self'` no cubre el
+ * esquema `blob:`: el navegador bloquearía el cuadro y el panel nunca lo
+ * mostraría. Ampliar la CSP para admitir `blob:` (o `https:`) dejaría pasar
+ * imágenes de terceros en el panel del profesor.
+ */
+export function urlDeImagen(bytes: Uint8Array, contentType: string | null): string | null {
+  const tipo = tipoMedio(contentType)
+  if (tipo === null || !tipo.startsWith('image/')) {
+    return null
+  }
+  return `data:${tipo};base64,${base64DeBytes(bytes)}`
 }
 
 /**
@@ -169,13 +223,17 @@ export async function pedirPrevia(
     }
     const resultado = interpretarPrevia(respuesta.status, respuesta.headers.get('X-Edad-Cuadro'))
     if (resultado.tipo !== 'cuadro') {
-      return { resultado, imagen: null }
+      return { resultado, imagenUrl: null }
     }
-    const tipo = respuesta.headers.get('Content-Type') ?? ''
-    if (!tipo.startsWith('image/')) {
+    // El cuadro se pasa a una URL de datos (no a una URL de objeto): es lo que
+    // la CSP de `/app/` admite. La validación del tipo va en urlDeImagen, que
+    // devuelve null si la respuesta no es una imagen.
+    const bytes = new Uint8Array(await respuesta.arrayBuffer())
+    const imagenUrl = urlDeImagen(bytes, respuesta.headers.get('Content-Type'))
+    if (imagenUrl === null) {
       throw new ErrorPrevia('La API respondió con algo que no es una imagen. Avisa al responsable del borde.')
     }
-    return { resultado, imagen: await respuesta.blob() }
+    return { resultado, imagenUrl }
   } finally {
     clearTimeout(temporizador)
     senal.removeEventListener('abort', alCancelar)
