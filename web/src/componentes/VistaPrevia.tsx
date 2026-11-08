@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { AVISO_PRIVACIDAD, formatearEdadCuadro, textoEstadoPrevia } from '../api/previa'
+import type { ResultadoPrevia } from '../api/previa'
 import type { EstadoPrevia } from '../usePrevia'
 
 interface Props {
@@ -16,20 +18,28 @@ interface Props {
  */
 export function VistaPrevia({ estado }: Props) {
   const { resultado, imagenUrl, reintentar } = estado
-  const { titulo, detalle } = textoEstadoPrevia(resultado)
-  const hayCuadro = resultado !== null && resultado.tipo === 'cuadro'
+  // Cuadro que el navegador no pudo cargar (cuerpo vacío o JPEG corrupto). Se
+  // guarda la URL y no un booleano, para que el cuadro siguiente, que llega con
+  // otra URL de datos, vuelva a mostrarse solo.
+  const [urlFallida, setUrlFallida] = useState<string | null>(null)
+  const falloCarga = imagenUrl !== null && imagenUrl === urlFallida
+  // Si el cuadro no se pudo cargar, el panel lo dice como si no hubiera cuadro:
+  // no enseña la antigüedad de un cuadro que no está en la pantalla.
+  const estadoVisible: ResultadoPrevia | null = falloCarga ? { tipo: 'sin-cuadro' } : resultado
+  const { titulo, detalle } = textoEstadoPrevia(estadoVisible)
+  const hayCuadro = estadoVisible !== null && estadoVisible.tipo === 'cuadro'
   // La imagen solo se muestra mientras el estado dice que hay cuadro: si el borde
   // falla, el marco queda vacío en vez de mostrar un cuadro viejo sin decir
   // cuántos segundos tiene.
   const imagen = hayCuadro ? imagenUrl : null
-  const edad = hayCuadro ? formatearEdadCuadro(resultado.edadMs) : null
-  const sinSesion = resultado !== null && resultado.tipo === 'sin-sesion'
+  const edad = hayCuadro ? formatearEdadCuadro(estadoVisible.edadMs) : null
+  const sinSesion = estadoVisible !== null && estadoVisible.tipo === 'sin-sesion'
 
   return (
     <div className="previa">
       <div className="previa__marco">
         {imagen !== null ? (
-          <img className="previa__imagen" src={imagen} alt="Cuadro en vivo de la cámara del aula, para ver la colocación del alumno" />
+          <img className="previa__imagen" src={imagen} alt="Cuadro en vivo de la cámara del aula, para ver la colocación del alumno" onError={() => setUrlFallida(imagen)} />
         ) : (
           <p className="previa__vacia">Sin cuadro</p>
         )}

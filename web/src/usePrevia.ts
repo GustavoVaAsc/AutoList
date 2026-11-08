@@ -22,7 +22,8 @@ export interface EstadoPrevia {
  * con la pestaña oculta (y consulta de inmediato al volver) y se detiene con un 401
  * (reintentar solo reabriría el diálogo de credenciales del navegador).
  *
- * La imagen no se guarda: cada cuadro recibido sustituye al anterior en el estado.
+ * La imagen no se guarda: cada cuadro recibido sustituye al anterior en el
+ * estado y, si la respuesta no trae cuadro, la imagen se suelta.
  * Su URL es de datos (`data:`), no de objeto (`blob:`), porque la CSP de `/app/`
  * (`img-src 'self' data:`) no admite el esquema `blob:`; por eso no hay ninguna
  * URL que revocar. Al desmontar la vista se aborta la petición en vuelo.
@@ -59,15 +60,18 @@ export function usePrevia(): EstadoPrevia {
           primeraPendiente.current = false
         }
         sinSesion = nuevo.tipo === 'sin-sesion'
-        if (imagenUrl !== null) {
-          setImagenUrl(imagenUrl)
-        }
+        // Cada cuadro sustituye al anterior en el estado: si la respuesta no
+        // trae cuadro, se limpia la imagen, para que los bytes del rostro de un
+        // alumno no queden vivos en el estado sin ningún uso.
+        setImagenUrl(imagenUrl)
         setResultado(nuevo)
       } catch (error) {
         if (cancelacion.signal.aborted) {
           return
         }
         const mensaje = error instanceof ErrorPrevia ? error.message : 'Ocurrió un error inesperado al consultar la API.'
+        // Un fallo tampoco es un cuadro: la imagen anterior se suelta.
+        setImagenUrl(null)
         setResultado({ tipo: 'error', mensaje })
       } finally {
         enCurso = false

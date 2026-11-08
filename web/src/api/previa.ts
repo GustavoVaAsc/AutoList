@@ -138,9 +138,11 @@ export interface ConsultaPrevia {
 }
 
 /**
- * Tamaño de los trozos en que se codifica el cuadro. Un cuadro de la cámara
- * pesa cientos de KiB y `String.fromCharCode(...bytes)` sobre el arreglo entero
- * revienta la pila de llamadas; troceando, no hay problema.
+ * Tamaño de los trozos en que se codifica el cuadro. El cuadro de la vista
+ * previa es pequeño (`res=HVGA`: 480×320, calidad 20, unos 6 KB), pero trocear
+ * no depende de ese tamaño: si el cuadro fuera mayor,
+ * `String.fromCharCode(...bytes)` sobre el arreglo entero revienta la pila de
+ * llamadas.
  */
 const TAMANO_TROZO = 8192
 
@@ -178,10 +180,14 @@ export function tipoMedio(contentType: string | null): string | null {
  * esquema `blob:`: el navegador bloquearía el cuadro y el panel nunca lo
  * mostraría. Ampliar la CSP para admitir `blob:` (o `https:`) dejaría pasar
  * imágenes de terceros en el panel del profesor.
+ *
+ * Solo se acepta `image/jpeg`, que es lo que dice el contrato y lo que responde
+ * el borde: un `image/svg+xml` se pintaría como vector en el marco del
+ * profesor. Un cuerpo vacío tampoco arma URL: no hay cuadro que mostrar.
  */
 export function urlDeImagen(bytes: Uint8Array, contentType: string | null): string | null {
   const tipo = tipoMedio(contentType)
-  if (tipo === null || !tipo.startsWith('image/')) {
+  if (tipo !== 'image/jpeg' || bytes.length === 0) {
     return null
   }
   return `data:${tipo};base64,${base64DeBytes(bytes)}`
@@ -189,8 +195,9 @@ export function urlDeImagen(bytes: Uint8Array, contentType: string | null): stri
 
 /**
  * Pide el último cuadro al borde. Cancela con `senal` y también si la API tarda
- * más de `tiempoMaximoMs`; la primera consulta admite más (TIEMPO_INICIAL_MS de
- * energia.ts), porque espera el diálogo de usuario y contraseña del navegador.
+ * más de `tiempoMaximoMs` (en cualquier punto, incluida la lectura del cuerpo);
+ * la primera consulta admite más (TIEMPO_INICIAL_MS de energia.ts), porque
+ * espera el diálogo de usuario y contraseña del navegador.
  *
  * La petición no lleva credenciales: el navegador es del mismo origen y reenvía
  * las que ya tiene cacheadas. `cache: 'no-store'` evita que el navegador sirva
@@ -228,7 +235,24 @@ export async function pedirPrevia(
     // El cuadro se pasa a una URL de datos (no a una URL de objeto): es lo que
     // la CSP de `/app/` admite. La validación del tipo va en urlDeImagen, que
     // devuelve null si la respuesta no es una imagen.
-    const bytes = new Uint8Array(await respuesta.arrayBuffer())
+    // La lectura del cuerpo va dentro del try: el plazo de espera también la
+    // cubre, y si se vence mientras se lee, el AbortError tiene que traducirse
+    // igual que el de la petición, para que el panel diga que la API tardó y no
+    // que salió un error inesperado.
+    let bytes: Uint8Array
+    try {
+      bytes = new Uint8Array(await respuesta.arrayBuffer())
+    } catch (error) {
+      if (senal.aborted) {
+        throw error
+      }
+      throw controlador.signal.aborted
+        ? tiempoAgotado()
+        : new ErrorPrevia('No se pudo leer el cuadro de la cámara. Revisa la conexión con la placa.')
+    }
+    if (bytes.length === 0) {
+      throw new ErrorPrevia('La API respondió con un cuadro vacío. Avisa al responsable del borde.')
+    }
     const imagenUrl = urlDeImagen(bytes, respuesta.headers.get('Content-Type'))
     if (imagenUrl === null) {
       throw new ErrorPrevia('La API respondió con algo que no es una imagen. Avisa al responsable del borde.')
