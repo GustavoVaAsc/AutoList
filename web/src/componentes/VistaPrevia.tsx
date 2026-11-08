@@ -1,6 +1,5 @@
 import { useState } from 'react'
-import { AVISO_PRIVACIDAD, formatearEdadCuadro, textoEstadoPrevia } from '../api/previa'
-import type { ResultadoPrevia } from '../api/previa'
+import { AVISO_PRIVACIDAD, estadoDelPanel, formatearEdadCuadro, textoEstadoPrevia } from '../api/previa'
 import type { EstadoPrevia } from '../usePrevia'
 
 interface Props {
@@ -17,17 +16,27 @@ interface Props {
  * pantalla la leería sin parar.
  */
 export function VistaPrevia({ estado }: Props) {
-  const { resultado, imagenUrl, reintentar } = estado
-  // Cuadro que el navegador no pudo cargar (cuerpo vacío o JPEG corrupto). Se
-  // guarda la URL y no un booleano, para que el cuadro siguiente, que llega con
-  // otra URL de datos, vuelva a mostrarse solo.
-  const [urlFallida, setUrlFallida] = useState<string | null>(null)
-  const falloCarga = imagenUrl !== null && imagenUrl === urlFallida
-  // Si el cuadro no se pudo cargar, el panel lo dice como si no hubiera cuadro:
-  // no enseña la antigüedad de un cuadro que no está en la pantalla.
-  const estadoVisible: ResultadoPrevia | null = falloCarga ? { tipo: 'sin-cuadro' } : resultado
+  const { resultado, imagenUrl, numeroCuadro, reintentar } = estado
+  // Cuadro que el navegador no pudo pintar (cuerpo vacío o JPEG corrupto). Se
+  // guarda el número del cuadro y no su URL: la URL de datos es el contenido del
+  // cuadro en base64, así que dos cuadros con los mismos bytes (una escena
+  // quieta) tienen la misma URL, y un fallo guardado por URL alcanzaría al
+  // cuadro siguiente y dejaría el panel en «Sin cuadro» para siempre.
+  const [numeroFallido, setNumeroFallido] = useState<number | null>(null)
+  // El fallo vale para el cuadro que falló. Al llegar un cuadro nuevo, el
+  // anterior ya no dice nada: el marcador se limpia en el render (no en un
+  // efecto) para que el fallo de un cuadro no se lleve al siguiente.
+  const [cuadroDelMarcador, setCuadroDelMarcador] = useState<number | null>(null)
+  if (cuadroDelMarcador !== numeroCuadro) {
+    setCuadroDelMarcador(numeroCuadro)
+    setNumeroFallido(null)
+  }
+  // El panel dice la verdad: si el cuadro llegó pero el navegador no pudo
+  // mostrarlo, es un estado propio, no «no hay cuadro».
+  const estadoVisible = estadoDelPanel(resultado, numeroCuadro, numeroFallido)
   const { titulo, detalle } = textoEstadoPrevia(estadoVisible)
   const hayCuadro = estadoVisible !== null && estadoVisible.tipo === 'cuadro'
+  const noPintado = estadoVisible !== null && estadoVisible.tipo === 'cuadro-no-pintado'
   // La imagen solo se muestra mientras el estado dice que hay cuadro: si el borde
   // falla, el marco queda vacío en vez de mostrar un cuadro viejo sin decir
   // cuántos segundos tiene.
@@ -39,9 +48,18 @@ export function VistaPrevia({ estado }: Props) {
     <div className="previa">
       <div className="previa__marco">
         {imagen !== null ? (
-          <img className="previa__imagen" src={imagen} alt="Cuadro en vivo de la cámara del aula, para ver la colocación del alumno" onError={() => setUrlFallida(imagen)} />
+          // La clave es el número del cuadro: así el navegador monta la imagen
+          // de nuevo en cada cuadro y reintenta la carga aunque los bytes sean
+          // los mismos que los del cuadro anterior.
+          <img
+            key={numeroCuadro}
+            className="previa__imagen"
+            src={imagen}
+            alt="Cuadro en vivo de la cámara del aula, para ver la colocación del alumno"
+            onError={() => setNumeroFallido(numeroCuadro)}
+          />
         ) : (
-          <p className="previa__vacia">Sin cuadro</p>
+          <p className="previa__vacia">{noPintado ? 'No se pudo mostrar el cuadro' : 'Sin cuadro'}</p>
         )}
       </div>
       <div className="previa__texto">

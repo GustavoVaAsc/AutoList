@@ -1,8 +1,10 @@
 // Pruebas de la lógica pura de la vista previa de la cámara (src/api/previa.ts):
 // interpretación de la respuesta del borde (200, 401, 404, 503 y el resto), los
 // textos de cada estado, el formateo de la antigüedad del cuadro, la conversión
-// del cuadro a URL de datos, el plazo de espera de la consulta y el aviso de
-// privacidad (que tiene que ser el mismo en el código y en DESIGN.md).
+// del cuadro a URL de datos, el estado del panel cuando el navegador no puede
+// pintar un cuadro, el tope de bytes del cuerpo de la respuesta, el plazo de
+// espera de la consulta y el aviso de privacidad (que tiene que ser el mismo en
+// el código y en DESIGN.md).
 // Sin dependencias, desde la raíz del repo: node --test web/pruebas/*.test.js
 // (Node 22.18 o posterior carga el .ts quitando los tipos).
 import test from 'node:test'
@@ -11,7 +13,9 @@ import { readFileSync } from 'node:fs'
 import {
   AVISO_PRIVACIDAD,
   ErrorPrevia,
+  TAMANO_MAXIMO_CUERPO,
   base64DeBytes,
+  estadoDelPanel,
   formatearEdadCuadro,
   interpretarPrevia,
   pedirPrevia,
@@ -95,6 +99,48 @@ test('textoEstadoPrevia: el fallo muestra el mensaje que llegó de la API', () =
   const { titulo, detalle } = textoEstadoPrevia(interpretarPrevia(502, null))
   assert.equal(titulo, 'No se pudo consultar la vista previa')
   assert.match(detalle, /502/)
+})
+
+test('textoEstadoPrevia: el cuadro que el navegador no pudo pintar tiene su propio texto', () => {
+  const { titulo, detalle } = textoEstadoPrevia({ tipo: 'cuadro-no-pintado' })
+  assert.equal(titulo, 'No se pudo mostrar el cuadro')
+  assert.match(detalle, /recarga la página/i)
+  // No es lo que se dice cuando no hay cuadro: el cuadro sí llegó.
+  const sinCuadro = textoEstadoPrevia(interpretarPrevia(503, null))
+  assert.notEqual(sinCuadro.titulo, titulo)
+  assert.notEqual(sinCuadro.detalle, detalle)
+})
+
+// ------------------------------------------------------------ estadoDelPanel
+
+test('estadoDelPanel: sin fallo, el panel muestra lo que respondió el borde', () => {
+  const resultado = interpretarPrevia(200, '1000')
+  assert.deepEqual(estadoDelPanel(resultado, 1, null), resultado)
+})
+
+test('estadoDelPanel: un cuadro que el navegador no pudo pintar es un estado propio', () => {
+  const estado = estadoDelPanel(interpretarPrevia(200, '1000'), 3, 3)
+  assert.equal(estado.tipo, 'cuadro-no-pintado')
+})
+
+test('estadoDelPanel: dos cuadros con los mismos bytes no se confunden', () => {
+  // La URL de datos es el cuadro en base64: con la escena quieta, el cuadro
+  // siguiente tiene los mismos bytes y la misma URL. El fallo se guarda con el
+  // número del cuadro, así que el del primero no alcanza al segundo (si se
+  // guardara la URL, el panel se quedaría en «Sin cuadro» para siempre).
+  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0])
+  const url = urlDeImagen(bytes, 'image/jpeg')
+  const resultado = interpretarPrevia(200, '1000')
+  assert.equal(estadoDelPanel(resultado, 1, 1).tipo, 'cuadro-no-pintado')
+  assert.equal(urlDeImagen(bytes, 'image/jpeg'), url)
+  assert.equal(estadoDelPanel(resultado, 2, 1).tipo, 'cuadro')
+})
+
+test('estadoDelPanel: un fallo de un cuadro anterior no tapa un error del borde', () => {
+  // Si la consulta falla, el fallo de un cuadro anterior ya no dice nada: se
+  // muestra el error de la consulta, no el del navegador.
+  const error = interpretarPrevia(502, null)
+  assert.equal(estadoDelPanel(error, 2, 1).tipo, 'error')
 })
 
 // ------------------------------------------------------------ formatearEdadCuadro
@@ -232,13 +278,15 @@ test('pedirPrevia: si el plazo se vence leyendo el cuerpo, dice que la API tard�
   // El plazo de espera también cubre la lectura del cuerpo: si se vence
   // mientras se lee, el error tiene que ser el de tiempo agotado y no el
   // AbortError crudo (que el panel mostraría como error inesperado).
+  const flujo = new ReadableStream({
+    start(controlador) {
+      setTimeout(() => controlador.error(new DOMException('La operación fue abortada.', 'AbortError')), 30)
+    },
+  })
   const respuesta = {
     status: 200,
     headers: new Headers({ 'Content-Type': 'image/jpeg' }),
-    arrayBuffer: () =>
-      new Promise((_resolver, rechazar) => {
-        setTimeout(() => rechazar(new DOMException('La operación fue abortada.', 'AbortError')), 30)
-      }),
+    body: flujo,
   }
   await conFetch(async () => respuesta, async () => {
     await assert.rejects(
@@ -246,6 +294,95 @@ test('pedirPrevia: si el plazo se vence leyendo el cuerpo, dice que la API tard�
       (error) => error instanceof ErrorPrevia && /tardó demasiado/.test(error.message),
     )
   })
+})
+
+test('pedirPrevia: la petición no sigue redirecciones', async () => {
+  // Con la política por defecto, un 3xx haría que el navegador del profesor
+  // pidiera a un destino elegido por quien lo mande. El borde nunca redirige.
+  let opciones = null
+  await conFetch(
+    async (_ruta, opcionesRecibidas) => {
+      opciones = opcionesRecibidas
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg' },
+      })
+    },
+    () => pedirPrevia(new AbortController().signal),
+  )
+  assert.equal(opciones.redirect, 'error')
+  assert.equal(opciones.cache, 'no-store')
+})
+
+test('pedirPrevia: un 3xx se trata como error, no como un cuadro', async () => {
+  // Con `redirect: 'error'` el navegador ni siquiera sigue la redirección; si
+  // un 3xx llega de todos modos al cliente, es un error del borde, no un cuadro.
+  const consulta = await conFetch(
+    async () =>
+      new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), {
+        status: 302,
+        headers: { 'Content-Type': 'image/jpeg' },
+      }),
+    () => pedirPrevia(new AbortController().signal),
+  )
+  assert.equal(consulta.resultado.tipo, 'error')
+  assert.match(consulta.resultado.mensaje, /302/)
+  assert.equal(consulta.imagenUrl, null)
+})
+
+test('pedirPrevia: un Content-Length por encima del tope se rechaza sin leer el cuerpo', async () => {
+  await conFetch(
+    async () =>
+      new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), {
+        status: 200,
+        headers: {
+          'Content-Type': 'image/jpeg',
+          'Content-Length': String(TAMANO_MAXIMO_CUERPO + 1),
+        },
+      }),
+    async () => {
+      await assert.rejects(
+        () => pedirPrevia(new AbortController().signal),
+        (error) => error instanceof ErrorPrevia && /demasiado grande/.test(error.message),
+      )
+    },
+  )
+})
+
+test('pedirPrevia: sin Content-Length, el cuerpo se lee con tope y se corta al pasarse', async () => {
+  // La cabecera no está: el tamaño se comprueba leyendo el flujo, con un tope
+  // explícito, para que un cuerpo enorme no quede entero en memoria.
+  const trozo = new Uint8Array(600 * 1024)
+  const flujo = new ReadableStream({
+    start(controlador) {
+      controlador.enqueue(trozo)
+      controlador.enqueue(trozo)
+      controlador.close()
+    },
+  })
+  await conFetch(
+    async () => new Response(flujo, { status: 200, headers: { 'Content-Type': 'image/jpeg' } }),
+    async () => {
+      await assert.rejects(
+        () => pedirPrevia(new AbortController().signal),
+        (error) => error instanceof ErrorPrevia && /demasiado grande/.test(error.message),
+      )
+    },
+  )
+})
+
+test('pedirPrevia: un Content-Length dentro del tope deja pasar el cuadro', async () => {
+  const cuerpo = new Uint8Array([0xff, 0xd8, 0xff, 0xe0])
+  const consulta = await conFetch(
+    async () =>
+      new Response(cuerpo, {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg', 'Content-Length': String(cuerpo.length) },
+      }),
+    () => pedirPrevia(new AbortController().signal),
+  )
+  assert.equal(consulta.resultado.tipo, 'cuadro')
+  assert.match(consulta.imagenUrl, /^data:image\/jpeg;base64,/)
 })
 
 // ------------------------------------------------------------ aviso de privacidad

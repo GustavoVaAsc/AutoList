@@ -35,6 +35,15 @@ export type ResultadoPrevia =
   | { tipo: 'sin-sesion' }
   | { tipo: 'error'; mensaje: string }
 
+/**
+ * Estado del panel: lo que respondió el borde o el fallo del navegador al
+ * pintar el cuadro. `cuadro-no-pintado` no lo produce la API: lo arma el
+ * panel cuando el cuadro llegó pero el navegador no pudo mostrarlo. Va aparte
+ * de `sin-cuadro` porque son cosas distintas: ahí no hay cuadro; aquí el cuadro
+ * llegó y el que no puede mostrarlo es el navegador.
+ */
+export type EstadoPanelPrevia = ResultadoPrevia | { tipo: 'cuadro-no-pintado' }
+
 /** La antigüedad que dice la cabecera, en milisegundos; null si no la dice o no se entiende. */
 function leerEdad(encabezado: string | null): number | null {
   if (encabezado === null) {
@@ -77,7 +86,7 @@ export function interpretarPrevia(status: number, edadEncabezado: string | null)
  * Lo que dice el panel, en palabras. El texto lleva el estado; el color no.
  * Un resultado null es la primera consulta, todavía sin respuesta.
  */
-export function textoEstadoPrevia(resultado: ResultadoPrevia | null): { titulo: string; detalle: string } {
+export function textoEstadoPrevia(resultado: EstadoPanelPrevia | null): { titulo: string; detalle: string } {
   if (resultado === null) {
     return {
       titulo: 'Consultando la cámara',
@@ -110,7 +119,37 @@ export function textoEstadoPrevia(resultado: ResultadoPrevia | null): { titulo: 
         titulo: 'No se pudo consultar la vista previa',
         detalle: resultado.mensaje,
       }
+    case 'cuadro-no-pintado':
+      return {
+        titulo: 'No se pudo mostrar el cuadro',
+        detalle: 'El cuadro llegó, pero el navegador no pudo pintarlo. Recarga la página para volver a intentarlo.',
+      }
   }
+}
+
+/**
+ * Estado que muestra el panel, a partir de lo que respondió el borde y del
+ * cuadro que el navegador no pudo pintar.
+ *
+ * El fallo se guarda con el número del cuadro, no con su URL: la URL de datos
+ * es el contenido del cuadro en base64, así que dos cuadros con los mismos
+ * bytes tienen la misma URL (con la escena quieta, el cuadro siguiente es
+ * idéntico). Guardando la URL, el fallo del cuadro anterior seguía valiendo
+ * para el siguiente y el panel se quedaba en «Sin cuadro» para siempre; y el
+ * `onError` de un cuadro podía marcar como fallido al siguiente, porque React
+ * actualiza el manejador al hacer el commit.
+ */
+export function estadoDelPanel(
+  resultado: ResultadoPrevia | null,
+  numeroCuadro: number,
+  numeroFallido: number | null,
+): EstadoPanelPrevia | null {
+  const falloDelCuadroActual =
+    resultado !== null && resultado.tipo === 'cuadro' && numeroFallido !== null && numeroFallido === numeroCuadro
+  if (falloDelCuadroActual) {
+    return { tipo: 'cuadro-no-pintado' }
+  }
+  return resultado
 }
 
 /** "12 s", "2 min 5 s". Null si el borde no dijo la antigüedad del cuadro. */
@@ -194,6 +233,71 @@ export function urlDeImagen(bytes: Uint8Array, contentType: string | null): stri
 }
 
 /**
+ * Tope del cuerpo de la respuesta. El borde acota el cuadro a 512 KiB, así que
+ * 1 MiB es holgado; un cuerpo mayor no es un cuadro, y sin tope el navegador lo
+ * traería entero a memoria (y la conversión a base64 lo copiaría otra vez) una
+ * vez por segundo.
+ */
+export const TAMANO_MAXIMO_CUERPO = 1024 * 1024
+
+/**
+ * Longitud que declara la respuesta, si la declara y se entiende. Null si no
+ * viene la cabecera `Content-Length` o si no es un número: en ese caso el
+ * tamaño se comprueba leyendo el flujo.
+ */
+function longitudDeclarada(encabezado: string | null): number | null {
+  if (encabezado === null) {
+    return null
+  }
+  const valor = Number(encabezado.trim())
+  if (!Number.isFinite(valor) || valor < 0) {
+    return null
+  }
+  return valor
+}
+
+/**
+ * Lee el cuerpo del flujo con un tope de bytes. No se usa `arrayBuffer()`: ese
+ * trae el cuerpo entero sin mirar cuánto es, y un cuerpo grande o malformado
+ * dejaría la pestaña del profesor con el cuerpo y su copia en memoria. Con el
+ * tope, en cuanto se pasa de él se corta el flujo y no se lee el resto.
+ */
+export async function leerCuerpoAcotado(
+  cuerpo: ReadableStream<Uint8Array> | null,
+  tope: number,
+): Promise<Uint8Array> {
+  if (cuerpo === null) {
+    return new Uint8Array(0)
+  }
+  const lector = cuerpo.getReader()
+  const trozos: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await lector.read()
+    if (done) {
+      break
+    }
+    if (value === undefined) {
+      continue
+    }
+    total += value.byteLength
+    if (total > tope) {
+      // Se cancela la lectura: lo que sobra no se trae a memoria.
+      await lector.cancel()
+      throw new ErrorPrevia('La API respondió con un cuadro demasiado grande. Avisa al responsable del borde.')
+    }
+    trozos.push(value)
+  }
+  const bytes = new Uint8Array(total)
+  let inicio = 0
+  for (const trozo of trozos) {
+    bytes.set(trozo, inicio)
+    inicio += trozo.byteLength
+  }
+  return bytes
+}
+
+/**
  * Pide el último cuadro al borde. Cancela con `senal` y también si la API tarda
  * más de `tiempoMaximoMs` (en cualquier punto, incluida la lectura del cuerpo);
  * la primera consulta admite más (TIEMPO_INICIAL_MS de energia.ts), porque
@@ -201,7 +305,9 @@ export function urlDeImagen(bytes: Uint8Array, contentType: string | null): stri
  *
  * La petición no lleva credenciales: el navegador es del mismo origen y reenvía
  * las que ya tiene cacheadas. `cache: 'no-store'` evita que el navegador sirva
- * un cuadro viejo de su caché en lugar del que acaba de llegar.
+ * un cuadro viejo de su caché en lugar del que acaba de llegar. Y
+ * `redirect: 'error'` evita que un 3xx haga que el navegador del profesor pida
+ * a un destino elegido por quien lo mande: el borde nunca redirige.
  */
 export async function pedirPrevia(
   senal: AbortSignal,
@@ -218,6 +324,7 @@ export async function pedirPrevia(
       respuesta = await fetch(RUTA, {
         signal: controlador.signal,
         cache: 'no-store',
+        redirect: 'error',
         headers: { Accept: 'image/jpeg' },
       })
     } catch (error) {
@@ -235,14 +342,25 @@ export async function pedirPrevia(
     // El cuadro se pasa a una URL de datos (no a una URL de objeto): es lo que
     // la CSP de `/app/` admite. La validación del tipo va en urlDeImagen, que
     // devuelve null si la respuesta no es una imagen.
+    // Antes de leer, se mira la cabecera `Content-Length`: si ya se sabe que el
+    // cuerpo es mayor que el tope, no se lee ni un byte de él.
+    const longitud = longitudDeclarada(respuesta.headers.get('Content-Length'))
+    if (longitud !== null && longitud > TAMANO_MAXIMO_CUERPO) {
+      throw new ErrorPrevia('La API respondió con un cuadro demasiado grande. Avisa al responsable del borde.')
+    }
     // La lectura del cuerpo va dentro del try: el plazo de espera también la
     // cubre, y si se vence mientras se lee, el AbortError tiene que traducirse
     // igual que el de la petición, para que el panel diga que la API tardó y no
     // que salió un error inesperado.
     let bytes: Uint8Array
     try {
-      bytes = new Uint8Array(await respuesta.arrayBuffer())
+      bytes = await leerCuerpoAcotado(respuesta.body, TAMANO_MAXIMO_CUERPO)
     } catch (error) {
+      // El rechazo por tamaño es del cliente y lleva su propio mensaje: no es
+      // un fallo de lectura.
+      if (error instanceof ErrorPrevia) {
+        throw error
+      }
       if (senal.aborted) {
         throw error
       }

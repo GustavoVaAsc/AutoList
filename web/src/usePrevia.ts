@@ -12,6 +12,12 @@ export interface EstadoPrevia {
   resultado: ResultadoPrevia | null
   /** URL de datos del cuadro recibido; null si no hay cuadro. */
   imagenUrl: string | null
+  /**
+   * Número del cuadro: uno por cuadro recibido, contando desde 1. Identifica
+   * al cuadro, no su contenido: la URL de datos es el cuadro en base64, así que
+   * dos cuadros con los mismos bytes (una escena quieta) tienen la misma URL.
+   */
+  numeroCuadro: number
   /** Vuelve a consultar ya y retoma el sondeo; abre otra vez el diálogo de credenciales si hace falta. */
   reintentar: () => void
 }
@@ -31,6 +37,10 @@ export interface EstadoPrevia {
 export function usePrevia(): EstadoPrevia {
   const [resultado, setResultado] = useState<ResultadoPrevia | null>(null)
   const [imagenUrl, setImagenUrl] = useState<string | null>(null)
+  // Contador de cuadros recibidos. El panel lo usa para distinguir un cuadro
+  // de otro (y no por su contenido, que con una escena quieta se repite) y
+  // para remontar la imagen en cada cuadro nuevo.
+  const [numeroCuadro, setNumeroCuadro] = useState(0)
   const [intento, setIntento] = useState(0)
   // Vale mientras ninguna consulta de este montaje haya salido bien: la primera
   // espera al diálogo de credenciales del navegador y necesita más margen.
@@ -64,6 +74,12 @@ export function usePrevia(): EstadoPrevia {
         // trae cuadro, se limpia la imagen, para que los bytes del rostro de un
         // alumno no queden vivos en el estado sin ningún uso.
         setImagenUrl(imagenUrl)
+        // Cada cuadro recibido lleva su número, aunque tenga los mismos bytes
+        // que el anterior: con la escena quieta, la URL de datos se repite y
+        // solo el número distingue un cuadro de otro.
+        if (imagenUrl !== null) {
+          setNumeroCuadro((n) => n + 1)
+        }
         setResultado(nuevo)
       } catch (error) {
         if (cancelacion.signal.aborted) {
@@ -105,5 +121,5 @@ export function usePrevia(): EstadoPrevia {
     }
   }, [intento])
 
-  return useMemo(() => ({ resultado, imagenUrl, reintentar }), [resultado, imagenUrl, reintentar])
+  return useMemo(() => ({ resultado, imagenUrl, numeroCuadro, reintentar }), [resultado, imagenUrl, numeroCuadro, reintentar])
 }
