@@ -38,6 +38,29 @@ struct CaptureSettings {
   int settle_ms = 300;
   int http_timeout_ms = 2000;
   std::size_t max_body_bytes = 2u * 1024u * 1024u;
+  // Intervalo minimo entre el inicio de una rafaga y el de la siguiente. La placa limita
+  // el ritmo (4 capturas por ventana de 2000 ms y despues una pausa de 1000 ms), asi que
+  // la siguiente rafaga no puede empezar antes de 3000 ms despues de la primera foto de
+  // la anterior; con el antirrebote del PIR (2 s) dos rafagas seguidas darian 429.
+  int burst_interval_ms = 3000;
+  // Archivo donde el servicio deja el ultimo ts firmado (ts, boot_id, CLOCK_BOOTTIME) para
+  // anclar la primera firma tras un reinicio cuando no hay RTC de hardware (ver
+  // reloj_guardia.hpp). Vacio = no se guarda. El directorio lo crea la unidad systemd
+  // (StateDirectory=autolist).
+  std::string clock_state_file = "/var/lib/autolist/reloj-captura.estado";
+  // Nombre de la variable de entorno con el secreto de la firma HMAC de la captura
+  // (nunca el secreto mismo). Es el mismo valor que lleva la placa (secrets.h).
+  std::string hmac_secret_env = "CAPTURA_HMAC_SECRETO";
+  // "hmac_requerido". Si es true, la peticion de captura tiene que ir firmada: sin un
+  // secreto valido el proceso no arranca (fallar cerrado, salida 78). Con false, un
+  // secreto ausente o invalido solo avisa y la peticion va sin firma; si el secreto
+  // aparece, se firma.
+  //
+  // Sin valor en el archivo (std::nullopt) manda la URL: es true (fallar cerrado), salvo que
+  // el host de captura.url sea de loopback (127.0.0.0/8, ::1 o localhost), que es donde
+  // corre camara_falsa (ignora las cabeceras) y donde no hay una placa real que pida la
+  // firma. Un valor explicito en el archivo siempre manda. --dry-run nunca es fatal.
+  std::optional<bool> hmac_required;
 };
 
 // Bloque "galeria": el endpoint de Node-RED y el token.
@@ -136,6 +159,47 @@ struct ProcessConfig {
   // El mapeo a la configuracion de la maquina de estados.
   ServiceConfig to_service_config() const;
 };
+
+// El placeholder de las plantillas (vision.env.example): un secreto con este valor es un
+// secreto que nadie ha cambiado.
+inline constexpr const char* kSecretoPlaceholder = "cambiar_esta_clave";
+
+// Cualquier secreto que CONTENGA este prefijo se rechaza (cambiar_esta_clave, pero tambien
+// cambiar_esta_clave_larga, el de Portainer): igual de estricto que la placa y que
+// validarSecretosApi de Node-RED, que usa includes.
+inline constexpr const char* kPrefijoPlaceholder = "cambiar_";
+
+// Longitud minima, en caracteres, del secreto de la firma: uno corto se puede adivinar.
+inline constexpr std::size_t kMinLongitudSecreto = 32;
+
+// Minimo de caracteres distintos entre si (como GALERIA_TOKEN en Node-RED): "aaaa...a" de 32
+// caracteres cumple la longitud y no vale nada.
+inline constexpr std::size_t kMinCaracteresDistintos = 8;
+
+// Lo que decide el proceso sobre el secreto de la firma de la captura.
+struct SecretoCaptura {
+  // El secreto listo para firmar; vacio si no hay uno valido (la peticion va sin firma).
+  std::string valor;
+  // true si el proceso no debe arrancar (hmac_requerido y el secreto no sirve).
+  bool fatal = false;
+  // El motivo o el aviso para stderr; vacio si el secreto es valido. Nunca lleva el valor
+  // del secreto, solo el nombre de la variable.
+  std::string mensaje;
+};
+
+// true si el host de la URL es de loopback: 127.0.0.0/8 (cuatro numeros decimales, el primero
+// 127), ::1 (entre corchetes en la URL) o localhost. Cualquier otra cosa, o una URL que no
+// se entiende, es false.
+bool url_es_loopback(const std::string& url);
+
+// Evalua el valor leido del entorno (std::nullopt si la variable no esta). Un secreto
+// sirve si esta presente, no contiene "cambiar_", tiene al menos kMinLongitudSecreto
+// caracteres y al menos kMinCaracteresDistintos distintos. Si no sirve, la politica es de captura.hmac_requerido: fatal, o solo
+// aviso. --dry-run (`dry_run`) nunca es fatal: arranca sin credenciales, como con la
+// contrasena del broker y el token de la galeria.
+SecretoCaptura resolver_secreto_captura(const CaptureSettings& captura,
+                                        const std::optional<std::string>& entorno,
+                                        bool dry_run);
 
 // Analiza el documento JSON de la configuracion. Devuelve false y deja el motivo en
 // `error` si el documento no es valido.

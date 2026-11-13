@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "round": 1,
+  "slug": "camara-xiao-zerotier",
+  "docFile": "docs/reviews/camara-xiao-zerotier/doc.md",
+  "submittedAt": "2026-11-13T18:07:22.698Z",
+  "docHash": "sha256:d366d5be86c8e6e128ba72102ca7ce85eab1801c3fbf5a21d7267f0dbb43a672",
+  "overall": "Solo fija de una vez la arquitectura final de MQTT, si no es feasible que la ESP32 use MQTT directamente creo que incluso para el resto de periféricos es mejor que lo hagamos a través de un puente que esté conectado a ZeroTier.",
+  "comments": [],
+  "answers": [
+    {
+      "id": "topologia-final",
+      "type": "single",
+      "prompt": "En el despliegue final del aula, ¿la Orange Pi y la XIAO van a estar en la misma red local?",
+      "selected": [
+        {
+          "index": 1,
+          "label": "No; la Orange Pi sigue remota y el puente es parte permanente del sistema"
+        }
+      ],
+      "other": "",
+      "text": "",
+      "answered": true
+    },
+    {
+      "id": "mqtt-v1",
+      "type": "single",
+      "prompt": "¿La XIAO queda fuera de MQTT en v1 (modo `SOLO_CAMARA`)?",
+      "selected": [],
+      "other": "Si es una decisión temporal e implica un cambio de código, prefiero que de una vez se conecte todo, para esta prueba únicamente conectaré la cámara, no los demás perifércos.",
+      "text": "",
+      "answered": true
+    },
+    {
+      "id": "umbral-termico",
+      "type": "single",
+      "prompt": "¿Qué umbral térmico usa la placa (lectura interna del ESP32-S3)?",
+      "selected": [
+        {
+          "index": 0,
+          "label": "Aviso a 65 °C, corte a 75 °C, reanudación por debajo de 65 °C (recomendado)"
+        }
+      ],
+      "other": "",
+      "text": "",
+      "answered": true
+    },
+    {
+      "id": "puente-ubicacion",
+      "type": "single",
+      "prompt": "¿Dónde vive `puente_camara` (y `probar_captura`)?",
+      "selected": [
+        {
+          "index": 0,
+          "label": "(a) Proyecto C++ aparte en `herramientas/puente_camara/` (recomendado)"
+        }
+      ],
+      "other": "",
+      "text": "",
+      "answered": true
+    },
+    {
+      "id": "aprobar",
+      "type": "single",
+      "prompt": "Con las respuestas de esta ronda, ¿delego W0 a W3?",
+      "selected": [
+        {
+          "index": 0,
+          "label": "Sí, delegar W0 a W3 (en paralelo donde se pueda)"
+        }
+      ],
+      "other": "",
+      "text": "",
+      "answered": true
+    }
+  ],
+  "mac": "hmac-sha256:553fc70bb464a7e163468425e250fb439fedea37ddfd9ab01b48b2cdabedea2a"
+}

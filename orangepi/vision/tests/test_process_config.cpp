@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -489,4 +490,315 @@ TEST(la_ruta_del_modelo_acepta_un_nombre_que_empieza_por_dos_puntos) {
   CHECK(!vision::nombre_modelo_valido(".."));
   CHECK_THROWS(vision::ruta_modelo("..", raiz), std::invalid_argument);
   CHECK_THROWS(vision::ruta_modelo("../otro", raiz), std::invalid_argument);
+}
+
+// --- El secreto de la firma de la captura ------------------------------------------
+
+namespace {
+
+// Un secreto valido: 32 caracteres con 16 distintos, sin "cambiar_".
+const std::string kSecreto32 = "0123456789abcdef0123456789abcdef";
+
+CaptureSettings captura_con(bool requerido, const std::string& env = "CAPTURA_HMAC_SECRETO") {
+  CaptureSettings captura;
+  captura.hmac_secret_env = env;
+  captura.hmac_required = requerido;
+  return captura;
+}
+
+}  // namespace
+
+// Sin "hmac_requerido" en el archivo no hay valor fijado: manda la URL (ver los tests de
+// resolver_secreto_captura con la URL de loopback).
+TEST(config_sin_hmac_requerido_deja_el_valor_sin_fijar) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config("{}", config, error));
+  CHECK_EQ(config.capture.hmac_secret_env, std::string("CAPTURA_HMAC_SECRETO"));
+  CHECK(!config.capture.hmac_required.has_value());
+}
+
+TEST(config_carga_el_bloque_de_la_firma_de_la_captura) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"captura": {"url": "http://10.0.0.7:8080/capture?res=SVGA",
+                      "hmac_secreto_env": "OTRO_SECRETO", "hmac_requerido": true}})",
+      config, error));
+  CHECK_EQ(config.capture.url, std::string("http://10.0.0.7:8080/capture?res=SVGA"));
+  CHECK_EQ(config.capture.hmac_secret_env, std::string("OTRO_SECRETO"));
+  CHECK(config.capture.hmac_required.value_or(false));
+}
+
+TEST(config_rechaza_la_firma_de_la_captura_con_tipos_equivocados) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(!parse_process_config(R"({"captura": {"hmac_requerido": "si"}})", config, error));
+  CHECK(error.find("hmac_requerido") != std::string::npos);
+  CHECK(!parse_process_config(R"({"captura": {"hmac_secreto_env": 7}})", config, error));
+  CHECK(error.find("hmac_secreto_env") != std::string::npos);
+}
+
+TEST(el_secreto_valido_se_devuelve_sin_aviso) {
+  for (const bool requerido : {true, false}) {
+    const SecretoCaptura secreto =
+        resolver_secreto_captura(captura_con(requerido), kSecreto32, false);
+    CHECK_EQ(secreto.valor, kSecreto32);
+    CHECK(!secreto.fatal);
+    CHECK(secreto.mensaje.empty());
+  }
+}
+
+TEST(un_secreto_de_mas_de_32_caracteres_sirve) {
+  const SecretoCaptura secreto =
+      resolver_secreto_captura(captura_con(true), kSecreto32 + "xyz-0123456789", false);
+  CHECK_EQ(secreto.valor, kSecreto32 + "xyz-0123456789");
+  CHECK(!secreto.fatal);
+}
+
+// Ausente, vacio, el placeholder y corto (31): con hmac_requerido el proceso no arranca.
+TEST(un_secreto_que_no_sirve_es_fatal_con_hmac_requerido) {
+  const std::optional<std::string> invalidos[] = {
+      std::nullopt, std::string(""), std::string(kSecretoPlaceholder), kSecreto32.substr(1),
+      std::string(40, 'k')};
+  for (const auto& entorno : invalidos) {
+    const SecretoCaptura secreto = resolver_secreto_captura(captura_con(true), entorno, false);
+    CHECK(secreto.fatal);
+    CHECK(secreto.valor.empty());
+    CHECK(secreto.mensaje.find("CAPTURA_HMAC_SECRETO") != std::string::npos);
+    CHECK(secreto.mensaje.find("tiene que ir firmada") != std::string::npos);
+  }
+}
+
+// Sin hmac_requerido (por omision) el mismo secreto solo avisa: la peticion va sin firma y
+// el proceso arranca.
+TEST(un_secreto_que_no_sirve_solo_avisa_sin_hmac_requerido) {
+  const std::optional<std::string> invalidos[] = {
+      std::nullopt, std::string(""), std::string(kSecretoPlaceholder), kSecreto32.substr(1),
+      std::string(40, 'k')};
+  for (const auto& entorno : invalidos) {
+    const SecretoCaptura secreto = resolver_secreto_captura(captura_con(false), entorno, false);
+    CHECK(!secreto.fatal);
+    CHECK(secreto.valor.empty());
+    CHECK(secreto.mensaje.find("AVISO") != std::string::npos);
+    CHECK(secreto.mensaje.find("sin firma") != std::string::npos);
+  }
+}
+
+// --dry-run arranca sin credenciales aunque hmac_requerido este en true.
+TEST(el_dry_run_arranca_sin_secreto_aunque_sea_requerido) {
+  const SecretoCaptura sin = resolver_secreto_captura(captura_con(true), std::nullopt, true);
+  CHECK(!sin.fatal);
+  CHECK(sin.valor.empty());
+  CHECK(sin.mensaje.find("--dry-run") != std::string::npos);
+  // Y si hay un secreto bueno, el dry-run tambien firma.
+  const SecretoCaptura con = resolver_secreto_captura(captura_con(true), kSecreto32, true);
+  CHECK_EQ(con.valor, kSecreto32);
+  CHECK(con.mensaje.empty());
+}
+
+// Los motivos son distintos y no incluyen el valor: ni el del placeholder corto ni el de un
+// secreto corto de verdad.
+TEST(los_avisos_del_secreto_dicen_el_motivo_y_nunca_el_valor) {
+  const std::string corto = "secreto-corto-123";
+  const SecretoCaptura s_corto = resolver_secreto_captura(captura_con(true), corto, false);
+  CHECK(s_corto.mensaje.find("menos de 32") != std::string::npos);
+  CHECK(s_corto.mensaje.find(corto) == std::string::npos);
+
+  const SecretoCaptura s_placeholder =
+      resolver_secreto_captura(captura_con(true), std::string(kSecretoPlaceholder), false);
+  CHECK(s_placeholder.mensaje.find("placeholder") != std::string::npos);
+
+  const SecretoCaptura s_ausente = resolver_secreto_captura(captura_con(true), std::nullopt, false);
+  CHECK(s_ausente.mensaje.find("no esta la variable") != std::string::npos);
+}
+
+// Con el nombre de la variable vacio no hay de donde leer el secreto.
+TEST(sin_nombre_de_variable_el_secreto_no_existe) {
+  const SecretoCaptura secreto = resolver_secreto_captura(captura_con(true, ""), kSecreto32, false);
+  CHECK(secreto.fatal);
+  CHECK(secreto.valor.empty());
+}
+
+// El ejemplo versionado es el de la placa real: firma obligatoria y la URL del puente
+// (un placeholder, con la query de la resolucion).
+TEST(config_el_ejemplo_versionado_exige_la_firma_y_apunta_al_puente) {
+  const std::filesystem::path ejemplo =
+      std::filesystem::path(VISION_SOURCE_DIR) / "vision.conf.example";
+  ProcessConfig config;
+  bool encontrado = false;
+  std::string error;
+  CHECK(load_process_config(ejemplo.string(), config, encontrado, error));
+  CHECK(encontrado);
+  CHECK(config.capture.hmac_required.value_or(false));
+  CHECK_EQ(config.capture.hmac_secret_env, std::string("CAPTURA_HMAC_SECRETO"));
+  // La primera captura tras un rato de inactividad incluye el arranque en frio de la camara
+  // (sin medir): plazo holgado en el ejemplo. Y el intervalo entre rafagas de la placa.
+  CHECK_EQ(config.capture.http_timeout_ms, 5000);
+  CHECK_EQ(config.capture.burst_interval_ms, 3000);
+  CHECK_EQ(config.capture.url,
+           std::string("http://<ip-zerotier-del-puente>:<puerto>/capture?res=SVGA"));
+}
+
+// El archivo de credenciales de ejemplo trae la variable con el placeholder: copiarlo
+// tal cual no arranca la firma hasta que alguien ponga el secreto de verdad.
+TEST(el_env_de_ejemplo_trae_el_secreto_con_el_placeholder) {
+  const std::filesystem::path ejemplo =
+      std::filesystem::path(VISION_SOURCE_DIR) / "vision.env.example";
+  std::ifstream archivo(ejemplo);
+  CHECK(archivo.good());
+  std::string linea;
+  bool encontrada = false;
+  while (std::getline(archivo, linea)) {
+    if (linea == std::string("CAPTURA_HMAC_SECRETO=") + kSecretoPlaceholder) encontrada = true;
+  }
+  CHECK(encontrada);
+}
+
+// Igual de estricto que la placa y que Node-RED: cualquier valor que CONTENGA "cambiar_".
+TEST(un_secreto_que_contiene_cambiar_se_rechaza_aunque_sea_largo) {
+  const std::string casos[] = {
+      "cambiar_esta_clave_larga_0123456789abcdef",       // el de Portainer
+      "cambiar_otra_cosa_distinta_0123456789abcdef",     // empieza por el prefijo
+      "0123456789abcdefcambiar_esta_clave0123456789"};   // lo contiene en medio
+  for (const std::string& caso : casos) {
+    CHECK(caso.size() >= kMinLongitudSecreto);
+    const SecretoCaptura secreto = resolver_secreto_captura(captura_con(true), caso, false);
+    CHECK(secreto.fatal);
+    CHECK(secreto.valor.empty());
+    CHECK(secreto.mensaje.find("placeholder") != std::string::npos);
+    CHECK(secreto.mensaje.find(caso) == std::string::npos);
+  }
+}
+
+// Como GALERIA_TOKEN en Node-RED: al menos 8 caracteres distintos entre si.
+TEST(un_secreto_necesita_al_menos_8_caracteres_distintos) {
+  const std::string siete = "abcdefgabcdefgabcdefgabcdefgabcdefg";  // 35 caracteres, 7 distintos
+  CHECK(siete.size() >= kMinLongitudSecreto);
+  const SecretoCaptura malo = resolver_secreto_captura(captura_con(true), siete, false);
+  CHECK(malo.fatal);
+  CHECK(malo.mensaje.find("distintos") != std::string::npos);
+  CHECK(malo.mensaje.find(siete) == std::string::npos);
+
+  const std::string ocho = "abcdefghabcdefghabcdefghabcdefgh";  // 32 caracteres, 8 distintos
+  const SecretoCaptura bueno = resolver_secreto_captura(captura_con(true), ocho, false);
+  CHECK(!bueno.fatal);
+  CHECK_EQ(bueno.valor, ocho);
+}
+
+TEST(config_el_intervalo_entre_rafagas_por_omision_es_3000_ms) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config("{}", config, error));
+  CHECK_EQ(config.capture.burst_interval_ms, 3000);
+  CHECK_EQ(config.to_service_config().burst_interval.count(), 3000);
+}
+
+TEST(config_carga_y_valida_el_intervalo_entre_rafagas) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"captura": {"intervalo_rafagas_ms": 4500}})", config, error));
+  CHECK_EQ(config.capture.burst_interval_ms, 4500);
+  CHECK_EQ(config.to_service_config().burst_interval.count(), 4500);
+  CHECK(parse_process_config(R"({"captura": {"intervalo_rafagas_ms": 0}})", config, error));
+  CHECK(!parse_process_config(R"({"captura": {"intervalo_rafagas_ms": -1}})", config, error));
+  CHECK(error.find("intervalo_rafagas_ms") != std::string::npos);
+  CHECK(!parse_process_config(R"({"captura": {"intervalo_rafagas_ms": "3000"}})", config,
+                              error));
+}
+
+// El archivo de ejemplo explica algunos valores con comentarios.
+TEST(config_admite_comentarios_en_el_archivo) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      "{\n  // un comentario\n  \"captura\": {\"rafaga\": 5 /* otro */}\n}", config, error));
+  CHECK_EQ(config.capture.burst_size, 5);
+}
+
+// --- hmac_requerido por omision: true, salvo dry-run o una URL de loopback ----------------
+
+namespace {
+
+CaptureSettings captura_sin_fijar(const std::string& url) {
+  CaptureSettings captura;
+  captura.url = url;
+  return captura;  // hmac_required sin fijar
+}
+
+}  // namespace
+
+// Sin fijar y con la URL de la placa (o de su puente): es obligatorio, falla cerrado.
+TEST(por_omision_el_secreto_es_obligatorio_con_una_url_que_no_es_de_loopback) {
+  for (const char* url : {"http://192.168.1.50/capture", "http://10.147.17.9:8080/capture?res=SVGA",
+                          "http://<ip-zerotier-del-puente>:<puerto>/capture?res=SVGA",
+                          "http://puente.local/capture", "http://128.0.0.1/capture",
+                          "http://127.0.0.1.example.com/capture", "no-es-una-url"}) {
+    const SecretoCaptura secreto =
+        resolver_secreto_captura(captura_sin_fijar(url), std::nullopt, false);
+    CHECK(secreto.fatal);
+    CHECK(secreto.valor.empty());
+  }
+}
+
+// Sin fijar y con loopback (donde corre camara_falsa): arranca, avisa y va sin firma.
+TEST(por_omision_el_secreto_no_es_obligatorio_con_una_url_de_loopback) {
+  for (const char* url : {"http://127.0.0.1:18080/capture", "http://127.255.0.3/capture",
+                          "http://localhost:18080/capture?res=SVGA", "http://LOCALHOST/capture",
+                          "http://[::1]:18080/capture", "http://[::1]/capture",
+                          "http://usuario@127.0.0.1/capture"}) {
+    CHECK(url_es_loopback(url));
+    const SecretoCaptura secreto =
+        resolver_secreto_captura(captura_sin_fijar(url), std::nullopt, false);
+    CHECK(!secreto.fatal);
+    CHECK(secreto.valor.empty());
+    CHECK(secreto.mensaje.find("AVISO") != std::string::npos);
+  }
+}
+
+// Con --dry-run nunca es fatal, con la URL que sea.
+TEST(por_omision_el_dry_run_arranca_sin_secreto_con_cualquier_url) {
+  for (const char* url : {"http://192.168.1.50/capture", "http://127.0.0.1/capture"}) {
+    const SecretoCaptura secreto =
+        resolver_secreto_captura(captura_sin_fijar(url), std::nullopt, true);
+    CHECK(!secreto.fatal);
+  }
+}
+
+// Lo que el archivo dice explicitamente manda sobre la URL.
+TEST(un_hmac_requerido_explicito_manda_sobre_la_url) {
+  CaptureSettings loopback_obligatorio = captura_sin_fijar("http://127.0.0.1:18080/capture");
+  loopback_obligatorio.hmac_required = true;
+  CHECK(resolver_secreto_captura(loopback_obligatorio, std::nullopt, false).fatal);
+
+  CaptureSettings placa_opcional = captura_sin_fijar("http://192.168.1.50/capture");
+  placa_opcional.hmac_required = false;
+  CHECK(!resolver_secreto_captura(placa_opcional, std::nullopt, false).fatal);
+}
+
+TEST(url_es_loopback_solo_reconoce_loopback) {
+  CHECK(url_es_loopback("http://127.0.0.1/capture"));
+  CHECK(url_es_loopback("https://127.1.2.3:8443/capture"));
+  CHECK(url_es_loopback("http://[::1]:80/capture"));
+  CHECK(!url_es_loopback("http://127.0.0.256/capture"));
+  CHECK(!url_es_loopback("http://127.0.0/capture"));
+  CHECK(!url_es_loopback("http://126.0.0.1/capture"));
+  CHECK(!url_es_loopback("http://[::2]/capture"));
+  CHECK(!url_es_loopback("http://[::1/capture"));
+  CHECK(!url_es_loopback("http://localhost.evil.com/capture"));
+  CHECK(!url_es_loopback("http:///capture"));
+  CHECK(!url_es_loopback(""));
+}
+
+// El archivo de estado del reloj (ancla de la primera firma sin RTC).
+TEST(config_el_archivo_de_estado_del_reloj_tiene_omision_y_se_puede_cambiar) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config("{}", config, error));
+  CHECK_EQ(config.capture.clock_state_file, std::string("/var/lib/autolist/reloj-captura.estado"));
+  CHECK(parse_process_config(R"({"captura": {"estado_reloj": "/tmp/otro.estado"}})", config, error));
+  CHECK_EQ(config.capture.clock_state_file, std::string("/tmp/otro.estado"));
+  CHECK(parse_process_config(R"({"captura": {"estado_reloj": ""}})", config, error));
+  CHECK(config.capture.clock_state_file.empty());
+  CHECK(!parse_process_config(R"({"captura": {"estado_reloj": 5}})", config, error));
 }

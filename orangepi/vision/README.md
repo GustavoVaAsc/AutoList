@@ -9,7 +9,10 @@ CMakeLists.txt
 include/vision/
   mqtt_contract.hpp   ÚNICO lugar con tópicos (contrato v0.3) y payloads tipados
   json_payload.hpp    capa JSON del contrato (nlohmann/json): payload <-> documento; ignora campos desconocidos y falla sin lanzar ante campos obligatorios ausentes o con tipo equivocado
-  wall_clock.hpp      WallClock inyectable: la hora ISO 8601 con zona del "ts"; el Clock existente es monótono y no lleva fecha
+  wall_clock.hpp      WallClock inyectable: la hora ISO 8601 con zona del "ts" y el epoch en segundos de la firma de la captura; el Clock existente es monótono y no lleva fecha
+  hmac_sha256.hpp     SHA-256 y HMAC-SHA256 en C++ puro: COPIA de firmware/xiao/hmac_sha256.h (la placa verifica lo que firma el servicio)
+  captura_firma.hpp   la firma de la petición de captura: cadena canónica, las tres cabeceras X-Captura-* y el nonce; y la respuesta cifrada (AES-256-GCM)
+  reloj_guardia.hpp   la guardia del reloj de pared antes de firmar: salto contra CLOCK_BOOTTIME y ancla de la primera firma (RTC o archivo de estado)
   message_bus.hpp     interfaz MessageBus (publish/subscribe)
   http_client.hpp     interfaz HttpClient (GET -> status + bytes)
   mqtt_bus.hpp        MosquittoBus: MessageBus real sobre libmosquitto
@@ -35,6 +38,9 @@ src/
   json_payload.cpp    implementación de la capa JSON
   process_config.cpp  análisis del archivo JSON de configuración
   wall_clock.cpp      implementación del reloj de pared
+  hmac_sha256.cpp     copia de firmware/xiao/hmac_sha256.cpp (solo cambian el espacio de nombres y el include)
+  captura_firma.cpp   implementación de la firma de la captura (nonce con getrandom)
+  reloj_guardia.cpp   implementación de la guardia del reloj y de las anclas del sistema
   mqtt_bus.cpp        implementación del bus MQTT
   httplib_client.cpp  implementación del cliente HTTP
   gallery_store.cpp   implementación del store de la galería
@@ -56,6 +62,10 @@ tests/
   test_json_payload.cpp    la capa JSON del contrato
   test_process_config.cpp  la configuración del proceso
   test_wall_clock.cpp      la validación de la hora del reloj de pared
+  test_hmac_sha256.cpp     los cinco vectores del HMAC compartidos con el firmware y la comparación en tiempo constante
+  test_captura_firma.cpp   la cadena canónica, las cabeceras de la firma, el nonce y la respuesta cifrada (AES-256-GCM)
+  test_reloj_guardia.cpp   la guardia del reloj: BOOTTIME, RTC, archivo de estado y reinicios simulados
+  gcm_apoyo.hpp            apoyo de las pruebas: cifra como la placa para armar respuestas
   test_httplib_client.cpp  el cliente HTTP (servidor httplib en el propio proceso)
   test_gallery_store.cpp   la galería en RAM
   test_mqtt_bus.cpp        el bus MQTT (integración contra un broker real)
@@ -67,7 +77,7 @@ vision.env.example   ejemplo del archivo de credenciales (con placeholders)
 
 | Biblioteca | Qué lleva | Dependencias |
 |---|---|---|
-| `vision_core` | La lógica pura: máquina de estados, galería, alineación, cabecera de imagen, nitidez, tensores, capa JSON y `WallClock`. Sin red. | OpenCV, nlohmann/json |
+| `vision_core` | La lógica pura: máquina de estados, galería, alineación, cabecera de imagen, nitidez, tensores, capa JSON, `WallClock` y la firma de la captura (`hmac_sha256`, `captura_firma`). Sin red. | OpenCV, nlohmann/json |
 | `vision_npu` | El wrapper RAII de VIPLite (`npu::Driver`, `npu::Network`). | `vision_core`, runtime del fabricante |
 | `vision_models` | Los adaptadores reales sobre la NPU: `NpuFaceDetector` y `NpuFaceEmbedder`. | `vision_npu` |
 | `vision_transport` | Los tres adaptadores reales: `MosquittoBus`, `HttplibClient` y `GalleryStore`. | `vision_core`, libmosquitto, cpp-httplib, nlohmann/json, pthread |
@@ -88,6 +98,7 @@ Requisitos en la placa:
 | `nlohmann-json3-dev` 3.11 | capa JSON del contrato MQTT | `find_package(nlohmann_json 3.11)` |
 | `libmosquitto-dev` | bus MQTT (`MosquittoBus`) | `pkg-config libmosquitto` |
 | `libcpp-httplib-dev` | cliente HTTP (`HttplibClient`), cabecera única `httplib.h` | `pkg-config cpp-httplib` |
+| `libssl-dev` (OpenSSL) | AES-256-GCM de la respuesta de la captura (`captura_firma.cpp`); `vision_core` enlaza `OpenSSL::Crypto` explícitamente | `find_package(OpenSSL)` |
 | runtime VIPLite | `npu::Driver` y `npu::Network` | `/usr/include/vip_lite.h`, `/usr/lib/libNBGlinker.so`, `/usr/lib/libVIPhal.so` |
 
 ```
@@ -246,7 +257,7 @@ Medido en la placa (`build/detector_prueba`, media de 20 fotogramas sobre la fot
 El proceso (plan 6.2, un solo hilo de trabajo):
 
 - **Configuración**: lee el archivo JSON (por omisión `/etc/pase-lista/vision.conf`, o el que se pase con `--config`). Un archivo inválido (un tipo equivocado, un valor fuera de rango o una clave desconocida) hace fallar el arranque. Si el archivo no existe, el proceso **falla cerrado**: en producción termina con error, porque arrancar a ciegas con los valores por omisión es peor que no arrancar. Con `--dry-run` avisa por stderr y sigue con los valores por omisión, para poder probarlo sin instalar nada.
-- **Credenciales**: la contraseña del broker y el token de la galería se leen de variables de entorno, nunca del archivo de configuración (ver "La configuración"). En producción, si falta la contraseña del broker o el token de la galería, el proceso **falla cerrado** y termina con error: es preferible que el servicio no esté a que esté sin autenticar.
+- **Credenciales**: la contraseña del broker, el token de la galería y el secreto de la firma de la captura se leen de variables de entorno, nunca del archivo de configuración (ver "La configuración"). En producción, si falta la contraseña del broker o el token de la galería, el proceso **falla cerrado** y termina con error: es preferible que el servicio no esté a que esté sin autenticar. El secreto de la firma falla cerrado solo con `captura.hmac_requerido` (ver "La firma de la captura").
 - **Modo anónimo**: conectar sin usuario y sin contraseña solo tiene sentido con el broker de pruebas. En producción no se permite; con `--dry-run` es posible, y el modo tolerante exige `--permitir-anonimo` explícito. Sin ese flag, `--dry-run` avisa por stderr y conecta sin usuario.
 - **Bus MQTT**: `MosquittoBus` contra el broker del borde. El proceso se suscribe a `aula/camara/pir` y `aula/vision/cmd` (lo hace la propia `VisionService`) y además a `aula/vision/galeria/alta` y `aula/vision/galeria/baja` (las suscripciones las hace el proceso, no el servicio).
 - **Galería**: al arrancar y en cada reconexión al broker, el proceso recarga la galería completa con `GalleryStore::reload()` (lo dice el contrato v0.3, sección 4). El aviso de conexión lo da el bus (`MosquittoBus::set_connect_listener`); el manejador solo marca una bandera y la recarga se hace en el hilo de trabajo, no en el hilo de red del bus. Si la recarga falla, se registra en stderr y el servicio sigue: se reintenta en la próxima reconexión. Las altas y las bajas que llegan por MQTT también se aplican en el hilo de trabajo (la galería en RAM la lee el servicio en ese hilo y no debe cambiar mientras la lee).
@@ -255,11 +266,11 @@ El proceso (plan 6.2, un solo hilo de trabajo):
 - **Salida ordenada**: al parar, el proceso (1) cancela el registro en curso y publica su estado `cancelado`, apaga la luz y deja el modo del servicio en `inactivo` (`VisionService::shutdown()`); (2) publica `aula/vision/estado` con `en_linea: false` y el esquema completo (retenido); (3) vacía la cola de salida del bus (`MosquittoBus::flush()`) y solo entonces cierra el bus. Sin el paso (1), un `SIGTERM` en mitad de un registro dejaba la luz encendida y el enrolamiento a medias. Así el frontend no se queda con el servicio "en línea" y no queda retenido un "en línea" fantasma (ver "El bus MQTT"). El Will no hace falta en la salida ordenada: sigue puesto para la caída sin cerrar limpio.
 - **Detector y embedder**: con `--dry-run` son los dobles en memoria de `fakes.hpp`. Sin `--dry-run`, si existen los `.nb`, el proceso construye los adaptadores reales sobre la NPU (`NpuFaceDetector` y `NpuFaceEmbedder`, biblioteca `vision_models`) y los enchufa en el servicio. Si los `.nb` no están, o no encajan con el código (otra disposicion de salidas, otra entrada, otro formato), o el driver los rechaza (archivo truncado o corrupto), el proceso avisa del motivo y sale con el **78**; el 1 queda para los fallos transitorios (arrancar el bus MQTT, inicializar el driver). En producción nunca se arranca con los dobles. El driver de la NPU se crea antes que las redes para que viva más que ellas, y la NPU se usa solo desde el hilo de trabajo (el que llama a `poll()`): `npu::Network` no es seguro entre hilos.
 
-**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error**: es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El código de salida distingue los dos tipos de fallo:
+**Falla cerrado en producción.** Sin el archivo de configuración, sin la contraseña del broker o sin el token de la galería, el proceso **termina con error**: es preferible que el servicio no esté a que esté sin autenticar. El modo tolerante y el modo anónimo quedan para `--dry-run`, y el anónimo exige `--permitir-anonimo` explícito. El secreto de la firma de la captura es la excepción controlada: con `captura.hmac_requerido: true` (el ejemplo) también es obligatorio; con `false` (la omisión) solo avisa. El código de salida distingue los dos tipos de fallo:
 
 | Código | Qué es | Qué hace systemd |
 |---|---|---|
-| **78** (`EX_CONFIG`) | Error de configuración: el archivo de configuración no existe o no es válido, falta una variable de entorno, faltan los modelos `.nb`, el `.nb` no encaja con el código o el driver lo rechaza | No reinicia (está en `RestartPreventExitStatus=78`): el fallo queda a la vista en el journal en vez de quedar enterrado en un bucle de reinicios |
+| **78** (`EX_CONFIG`) | Error de configuración: el archivo de configuración no existe o no es válido, falta una variable de entorno (o, con `captura.hmac_requerido`, el secreto de la firma falta, es el placeholder o es corto), faltan los modelos `.nb`, el `.nb` no encaja con el código o el driver lo rechaza | No reinicia (está en `RestartPreventExitStatus=78`): el fallo queda a la vista en el journal en vez de quedar enterrado en un bucle de reinicios |
 | **1** | Fallo transitorio: no se pudo arrancar el bus MQTT o inicializar el driver de la NPU | Reinicia en 5 s |
 
 ```bash
@@ -277,12 +288,12 @@ Las rutas de los modelos son fijas: `/opt/autolist/models/detector.nb` y `/opt/a
 
 ## La configuración
 
-El archivo de configuración es JSON, con las claves en español como el resto del proyecto. El ejemplo completo está en `vision.conf.example`:
+El archivo de configuración es JSON, con las claves en español como el resto del proyecto. Admite comentarios (`//` y `/* */`): `vision.conf.example` los usa para explicar algunos valores. El ejemplo completo está en `vision.conf.example` (aquí sin sus comentarios):
 
 ```json
 {
   "mqtt": {"host": "127.0.0.1", "port": 1883, "usuario": "vision", "clave_env": "MQTT_PASSWORD", "client_id": "vision"},
-  "captura": {"url": "http://192.168.1.50/capture", "rafaga": 4, "espera_luz_ms": 300, "http_timeout_ms": 2000, "max_body_bytes": 2097152},
+  "captura": {"url": "http://<ip-zerotier-del-puente>:<puerto>/capture?res=SVGA", "rafaga": 4, "espera_luz_ms": 300, "http_timeout_ms": 5000, "max_body_bytes": 2097152, "intervalo_rafagas_ms": 3000, "hmac_secreto_env": "CAPTURA_HMAC_SECRETO", "hmac_requerido": true},
   "galeria": {"url": "https://127.0.0.1:1880/api/galeria", "token_env": "GALERIA_TOKEN", "timeout_ms": 5000},
   "umbrales": {"min_sharpness": 0.0, "min_recognized_score": 0.6, "min_dudoso_score": 0.45, "min_similitud_pose": 0.5},
   "servicio": {"poll_ms": 20, "max_inbox_events": 16, "modelo": "w600k_mbf-uint8-v1", "acepta_png": false},
@@ -297,11 +308,15 @@ El archivo de configuración es JSON, con las claves en español como el resto d
 | | `usuario` | usuario MQTT (`""` = sin usuario) | `vision` |
 | | `clave_env` | **nombre** de la variable de entorno con la contraseña | `MQTT_PASSWORD` |
 | | `client_id` | id de cliente MQTT | `vision` |
-| `captura` | `url` | GET que devuelve la foto | `http://192.168.1.50/capture` |
+| `captura` | `url` | GET que devuelve la foto; puede llevar `?res=SVGA` (la query no se firma). En el ejemplo es un placeholder del puente que reexpone la XIAO por ZeroTier: hay que sustituirlo | `http://192.168.1.50/capture` |
 | | `rafaga` | fotos por intento | `4` |
 | | `espera_luz_ms` | espera tras encender la luz | `300` |
-| | `http_timeout_ms` | plazo de la petición de foto | `2000` |
+| | `http_timeout_ms` | plazo de la petición de foto. El ejemplo pone `5000`: la primera captura tras un rato de inactividad de la placa incluye el arranque en frío de la cámara, que todavía no está medido (prueba E2); hay que ajustarlo tras medirlo | `2000` |
 | | `max_body_bytes` | tope del cuerpo de la respuesta | `2097152` |
+| | `intervalo_rafagas_ms` | tiempo mínimo entre el inicio de una ráfaga y el de la siguiente (la placa limita el ritmo; ver "La firma de la captura") | `3000` |
+| | `estado_reloj` | archivo donde el servicio guarda el último `ts` firmado (`ts`, `boot_id`, `CLOCK_BOOTTIME`) para anclar la primera firma tras un reinicio cuando no hay RTC; `""` = no se guarda. Lo crea `StateDirectory=autolist` | `/var/lib/autolist/reloj-captura.estado` |
+| | `hmac_secreto_env` | **nombre** de la variable de entorno con el secreto de la firma de la captura | `CAPTURA_HMAC_SECRETO` |
+| | `hmac_requerido` | `true`: sin un secreto válido el proceso no arranca (78). `false`: solo avisa y la petición va sin firma | sin fijar: `true`, salvo que el host de `captura.url` sea de loopback (127.0.0.0/8, `::1`, `localhost`: ahí corre `camara_falsa`). `--dry-run` nunca es fatal. El ejemplo pone `true` |
 | `galeria` | `url` | `GET /api/galeria` de Node-RED | `https://127.0.0.1:1880/api/galeria` |
 | | `token_env` | **nombre** de la variable de entorno con el token | `GALERIA_TOKEN` |
 | | `timeout_ms` | plazo de la petición de la galería | `5000` |
@@ -332,11 +347,12 @@ El mapeo a `ServiceConfig` está en `ProcessConfig::to_service_config()` (`src/p
 
 - `mqtt.clave_env` (por omisión `MQTT_PASSWORD`): la contraseña del usuario MQTT.
 - `galeria.token_env` (por omisión `GALERIA_TOKEN`): el token del encabezado `X-Galeria-Token`.
+- `captura.hmac_secreto_env` (por omisión `CAPTURA_HMAC_SECRETO`): el secreto con el que se firma la petición de captura. Es el mismo valor que lleva la placa (`firmware/xiao/secrets.h`).
 
 Si la variable no está, el comportamiento depende del modo:
 
 - **Producción (sin `--dry-run`):** el proceso **falla cerrado** y termina con error. Sin contraseña del broker, la conexión sería anónima; sin token, la galería se pediría sin autenticar.
-- **Con `--dry-run`:** el proceso avisa por stderr y sigue. Con `--permitir-anonimo` se acepta explícitamente conectar sin usuario; sin ese flag, solo avisa. Si hay usuario MQTT pero no hay contraseña, se conecta sin usuario (un usuario sin contraseña no pasa la autenticación del broker).
+- **Con `--dry-run`:** el proceso avisa por stderr y sigue (también sin el secreto de la firma, aunque `hmac_requerido` sea `true`). Con `--permitir-anonimo` se acepta explícitamente conectar sin usuario; sin ese flag, solo avisa. Si hay usuario MQTT pero no hay contraseña, se conecta sin usuario (un usuario sin contraseña no pasa la autenticación del broker).
 
 El token de la galería **solo se manda por `https://`**, o por `http://` contra `127.0.0.1`, `localhost` o `::1`. Con una URL de otro tipo y con token configurado, la carga de la galería se rechaza: el token no puede viajar en claro por la red.
 
@@ -378,8 +394,9 @@ sudo install -m 0755 build/vision_service /usr/local/bin/vision_service
 sudo install -d -m 0755 /etc/pase-lista
 sudo install -m 0644 vision.conf.example /etc/pase-lista/vision.conf
 sudo install -m 0600 vision.env.example /etc/pase-lista/vision.env
-sudoedit /etc/pase-lista/vision.conf   # la IP de la XIAO y el certificado autofirmado
-sudoedit /etc/pase-lista/vision.env    # MQTT_PASSWORD y GALERIA_TOKEN de verdad
+sudoedit /etc/pase-lista/vision.conf   # la URL del puente de la XIAO y el certificado autofirmado
+sudoedit /etc/pase-lista/vision.env    # MQTT_PASSWORD, GALERIA_TOKEN y CAPTURA_HMAC_SECRETO de verdad
+                                       # (el secreto, el mismo que firmware/xiao/secrets.h)
 # El bloque "npu" del vision.conf instalado tiene que llevar, con los modelos actuales,
 # "color": "bgr", "embed_color": "rgb" y "embed_escala": "arcface" (el ejemplo ya los
 # trae). Sin "color" o sin "embed_color" el servicio sale con el 78.
@@ -396,7 +413,8 @@ journalctl -u orangepi-vision.service -f
 
 Notas:
 
-- `WorkingDirectory=/var/lib/autolist`: el servicio no escribe nada, pero queda en un directorio propio (por debajo de `/var`, que con `ProtectSystem=full` sigue siendo escribible). Si no existe, `sudo install -d -o orangepi -g orangepi -m 0755 /var/lib/autolist`.
+- `StateDirectory=autolist` (modo 0700) y `WorkingDirectory=/var/lib/autolist`: systemd crea el directorio (del usuario del servicio) al arrancar; no hace falta `install -d`. Es donde el servicio guarda `reloj-captura.estado` (ver "El reloj del borde"), lo único que escribe. Con `ProtectSystem=full`, `/var` sigue siendo escribible.
+- `After=time-sync.target` y `Wants=time-sync.target`: el servicio firma con la hora del reloj de pared, así que tiene que arrancar con la hora ya sincronizada. **Hay que habilitar `sudo systemctl enable systemd-time-wait-sync.service`** (la imagen usa `systemd-timesyncd`; con chrony sería `chrony-wait.service`): sin él, `time-sync.target` se alcanza al instante y el orden no protege de nada. Comprobar con `systemctl is-enabled systemd-time-wait-sync.service` y `timedatectl` (`System clock synchronized: yes`).
 - El usuario `orangepi` tiene que poder abrir `/dev/vipcore` (la NPU): `ls -l /dev/vipcore`. La unidad **no** lleva reglas de dispositivo a propósito (ni `ProtectSystem=strict`), para no impedirle el acceso a la NPU.
 - El endurecimiento es moderado: `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectHome=yes` y `ProtectSystem=full`. Con `ProtectSystem=full`, `/usr`, `/boot` y `/etc` son de solo lectura: el servicio lee su configuración de ahí y no necesita escribir nada.
 - `EnvironmentFile=/etc/pase-lista/vision.env` tiene que existir: si falta, systemd no arranca la unidad. Para probarlo sin credenciales, se puede dejar el archivo con los placeholders.
@@ -439,7 +457,7 @@ build/camara_falsa --puerto 18080
 # camara falsa escuchando en http://127.0.0.1:18080/capture
 ```
 
-En la configuración del servicio, `captura.url` apunta a `http://127.0.0.1:18080/capture`.
+En la configuración del servicio, `captura.url` apunta a `http://127.0.0.1:18080/capture`. **La cámara falsa ignora las cabeceras de la firma y sirve la JPEG en claro** (no verifica ni cifra nada): hay que usarla **sin** `CAPTURA_HMAC_SECRETO` en el entorno (con `--dry-run`, o con una URL de loopback y `hmac_requerido` sin fijar o en `false`). Si el servicio tiene un secreto válido, firma la petición y descarta como "respuesta no autentica" la JPEG sin cifrar de la cámara falsa.
 
 ### `tools/humo.sh`: la prueba de humo de punta a punta
 
@@ -580,9 +598,94 @@ Lo que llega por MQTT y por HTTP se trata como no fiable (ver `ServiceConfig`):
 - `no_cuenta` de exactamente 9 dígitos ASCII (`is_valid_account`); `enrolar` con otra cosa se rechaza con `cuenta_invalida`, y `Gallery::upsert` la rechaza con `std::invalid_argument`. Los rechazos de órdenes (`ocupado`, `cuenta_invalida`) salen con estado `error`, paso 0 y sin pose; un registro en curso que falla sale con estado `error` y motivo `npu` (también si el reloj no da una hora válida para el embedding; o `inconsistente` si las poses dan embeddings de distinta dimensión).
 - Fotos: el adaptador HTTP debe cortar la transferencia al pasar `max_body_bytes` y respetar el plazo de toda la petición (`HttpClient::get`). El servicio vuelve a comprobar el tamaño y lee el formato y las dimensiones de la cabecera antes de decodificar; solo acepta JPEG baseline o secuencial extendido de 8 bits con un único scan entrelazado (nunca progresivo, aritmético ni de varios scans, que se pueden construir para gastar CPU al decodificar) y PNG solo con `accept_png` (pruebas).
 
+## La firma de la captura
+
+La XIAO solo sirve `GET /capture` si la petición viene firmada (`firmware/xiao/README.md`, "La cámara y el endpoint /capture"). Sin firma contesta 401. Y la **respuesta va cifrada y autenticada** con AES-256-GCM (ver más abajo): el secreto protege en los dos sentidos. El servicio manda tres cabeceras en **cada** foto de la ráfaga (`include/vision/captura_firma.hpp`):
+
+| Cabecera | Valor |
+|---|---|
+| `X-Captura-TS` | epoch en segundos del reloj del borde (`WallClock::now_epoch_seconds()`, inyectable en las pruebas) |
+| `X-Captura-Nonce` | entero aleatorio de 64 bits sin signo, en decimal |
+| `X-Captura-HMAC` | 64 caracteres hex en minúscula: HMAC-SHA256 de `GET\n/capture\n<ts>\n<nonce>` (UTF-8, sin salto final) con el secreto compartido |
+
+**El camino firmado es siempre `/capture`, fijo, sin la query.** No se deriva de `captura.url`: la placa firma ese camino sea cual sea el de la petición, y la URL solo dice a dónde se envía. Así `captura.url` puede llevar `?res=SVGA` (viaja intacta, pero no se firma, como en la placa) y apuntar a un puente que reexponga la placa bajo otro camino sin romper la firma. La contrapartida: el servicio no comprueba que el camino de la URL llegue a `/capture` de la placa; si el puente no lo traduce, la petición no llegará al endpoint y el log mostrará el código que conteste (no un 401).
+
+**El secreto** (`CAPTURA_HMAC_SECRETO`, de `/etc/pase-lista/vision.env`; el nombre de la variable sale de `captura.hmac_secreto_env`) tiene que ser el mismo que `firmware/xiao/secrets.h`. Sirve si tiene al menos 32 caracteres, al menos 8 distintos entre sí (la misma regla que `GALERIA_TOKEN` en `nodered/autenticacion-api.js`) y no **contiene** `cambiar_` (el placeholder `cambiar_esta_clave` y sus variantes; igual de estricto que la placa y que Node-RED). Un secreto que no sirve (ausente, vacío, placeholder o corto) se trata según `captura.hmac_requerido`:
+
+| `hmac_requerido` | Sin secreto válido en producción | Con `--dry-run` |
+|---|---|---|
+| `true` (el ejemplo; también la omisión, salvo una URL de loopback) | no arranca, salida 78 | arranca, avisa y va sin firma |
+| `false` | arranca, avisa y va sin firma; si el secreto aparece, firma | igual |
+
+**Sin `captura.hmac_requerido` en el archivo, la omisión es `true`** (falla cerrado): lo no firmado lo rechaza la placa con 401, así que un servicio sin secreto no sirve contra la placa real. La excepción es una URL de loopback (`127.0.0.0/8`, `::1` o `localhost`), donde corre `camara_falsa` (que ignora las cabeceras) y no hay placa que exija la firma: ahí la omisión es `false` y el servicio arranca sin secreto, avisando. `--dry-run` nunca es fatal. Un valor explícito en el archivo siempre manda sobre la URL. El servicio **nunca** imprime el secreto ni la firma: los avisos solo nombran la variable.
+
+**El nonce sale de `getrandom(2)`**, no de `/dev/urandom` ni de un generador pseudoaleatorio: no abre ningún descriptor (no falla por falta de descriptores ni en un entorno sin `/dev`), con 8 bytes devuelve todo o nada, y es la misma fuente criptográfica del kernel. Se pide con `GRND_NONBLOCK`: si el generador del kernel aún no está listo (arranque temprano) la captura falla y se reintenta en la siguiente, en vez de bloquear el hilo de trabajo. No hay reserva con otro generador: un nonce predecible anula el anti-replay de la placa.
+
+**El `ts` es el del reloj del borde** (la placa no tiene uno confiable), y se vigila antes de firmar: una hora anterior al 1 de enero de 2026 (`kMinEpochPlausible`, 1767225600) o posterior al 1 de enero de 2100 (`kMaxEpochPlausible`, 4102444800) no se firma; y un salto del reloj hacia adelante tampoco, medido contra `CLOCK_BOOTTIME`, con la primera firma tras arrancar anclada al RTC de hardware o a un archivo de estado. Todo eso, con el motivo y la recuperación, está en "El reloj del borde".
+
+**La respuesta de la placa va cifrada y autenticada (AES-256-GCM).** En un 200 la placa manda `Content-Type: application/octet-stream` con la foto cifrada. Sin esto, cualquiera en la LAN podría leer la foto o, suplantando la IP de la placa, contestar una petición firmada con una foto cualquiera (fraude de asistencia).
+
+| Pieza | Valor |
+|---|---|
+| Clave `K` | `HMAC-SHA256(clave = bytes del secreto, mensaje = "AUTOLIST-CAPTURA-RESP-AES256GCM-V1")`, 32 bytes; el servicio la deriva una vez, al arrancar, y la borra al destruirse |
+| IV | cabecera `X-Captura-IV`: 24 caracteres hex en minúscula (12 bytes aleatorios de la placa) |
+| AAD | `RESP\n<ts>\n<nonce>` (decimal canónico, sin salto final), con el `ts` y el `nonce` que el servicio mandó en **esa** petición |
+| Cuerpo | el texto cifrado seguido de la etiqueta de 16 bytes |
+
+Cuando el servicio firmó la petición, exige un IV válido y un cuerpo de al menos 16 bytes, descifra y verifica con OpenSSL (`EVP` AES-256-GCM, `descifrar_respuesta` en `captura_firma.hpp`). **Falla cerrado:** ante cualquier fallo descarta la foto antes de decodificarla, y la foto descifrada se borra de memoria tras decodificarla. El AAD ata la respuesta a su petición: la de otra petición (otro `nonce` o `ts`), con otro IV, otra clave o un byte cambiado no verifica. `captura.max_body_bytes` se aplica a lo que viaja (cifrado más etiqueta). Sin secreto (`camara_falsa`) no se descifra: la JPEG viaja en claro. El cliente HTTP deja el IV en `HttpResponse::resp_iv`. **Este protocolo lo tiene que implementar igual el firmware**: hasta entonces, una placa que no cifre sus respuestas hace que el servicio con secreto descarte todas las fotos.
+
+**El ritmo de la placa.** La placa limita las capturas: 4 por ventana deslizante de 2000 ms y después una pausa de 1000 ms, así que una ráfaga solo puede empezar 3000 ms después de la primera foto de la anterior. Con el antirrebote del PIR (2 s), dos ráfagas seguidas daban 4 respuestas 429 y `captura_fallida`. Por eso:
+
+- **Intervalo entre ráfagas** (`captura.intervalo_rafagas_ms`, por omisión 3000): antes de empezar una ráfaga demasiado cerca de la anterior, el servicio espera lo que falta (`Clock::sleep_for`). Cuenta desde el inicio de la ráfaga anterior, no desde su final. **La captura de una pose del registro también cuenta como inicio de ráfaga**, para que una ráfaga del pase de lista que venga justo después se espacie.
+- **Un reintento ante un 429:** esa foto se repite **una vez** (con `ts` y `nonce` nuevos) tras esperar lo que diga `Retry-After` (segundos enteros, `HttpResponse::retry_after_s`; el puente lo reenvía) o 1100 ms si no viene. La espera extra total de una ráfaga no pasa de 3 s: una espera que ya no cabe no se hace y la foto cuenta como fallida. Un 429 que no cede acaba en la vía de fallo de siempre (`captura_fallida`).
+
+**Lo que dice el log** cuando la placa no devuelve la foto: **una línea por código y por ráfaga**, con la cuenta (por ejemplo `la placa rechazo 4/4 fotos con 401: ...`), y una línea `respuesta no autentica: N/M fotos descartadas sin decodificar (...)` si hubo respuestas que no verifican, con la cuenta por motivo (sin `X-Captura-IV`, IV mal formado, menos de 16 bytes o etiqueta que no verifica). Nunca se vuelca el cuerpo ni la firma. Al arrancar hay además una línea que dice si la firma de la captura está activa o inactiva.
+
+| Código | Causa en la placa | Qué hacer |
+|---|---|---|
+| 401 | falta una cabecera o la firma no cuadra | el secreto de la placa y el del borde no coinciden |
+| 403 | nonce repetido, o `ts` más antiguo que el último aceptado (ventana de 300 s) | el reloj del borde retrocedió |
+| 429 | la placa limita el ritmo de capturas (se reintentó una vez; ver "El ritmo de la placa") | subir `captura.intervalo_rafagas_ms` o bajar `rafaga` |
+| 503 | cámara no lista, ocupada o por encima de la temperatura | esperar; no es un problema de firma |
+| otro | cualquier otra respuesta que no es 200 | |
+
+Un fallo de red o un plazo vencido no llevan código: los registra el cliente HTTP (ver "El cliente HTTP").
+
+**El HMAC es el mismo de la placa.** `include/vision/hmac_sha256.hpp` y `src/hmac_sha256.cpp` son una copia de `firmware/xiao/hmac_sha256.h` y `.cpp`: solo cambian el espacio de nombres (`vision::hmac_sha256`) y la ruta del `#include`. Si cambia una, hay que cambiar la otra. Las dos tienen los mismos cinco vectores de prueba (dos de la cadena canónica del protocolo y tres de HMAC: RFC 4231 casos 1 y 2, y la clave de 128 bytes) y la comparación en tiempo constante. En `tests/test_hmac_sha256.cpp` y `tests/test_captura_firma.cpp`.
+
+**Lo que no hace.** No evita un salto del reloj del borde de menos de 10 minutos, ni la primera firma de la vida de la instalación si no hay RTC ni archivo de estado (ver "El reloj del borde"): la placa recuerda el último `ts` aceptado y rechaza con 403 lo que sea más de 300 s más antiguo, hasta que se borre su piso. No firma la query (la resolución). El estado de la placa vive en RAM: tras un reinicio, una petición capturada vuelve a ser aceptable. El secreto sigue legible en `/proc/<pid>/environ` del propio usuario del servicio, como la contraseña MQTT y el token de la galería (pendiente, aparte).
+
+## El reloj del borde
+
+La firma de la captura lleva el `ts` del reloj de pared de la Orange Pi, y la placa **guarda el último `ts` que aceptó** (también al reiniciarse) y rechaza con 403 todo lo que sea más de 300 s anterior. Un solo `ts` en el futuro basta para dejarla rechazando las capturas buenas: pasa con un NTP suplantado, o con un reloj que arranca mal (una placa sin RTC con pila arranca en 1970, o con la hora vieja que restauró el sistema) y se corrige después. Por eso el servicio **no firma un `ts` en el que no confía** (`GuardiaReloj`, `include/vision/reloj_guardia.hpp`):
+
+| Qué comprueba | Cómo |
+|---|---|
+| Rango | anterior al 1 de enero de 2026 o posterior al 1 de enero de 2100: no se firma |
+| Salto dentro del proceso | desde la última firma, el reloj de pared no puede avanzar más de 10 minutos (`kSaltoRelojMaxS`) por encima de `CLOCK_BOOTTIME`. Se usa BOOTTIME y no el reloj monotónico porque BOOTTIME sigue contando durante una suspensión: dormir el equipo no es un salto |
+| **La primera firma tras arrancar** | no tiene firma anterior con la que compararse, así que se ancla a algo absoluto (ver abajo) |
+| Confirmación por el RTC | si el RTC de hardware coincide (a menos de 10 minutos) con la hora nueva, un salto hacia adelante se acepta **sin reiniciar nada** |
+
+**El ancla de la primera firma.**
+
+1. **El RTC de hardware**, si existe y es legible: `/sys/class/rtc/rtc0/since_epoch`. Mientras la hora de pared difiera del RTC en más de 10 minutos, no se firma. Un RTC con una hora imposible (1970, sin pila) no cuenta como referencia. **No he podido comprobar si la Orange Pi tiene `rtc0`**: en la placa, `ls /sys/class/rtc/` y `cat /sys/class/rtc/rtc0/since_epoch` (y `timedatectl`, `RTC time`) lo dicen. Con RTC, el archivo de estado se escribe igual, por si el RTC deja de servir.
+2. **El archivo de estado** (`captura.estado_reloj`, por omisión `/var/lib/autolist/reloj-captura.estado`, modo 0600, escrito de forma atómica como mucho cada 30 s): `v1 <ts> <boot_id> <boottime_s>`. En el **mismo arranque** (mismo `/proc/sys/kernel/random/boot_id`), la hora no puede haberse adelantado más de 10 minutos por encima de lo que cuenta BOOTTIME desde que se escribió: un reinicio del servicio no esquiva la guardia. En **otro arranque**, la hora de pared no puede ser anterior al `ts` guardado (un reloj que arrancó en 1970 o con una hora vieja, todavía sin sincronizar); no hay límite superior, porque no se sabe cuánto estuvo apagado el equipo.
+
+**Sin RTC y sin estado utilizable (primera instalación, archivo borrado o corrupto) se firma, con un aviso fuerte.** Es una decisión: rechazar ahí sería permanente (el archivo solo se escribe al firmar, así que nunca habría uno, y una placa sin RTC con el directorio de estado sin escritura no podría firmar jamás). El riesgo que se acepta es el de la primera firma de la vida de la instalación; lo cubren el orden de arranque (`After=time-sync.target`) y el aviso, que dice que si la hora no es correcta la placa quedará rechazando con 403. Un archivo de estado que no se puede guardar también avisa (una vez), porque sin él el siguiente reinicio vuelve a no tener ancla.
+
+**Qué tiene que habilitar el usuario en la Orange Pi.**
+
+- `sudo systemctl enable systemd-time-wait-sync.service` (la imagen usa `systemd-timesyncd`; con chrony, `chrony-wait.service`). Sin él, `After=time-sync.target` no espera a nada. Comprobar: `systemctl is-enabled systemd-time-wait-sync.service` y `timedatectl` (`System clock synchronized: yes`).
+- Reinstalar la unidad (`orangepi/systemd/orangepi-vision.service`) para que lleve `StateDirectory=autolist`, y `sudo systemctl daemon-reload`.
+
+**Recuperación.** El log dice `revisa NTP y la sincronizacion de la hora`; no basta con reiniciar el servicio. En orden:
+
+1. **El servicio se negó a firmar** (nada se mandó a la placa; la placa está bien): revisar la hora (`timedatectl status`, `journalctl -u systemd-timesyncd`, `hwclock`). Si el RTC coincide con la hora nueva, el servicio retoma solo; si la hora se corrige y vuelve a su sitio, también. Si la hora nueva es la correcta pero no hay RTC que la confirme (se corrigió hacia adelante más de 10 minutos), reiniciar **solo el servicio** no sirve en el mismo arranque (el archivo de estado sigue anclado al valor anterior): **reiniciar la Orange Pi** (otro `boot_id`: basta con que la hora sea posterior a la guardada) o, sabiendo que la hora es correcta, borrar `/var/lib/autolist/reloj-captura.estado` y reiniciar el servicio.
+2. **La placa ya aceptó un `ts` equivocado** (se firmó antes de que existiera esta guardia, o fue la primera firma sin ancla, o una corrección legítima hacia adelante que la placa aceptó con un `ts` viejo): la placa contesta 403 a todo lo anterior a su piso menos 300 s. Corregir la hora de la Orange Pi y **reiniciar el servicio y reiniciar la placa**, o, para borrar el piso de la placa, mantener pulsado **BOOT durante 1 s dentro de los 3 s posteriores al arranque** de la placa. Reiniciar solo el servicio no cambia el piso de la placa.
+
 ## El cliente HTTP
 
-`HttplibClient` (`include/vision/httplib_client.hpp`, `src/httplib_client.cpp`) es el `HttpClient` real sobre cpp-httplib. `get` nunca lanza: cualquier fallo de red, un estado distinto de 200 o una excepción de la biblioteca devuelven status 0 y cuerpo vacío. El plazo de `get` es el de la petición entera (conexión, cabeceras y cuerpo), no el de una operación: cpp-httplib solo da plazos por operación, así que el adaptador acota el plazo de socket y además vigila el reloj desde el hilo de la petición; en cuanto se pasa el plazo total, `get` devuelve status 0. Tampoco sigue redirecciones: una redirección a otro host sería una fuga de la petición. Acepta cabeceras adicionales (`Nombre: valor`), que es como viaja el token de la galería.
+`HttplibClient` (`include/vision/httplib_client.hpp`, `src/httplib_client.cpp`) es el `HttpClient` real sobre cpp-httplib. `get` nunca lanza: cualquier fallo de red, un estado distinto de 200 o una excepción de la biblioteca devuelven status 0 y cuerpo vacío. El plazo de `get` es el de la petición entera (conexión, cabeceras y cuerpo), no el de una operación: cpp-httplib solo da plazos por operación, así que el adaptador acota el plazo de socket y además vigila el reloj desde el hilo de la petición; en cuanto se pasa el plazo total, `get` devuelve status 0. Tampoco sigue redirecciones: una redirección a otro host sería una fuga de la petición. Acepta cabeceras adicionales (`Nombre: valor`), que es como viajan el token de la galería y las tres cabeceras de la firma de la captura. Ante una respuesta que no es 200 el contrato no cambia (status 0 y cuerpo vacío), pero el código HTTP queda en `HttpResponse::rejected_status` solo para el log: así el servicio distingue el 401, 403, 429 y 503 de la placa (ver "La firma de la captura"). Un fallo de red, el plazo o el tope del cuerpo lo dejan en 0. Además lee dos cabeceras de la placa: `Retry-After` de un rechazo (`HttpResponse::retry_after_s`, solo segundos enteros) y `X-Captura-IV` de un 200 (`HttpResponse::resp_iv`).
 
 **No quedan hilos huérfanos.** Cuando se pasa el plazo total, el adaptador cierra el socket (`stop()`) y espera al hilo de la petición (`join()`): el hilo termina solo y no queda colgado. Antes el hilo se desacoplaba (`detach`) y se quedaba colgado para siempre con un servidor que gotea bytes, porque los plazos de cpp-httplib son por operación: con ráfaga 4 quedaban cuatro hilos colgados por intento, sin cota.
 
@@ -616,7 +719,7 @@ Una entrada con `"embedding": null` es el alumno pendiente de rostro: se omite d
 
 ## Limitaciones conocidas
 
-- **La cámara no se autentica.** Las fotos se piden por HTTP plano, sin autenticación ni comprobación de integridad. Quien esté en la LAN puede inyectar fotos (fraude de asistencia, envenenamiento del registro) y también leerlas. El adaptador real de `HttpClient` y el firmware de la XIAO no deben salir a producción sin una de estas tres: HMAC-SHA256 sobre un nonce más el cuerpo, un punto de acceso dedicado o TLS. No protegen lo mismo: el HMAC solo garantiza integridad y frescura, así que las fotos siguen viajando en claro por la LAN; el punto de acceso dedicado y TLS también cubren la confidencialidad. Sea cual sea la opción, `capture_url` debe apuntar a una IP fija, no a un nombre mDNS que se pueda suplantar. La decisión está pendiente con el equipo; este esqueleto no la resuelve.
+- **La petición va firmada y la respuesta, cifrada y autenticada.** El servicio firma cada petición y la placa devuelve la foto cifrada con AES-256-GCM (ver "La firma de la captura"): quien esté en la LAN no puede leerla, y una foto inyectada o alterada en el camino se descarta. Lo que sigue a la vista es el tráfico en sí (que hay una captura, su tamaño y sus tiempos) y las cabeceras de la petición, que viajan por HTTP plano. `captura.url` debe apuntar a una IP fija, no a un nombre mDNS que se pueda suplantar. El secreto compartido protege la clave y la firma: si se filtra, hay que cambiarlo en la placa y en el borde.
 - **El certificado de Node-RED es autofirmado.** La comunicación por HTTPS con el borde usa un certificado autofirmado. Se puede confiar en el certificado concreto (`http.ca_file`, que valida el servidor contra ese certificado) en vez de desactivar toda la verificación (`allow_invalid_certificates`, modo inseguro que avisa por log). Ver las secciones "El certificado autofirmado" y "El cliente HTTP".
 
 ## Lo que se completó en este hito

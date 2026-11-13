@@ -13,6 +13,8 @@
 
 #include <httplib.h>
 
+#include "vision/captura_firma.hpp"
+
 namespace vision {
 
 namespace {
@@ -118,13 +120,24 @@ HttpResponse run_request(Client& client, const ParsedUrl& url,
 
   std::vector<std::uint8_t> body;
   bool rejected = false;
+  int rejected_status = 0;
+  int retry_after_s = 0;
+  std::string resp_iv;
 
   // Las cabeceras llegan antes que el cuerpo: aqui se puede abortar sin leerlo.
   const auto response_handler = [&](const httplib::Response& received) -> bool {
     if (received.status != 200) {
       rejected = true;
+      rejected_status = received.status;  // solo para el log del llamador
+      // Retry-After en segundos enteros (hasta 5 cifras); cualquier otra forma se ignora.
+      const std::string retry = received.get_header_value("Retry-After");
+      if (!retry.empty() && retry.size() <= 5 &&
+          retry.find_first_not_of("0123456789") == std::string::npos) {
+        retry_after_s = std::atoi(retry.c_str());
+      }
       return false;
     }
+    resp_iv = received.get_header_value(kHeaderCapturaIv);
     const std::string content_length = received.get_header_value("Content-Length");
     if (!content_length.empty()) {
       const long long declared = std::atoll(content_length.c_str());
@@ -162,12 +175,19 @@ HttpResponse run_request(Client& client, const ParsedUrl& url,
       std::cerr << "[vision] fallo la peticion HTTP: " << httplib::to_string(result.error())
                 << '\n';
     }
+    response.rejected_status = rejected_status;
+    response.retry_after_s = retry_after_s;
     return response;  // status 0 y cuerpo vacio
   }
-  if (rejected || result->status != 200) return response;
+  if (rejected || result->status != 200) {
+    response.rejected_status = result->status != 200 ? result->status : rejected_status;
+    response.retry_after_s = retry_after_s;
+    return response;
+  }
 
   response.status = result->status;
   response.body = std::move(body);
+  response.resp_iv = std::move(resp_iv);
   return response;
 }
 

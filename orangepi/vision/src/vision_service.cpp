@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -12,6 +13,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "vision/alignment.hpp"
+#include "vision/captura_firma.hpp"
 #include "vision/image_header.hpp"
 #include "vision/mqtt_contract.hpp"
 #include "vision/sharpness.hpp"
@@ -180,7 +182,7 @@ std::vector<std::size_t> keep_consistent_poses(const std::vector<std::vector<flo
 }
 
 VisionService::VisionService(ServiceDeps deps, ServiceConfig config)
-    : deps_(deps), config_(std::move(config)) {
+    : deps_(deps), config_(std::move(config)), clock_guard_(deps.clock_anchors) {
   if (config_.capture_url.empty()) {
     throw std::invalid_argument("ServiceConfig.capture_url vacia");
   }
@@ -204,6 +206,10 @@ VisionService::VisionService(ServiceDeps deps, ServiceConfig config)
   if (config_.min_pose_similarity < 0.0f || config_.min_pose_similarity > 1.0f) {
     throw std::invalid_argument(
         "ServiceConfig: min_pose_similarity debe estar entre 0 y 1");
+  }
+  // La clave de la respuesta cifrada: se deriva una sola vez, al arrancar.
+  if (!config_.capture_hmac_secret.empty()) {
+    response_key_ = derivar_clave_respuesta(config_.capture_hmac_secret);
   }
   // Si la segunda suscripcion lanza, la primera (ya miembro) se da de baja al deshacerse
   // el constructor. Todo lo que usan los handlers esta construido antes de este punto.
@@ -458,20 +464,173 @@ AttendanceResult VisionService::evaluate_attendance(TimePoint start, AttendanceM
   return result;
 }
 
+// Una rafaga de fotos. Antes de empezar se respeta el intervalo minimo desde el inicio de la
+// anterior: la placa limita el ritmo y, sin esta espera, dos rafagas seguidas (el PIR
+// rebota cada 2 s) acabarian en 4 respuestas 429 y en captura_fallida.
 std::vector<cv::Mat> VisionService::capture_burst() {
+  if (last_burst_start_ && config_.burst_interval.count() > 0) {
+    const Millis elapsed =
+        std::chrono::duration_cast<Millis>(deps_.clock.now() - *last_burst_start_);
+    if (elapsed < config_.burst_interval) deps_.clock.sleep_for(config_.burst_interval - elapsed);
+  }
+  last_burst_start_ = deps_.clock.now();
+
   std::vector<cv::Mat> frames;
+  Millis retry_budget = config_.max_retry_wait;
+  CaptureStats stats;
   for (int i = 0; i < config_.burst_size; ++i) {
-    cv::Mat frame = capture_frame();
+    cv::Mat frame = capture_frame(retry_budget, stats);
     if (!frame.empty()) frames.push_back(std::move(frame));
   }
+  log_capture_stats(stats);
   return frames;
 }
 
+namespace {
+
+// Lo que significa cada codigo que puede devolver la placa en vez de la foto
+// (firmware/xiao/README.md). Nunca se vuelca el cuerpo ni la firma.
+const char* capture_rejection_text(int http_status) {
+  switch (http_status) {
+    case 401:
+      return "falta una cabecera de la firma o la firma no cuadra; revisa que "
+             "CAPTURA_HMAC_SECRETO sea el mismo en la placa y en el borde";
+    case 403:
+      return "nonce repetido o ts mas antiguo que el ultimo que acepto; revisa que el reloj del "
+             "borde no haya retrocedido";
+    case 429:
+      return "limite de ritmo de capturas de la placa";
+    case 503:
+      return "camara no lista, ocupada o por encima de la temperatura";
+    default:
+      return "respuesta inesperada en vez de la foto";
+  }
+}
+
+// La espera antes de repetir una foto con 429: lo que diga Retry-After (en segundos enteros)
+// o, si no vino, `fallback`.
+Millis retry_delay(const HttpResponse& response, Millis fallback) {
+  if (response.retry_after_s > 0) return Millis(static_cast<long long>(response.retry_after_s) * 1000);
+  return fallback;
+}
+
+}  // namespace
+
+// Un solo log por rafaga (o pose), con la cuenta: una linea por codigo de la placa y otra
+// si hubo respuestas que no son autenticas.
+void VisionService::log_capture_stats(const CaptureStats& stats) const {
+  for (const auto& [code, count] : stats.rejected) {
+    std::cerr << "[vision] la placa rechazo " << count << "/" << stats.requested
+              << " fotos con " << code << ": " << capture_rejection_text(code) << '\n';
+  }
+  const int not_authentic = stats.auth_iv_missing + stats.auth_iv_invalid +
+                            stats.auth_short_body + stats.auth_bad_tag;
+  if (not_authentic > 0) {
+    std::cerr << "[vision] respuesta no autentica: " << not_authentic << "/" << stats.requested
+              << " fotos descartadas sin decodificar (" << stats.auth_iv_missing
+              << " sin X-Captura-IV, " << stats.auth_iv_invalid << " con un IV mal formado, "
+              << stats.auth_short_body << " con menos de " << kLongitudEtiqueta
+              << " bytes, " << stats.auth_bad_tag
+              << " que no verifican); alguien puede estar contestando en nombre de la placa, o "
+                 "el secreto no coincide\n";
+  }
+}
+
 // Matriz vacia si la peticion, la validacion o la decodificacion fallan.
-cv::Mat VisionService::capture_frame() {
-  const HttpResponse response = deps_.http.get(config_.capture_url, config_.http_timeout, config_.max_body_bytes);
-  if (response.status != 200 || response.body.empty()) return {};
-  return decode_capture(response);
+//
+// Con secreto, la peticion va firmada (HMAC-SHA256, vision/captura_firma.hpp) y cada foto
+// de la rafaga lleva su propio ts y su propio nonce: la placa rechaza un nonce repetido.
+// El camino firmado es "/capture" fijo, no el de la URL. Con secreto tambien se exige que
+// el 200 venga cifrado (AES-256-GCM, vision/captura_firma.hpp) y se descifra y verifica con
+// el ts y el nonce de esta peticion; si algo falla, la foto se descarta sin decodificarla.
+//
+// Ante un 429 se espera y se repite la foto una vez (con un ts y un nonce nuevos), dentro
+// del presupuesto de espera extra de la rafaga.
+cv::Mat VisionService::capture_frame(Millis& retry_budget, CaptureStats& stats) {
+  ++stats.requested;
+  const bool signing = !config_.capture_hmac_secret.empty();
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    HttpResponse response;
+    std::int64_t ts = 0;
+    std::uint64_t nonce_value = 0;
+    if (!signing) {
+      response = deps_.http.get(config_.capture_url, config_.http_timeout, config_.max_body_bytes);
+    } else {
+      if (!deps_.http.supports_request_headers()) {
+        std::cerr << "[vision] el cliente HTTP no admite cabeceras: la peticion de captura no "
+                     "se puede firmar\n";
+        return {};
+      }
+      // El ts es del reloj del BORDE: la placa no tiene uno confiable.
+      ts = deps_.wall_clock.now_epoch_seconds();
+      if (ts < kMinEpochPlausible || ts > kMaxEpochPlausible) {
+        std::cerr << "[vision] la hora del borde no es plausible (epoch " << ts
+                  << "): revisa el RTC y NTP; no se firma la peticion de captura\n";
+        return {};
+      }
+      // La guardia del reloj de pared (reloj_guardia.hpp): un ts del futuro dejaria a la placa
+      // con un piso imposible y rechazando con 403 las capturas buenas. Mide el avance contra
+      // CLOCK_BOOTTIME (la suspension no es un salto) y ancla la primera firma tras arrancar al
+      // RTC de hardware o al archivo de estado.
+      const std::int64_t boottime_s =
+          std::chrono::duration_cast<std::chrono::seconds>(deps_.clock.boottime()).count();
+      const VeredictoReloj veredicto = clock_guard_.evaluar(ts, boottime_s);
+      if (!veredicto.mensaje.empty()) std::cerr << "[vision] " << veredicto.mensaje << '\n';
+      if (!veredicto.permitido) return {};
+      const std::optional<std::uint64_t> nonce = nonce_aleatorio();
+      if (!nonce) {
+        std::cerr << "[vision] no se pudo obtener un nonce aleatorio del sistema: no se pide "
+                     "la foto\n";
+        return {};
+      }
+      nonce_value = *nonce;
+      response = deps_.http.get(config_.capture_url, config_.http_timeout, config_.max_body_bytes,
+                                cabeceras_captura(config_.capture_hmac_secret, ts, nonce_value));
+    }
+
+    if (response.status != 200) {
+      if (response.rejected_status == 429 && attempt == 0) {
+        const Millis wait = retry_delay(response, config_.retry_wait);
+        if (wait <= retry_budget) {
+          retry_budget -= wait;
+          deps_.clock.sleep_for(wait);
+          continue;
+        }
+      }
+      if (response.rejected_status != 0) ++stats.rejected[response.rejected_status];
+      return {};
+    }
+    if (signing) {
+      // La respuesta viene cifrada (AES-256-GCM): se descifra y verifica ANTES de mirar la
+      // imagen. Cualquier fallo descarta la foto sin decodificarla.
+      HttpResponse plain;
+      plain.status = 200;
+      switch (descifrar_respuesta(*response_key_, response.resp_iv, ts, nonce_value,
+                                  response.body.data(), response.body.size(), plain.body)) {
+        case ResultadoDescifrado::Ok:
+          break;
+        case ResultadoDescifrado::IvAusente:
+          ++stats.auth_iv_missing;
+          return {};
+        case ResultadoDescifrado::IvInvalido:
+          ++stats.auth_iv_invalid;
+          return {};
+        case ResultadoDescifrado::CuerpoCorto:
+          ++stats.auth_short_body;
+          return {};
+        case ResultadoDescifrado::NoAutentico:
+          ++stats.auth_bad_tag;
+          return {};
+      }
+      if (plain.body.empty()) return {};
+      cv::Mat frame = decode_capture(plain);
+      borrar_bytes(plain.body);  // la foto en claro no se queda en memoria
+      return frame;
+    }
+    if (response.body.empty()) return {};
+    return decode_capture(response);
+  }
+  return {};  // inalcanzable: la segunda vuelta siempre retorna
 }
 
 // El cuerpo viene de la red: se acota su tamano (la interfaz HTTP ya debe haber cortado la
@@ -638,13 +797,19 @@ void VisionService::start_enrollment(const std::string& account,
 // Captura la pose en curso. Si se rechaza, la repite hasta max_attempts_per_pose.
 void VisionService::advance_enrollment() {
   Enrollment& e = *enrollment_;
+  // La captura de una pose cuenta para el ritmo de la placa: una rafaga que venga justo
+  // despues se espacia desde aqui.
+  last_burst_start_ = deps_.clock.now();
   // Se avisa de que empieza la captura de la pose en curso.
   publish_progress(e, EnrollmentStatus::Capturing);
   std::string_view reason;
   std::vector<float> embedding;
   bool internal_failure = false;
   try {
-    const cv::Mat frame = capture_frame();
+    Millis retry_budget = config_.max_retry_wait;
+    CaptureStats stats;
+    const cv::Mat frame = capture_frame(retry_budget, stats);
+    log_capture_stats(stats);
     if (frame.empty()) {
       reason = enrollment_reasons::kCaptureFailure;
     } else {

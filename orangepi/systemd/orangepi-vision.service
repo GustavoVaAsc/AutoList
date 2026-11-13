@@ -1,14 +1,29 @@
 [Unit]
 Description=Servicio de vision de AutoList (pase de lista con reconocimiento facial)
-After=network-online.target
-Wants=network-online.target
+# time-sync.target: el servicio firma sus peticiones de captura con la hora del reloj de pared,
+# y la placa (XIAO) guarda el ultimo ts que acepto: un ts equivocado (un reloj sin sincronizar
+# o con un salto) la deja rechazando con 403 las capturas buenas hasta que se reinicie. Hay que
+# arrancar con la hora ya sincronizada. OJO: time-sync.target solo significa "sincronizada" si
+# hay un servicio que espere a la sincronizacion y se ordene antes de el. Con systemd-timesyncd
+# (el de la imagen de la Orange Pi) hay que habilitar:
+#     sudo systemctl enable systemd-time-wait-sync.service
+# (con chrony, chrony-wait.service). Sin eso, el target se alcanza al instante y el orden no
+# protege de nada. Instala tambien el drop-in systemd-time-wait-sync.service.d/limite-autolist.conf
+# (espera de 120 s como mucho): sin el, un aula sin internet deja este servicio sin arrancar.
+# Ver orangepi/vision/README.md, "El reloj del borde".
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 
 [Service]
 Type=simple
 User=orangepi
 Group=orangepi
-# Directorio de trabajo: el servicio no escribe nada, pero queda en un sitio propio
-# (por debajo de /var, que con ProtectSystem=full sigue siendo escribible).
+# Directorio de estado: systemd crea /var/lib/autolist (del usuario del servicio, modo 0700) y
+# es donde el servicio guarda el ultimo ts firmado (reloj-captura.estado, captura.estado_reloj)
+# para anclar la primera firma tras un reinicio cuando la Orange Pi no tiene RTC. Es lo unico
+# que escribe. Con ProtectSystem=full, /var sigue siendo escribible.
+StateDirectory=autolist
+StateDirectoryMode=0700
 WorkingDirectory=/var/lib/autolist
 # Las credenciales (contrasena del broker y token de la galeria) van aqui, no en el
 # archivo de configuracion: este lo puede leer cualquiera.

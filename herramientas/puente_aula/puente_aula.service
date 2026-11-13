@@ -1,0 +1,106 @@
+# Unidad de USUARIO (systemctl --user): no necesita root.
+#
+#   install -D -m 0755 build/puente_aula ~/.local/bin/puente_aula
+#   install -D -m 0600 puente_aula.conf ~/.config/puente_aula/puente_aula.conf
+#   install -D -m 0644 puente_aula.service ~/.config/systemd/user/puente_aula.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now puente_aula.service
+#   journalctl --user -u puente_aula.service -f
+#
+# Para que siga corriendo sin sesion abierta (equipo fijo del aula), una persona ejecuta
+# `loginctl enable-linger $USER`.
+#
+# ESTA UNIDAD NO SUSTITUYE AL FIREWALL. Limita lo que el proceso puede hacer si lo comprometen y lo
+# que puede consumir, pero no decide quien llega al puerto: eso lo hacen escucha.interfaz en la
+# configuracion y las reglas de puente_aula.nft (el limite documentado exige las dos). Una unidad
+# de usuario no puede filtrar por direccion (IPAddressAllow/IPAddressDeny y SocketBindAllow son
+# directivas de cgroup que un gestor de usuario no aplica).
+#
+# Equipo compartido o fijo del aula (recomendado frente a esta unidad de usuario): un binario
+# propiedad de root en /usr/local/bin (un usuario normal no puede reemplazarlo) y una unidad de
+# SISTEMA con un usuario dedicado, mas, ademas de lo de abajo:
+#   IPAddressDeny=any
+#   IPAddressAllow=<ip-zerotier-de-la-orange-pi> <ip-lan-de-la-placa> (los origenes) y las IPs de
+#   los dos destinos (la placa y la Orange Pi), una lista separada por espacios
+#   SocketBindAllow=tcp:<puerto-http>
+#   SocketBindAllow=tcp:<puerto-mqtt>
+#   SocketBindDeny=any
+# (solo documentacion: este repositorio no instala unidades de sistema).
+[Unit]
+Description=puente_aula: relevo de la camara y del MQTT de la XIAO entre la LAN y ZeroTier
+# Un servicio de usuario no puede esperar a network-online.target (es del sistema). Si la IP
+# de ZeroTier aun no existe al arrancar, el puente sale con codigo 1 (no pudo abrir el
+# puerto) y Restart=on-failure lo reintenta cada 5 s, sin limite.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/puente_aula --config %h/.config/puente_aula/puente_aula.conf
+# SIGTERM: cierra las conexiones y sale con codigo 0 (no se reinicia).
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+# 78 (EX_CONFIG): configuracion invalida. 2: linea de comandos incorrecta. Ninguno se arregla
+# reintentando (llenaria el journal): queda a la vista una vez. Tras corregir el archivo hace
+# falta un reinicio MANUAL: systemctl --user restart puente_aula.service
+RestartPreventExitStatus=2 78
+
+# Limites de recursos: acotan el dano de un abuso antes de que el filtro por IP decida.
+# (MemoryMax y TasksMax dependen de que el gestor de usuario tenga delegados los controladores
+# memory y pids; si no, se ignoran en silencio.)
+#
+# Peor caso de hilos, con el maximo que permite la configuracion (mqtt.max_conexiones = 8):
+#     hilo principal                                         1
+#     relevo HTTP: hilo de escucha 1 + grupo de hasta 8      9
+#     MQTT: aceptador 1 + hasta 2 x 8 conexiones (las
+#           expulsadas tardan unos ms en irse)              17
+#                                                    total  27
+# Con el valor por omision (2 conexiones) son 15. TasksMax=64 deja mas del doble de margen sobre 27.
+# Peor caso de descriptores: 3 de entrada/salida + relevo (1 de escucha + 8 hilos + 8 en cola + 1 hacia
+# la placa = 18) + MQTT (2 de escucha y parada + 16 conexiones x 3 + 1 recien aceptado = 51) + las
+# bibliotecas, unos 85 en total: LimitNOFILE=256 triplica el peor caso. MemoryMax=64M cubre con
+# holgura un cuerpo de 2 MiB (el tope por omision) en vuelo y los buffers de 16 KiB por sentido.
+MemoryMax=64M
+TasksMax=64
+LimitNOFILE=256
+# Sin volcados de memoria: los buffers del reenviador pueden contener la contrasena MQTT.
+LimitCORE=0
+UMask=0077
+
+# --- Endurecimiento sin espacios de nombres (funciona siempre en el gestor de usuario) --------
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+# Filtros seccomp (no necesitan espacios de nombres, por eso van aqui y no en el bloque de abajo).
+# AF_UNIX no hace falta: el journal llega como descriptor ya conectado (stdout/stderr) y las IPs
+# son literales (no hay resolucion de nombres ni nscd).
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+# --- Endurecimiento con espacios de nombres de usuario ---------------------------------------
+# Si la unidad falla con estado 218/CAPABILITIES o 226/NAMESPACE (el sistema no deja crear espacios
+# de nombres a los usuarios), quita SOLO este bloque; el de arriba sigue valiendo.
+PrivateUsers=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

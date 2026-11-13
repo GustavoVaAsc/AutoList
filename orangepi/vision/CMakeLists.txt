@@ -27,6 +27,10 @@ find_package(nlohmann_json 3.11 REQUIRED)
 # libmosquitto: el bus MQTT (broker del borde). cpp-httplib: el cliente HTTP (Node-RED).
 pkg_check_modules(MOSQUITTO REQUIRED IMPORTED_TARGET libmosquitto)
 pkg_check_modules(CPPHTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
+# OpenSSL (libcrypto): el AES-256-GCM de la respuesta de la captura (captura_firma.cpp). Ya
+# estaba en el enlace por cpp-httplib (HTTPS de la galeria); se pide explicito porque
+# vision_core lo usa directamente.
+find_package(OpenSSL REQUIRED)
 
 # Runtime VIPLite del fabricante. libNBGlinker exporta vip_*; depende de libVIPhal.
 # VIPLITE_ROOT (-DVIPLITE_ROOT=... o variable de entorno) apunta a otra instalacion.
@@ -41,18 +45,22 @@ endif()
 # --- Logica del servicio (sin NPU) ------------------------------------------
 add_library(vision_core STATIC
   src/alignment.cpp
+  src/captura_firma.cpp
   src/gallery.cpp
+  src/hmac_sha256.cpp
   src/image_header.cpp
   src/json_payload.cpp
   src/npu_preprocess.cpp
   src/process_config.cpp
+  src/reloj_guardia.cpp
   src/retinaface_decode.cpp
   src/sharpness.cpp
   src/tensor.cpp
   src/vision_service.cpp
   src/wall_clock.cpp)
 target_include_directories(vision_core PUBLIC include)
-target_link_libraries(vision_core PUBLIC PkgConfig::OPENCV nlohmann_json::nlohmann_json)
+target_link_libraries(vision_core PUBLIC PkgConfig::OPENCV nlohmann_json::nlohmann_json
+                      OpenSSL::Crypto)
 target_link_options(vision_core PUBLIC -Wl,--as-needed)
 
 # --- Wrapper de la NPU ------------------------------------------------------
@@ -116,11 +124,14 @@ target_include_directories(minitest_main PUBLIC tests)
 
 add_executable(test_core
   tests/test_alignment.cpp
+  tests/test_captura_firma.cpp
   tests/test_gallery.cpp
+  tests/test_hmac_sha256.cpp
   tests/test_image_header.cpp
   tests/test_json_payload.cpp
   tests/test_npu_preprocess.cpp
   tests/test_process_config.cpp
+  tests/test_reloj_guardia.cpp
   tests/test_retinaface_decode.cpp
   tests/test_sharpness.cpp
   tests/test_tensor.cpp

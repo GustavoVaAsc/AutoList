@@ -1,0 +1,22 @@
+cpp-httplib v0.64.0 (single header httplib.h, MIT; LICENSE alongside)
+upstream:   https://github.com/yhirose/cpp-httplib  tag v0.64.0
+commit:     24e58ce5b25d55045af4cd6f463e83a8082fbe6b
+tag date:   2026-10-29T21:11:06Z (release published; >= 2 weeks old when vendored on 2026-11-13)
+sha256 httplib.h: 805169049e6a6e9ba7729d7e01d14ced825029c88a277586602a6b38df4d5357
+sha256 LICENSE:   4b45cbe16d7b71b89ae6127e26e0d90a029198ca5e958ad8e3d0b8bbed364d8b
+git blob httplib.h: db60151bb7a15fa44d3d17f2d7856ac71273b55e
+git blob LICENSE:   3e5ed359a2bb16f52c383745c25f14bb7a81c9e4
+
+Why: the system package (0.14.3) is affected by CVE-2025-52887 (unbounded request headers,
+memory exhaustion before the allowlist runs). This project pins >= 0.21 and vendors the header.
+CMakeLists.txt refuses to configure if the sha256 of httplib.h does not match.
+
+How it was verified (2026-11-13): downloaded httplib.h and LICENSE from
+raw.githubusercontent.com/yhirose/cpp-httplib/v0.64.0/ ; the release publishes no checksum
+assets, so the git blob ids computed locally with `git hash-object` were compared with the
+blob ids that api.github.com returns for the tree of the tag's commit (they match, as do
+the sizes: 859599 and 1075 bytes).
+
+To update: pick a tag at least two weeks old, repeat the download and the blob comparison,
+and change the three places (this file, the files, and EXPECTED_HTTPLIB_SHA256 in CMakeLists.txt).
+Follow-up: orangepi/vision still uses the system cpp-httplib 0.14.3.

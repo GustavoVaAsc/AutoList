@@ -152,6 +152,8 @@ const char* aTexto(Resultado resultado) {
       return "nonce repetido";
     case Resultado::TimestampAntiguo:
       return "timestamp antiguo";
+    case Resultado::TimestampFuturo:
+      return "timestamp futuro";
   }
   return "desconocido";
 }
@@ -165,6 +167,7 @@ int codigoHttp(Resultado resultado) {
       return 401;
     case Resultado::NonceRepetido:
     case Resultado::TimestampAntiguo:
+    case Resultado::TimestampFuturo:
       return 403;
   }
   return 401;
@@ -175,15 +178,28 @@ Validador::Validador(const char* secreto, size_t longitudSecreto)
 
 bool Validador::nonceVisto(uint64_t nonce) const {
   for (size_t i = 0; i < total_nonces_; ++i) {
-    if (nonces_[i] == nonce) {
+    if (nonces_[i].nonce == nonce) {
       return true;
     }
   }
   return false;
 }
 
-void Validador::recordarNonce(uint64_t nonce) {
-  nonces_[siguiente_nonce_] = nonce;
+void Validador::establecerPiso(int64_t ts) {
+  if (!hay_piso_ || ts > piso_ts_) {
+    piso_ts_ = ts;
+    hay_piso_ = true;
+  }
+}
+
+void Validador::recordarNonce(int64_t ts, uint64_t nonce) {
+  if (total_nonces_ == kNoncesRecordados) {
+    // El anillo está lleno: la entrada que se pisa sale de la memoria. Su ts
+    // pasa a ser el piso, así que reenviarla (con un nonce que ya no se
+    // recuerda) tampoco sirve.
+    establecerPiso(nonces_[siguiente_nonce_].ts);
+  }
+  nonces_[siguiente_nonce_] = {ts, nonce};
   siguiente_nonce_ = (siguiente_nonce_ + 1) % kNoncesRecordados;
   if (total_nonces_ < kNoncesRecordados) {
     ++total_nonces_;
@@ -195,9 +211,71 @@ void Validador::reiniciar() {
   siguiente_nonce_ = 0;
   ultimo_ts_ = 0;
   hay_ultimo_ts_ = false;
+  ultimo_ts_ms_ = 0;
+  piso_ts_ = 0;
+  hay_piso_ = false;
 }
 
-Resultado Validador::validar(const Peticion& peticion) {
+int64_t pisoDeArranque(int64_t guardado) {
+  if (guardado > INT64_MAX - kPasoPersistenciaTsS) return INT64_MAX;
+  return guardado + kPasoPersistenciaTsS;
+}
+
+void PersistenciaTs::arrancar(bool hay_guardado, int64_t guardado, uint64_t ahora_ms) {
+  hay_guardado_ = hay_guardado;
+  guardado_ = guardado;
+  hay_base_ = hay_guardado;
+  base_ = guardado;
+  base_ms_ = ahora_ms;
+  hubo_escritura_ = false;
+  ultima_escritura_ms_ = 0;
+}
+
+int64_t PersistenciaTs::valor(uint64_t ahora_ms, int64_t actual) const {
+  if (!hay_base_) return actual;  // primer arranque de la placa: sin referencia
+  // La primera escritura del arranque sube como mucho el avance máximo; las
+  // siguientes, además, el tiempo que lleva encendida la placa.
+  uint64_t margen_s = static_cast<uint64_t>(kAvanceMaxPersistenciaS);
+  if (hubo_escritura_ && ahora_ms > base_ms_) margen_s += (ahora_ms - base_ms_) / 1000;
+  if (margen_s > static_cast<uint64_t>(INT64_MAX - base_)) return actual < base_ ? base_ : actual;
+  const int64_t tope = base_ + static_cast<int64_t>(margen_s);
+  return actual < tope ? actual : tope;
+}
+
+bool PersistenciaTs::debeEscribir(uint64_t ahora_ms, int64_t actual) const {
+  if (hubo_escritura_ && ahora_ms - ultima_escritura_ms_ < kIntervaloEscrituraTsMs) return false;
+  if (!hay_guardado_) return true;
+  const int64_t v = valor(ahora_ms, actual);
+  // Con v > guardado la resta sin signo da el avance real sin desbordar. Si el
+  // tope ya está alcanzado, v no supera al guardado y no se escribe.
+  return v > guardado_ && static_cast<uint64_t>(v) - static_cast<uint64_t>(guardado_) >=
+                              static_cast<uint64_t>(kPasoPersistenciaTsS);
+}
+
+void PersistenciaTs::registrarEscritura(uint64_t ahora_ms, int64_t valor) {
+  guardado_ = valor;
+  hay_guardado_ = true;
+  hubo_escritura_ = true;
+  ultima_escritura_ms_ = ahora_ms;
+  if (!hay_base_) {
+    hay_base_ = true;
+    base_ = valor;
+    base_ms_ = ahora_ms;
+  }
+}
+
+Resultado Validador::validar(const Peticion& peticion, int64_t* ts_aceptado,
+                             uint64_t* nonce_aceptado) {
+  return validarInterno(peticion, false, 0, ts_aceptado, nonce_aceptado);
+}
+
+Resultado Validador::validar(const Peticion& peticion, uint64_t ahora_ms, int64_t* ts_aceptado,
+                             uint64_t* nonce_aceptado) {
+  return validarInterno(peticion, true, ahora_ms, ts_aceptado, nonce_aceptado);
+}
+
+Resultado Validador::validarInterno(const Peticion& peticion, bool hay_reloj, uint64_t ahora_ms,
+                                    int64_t* ts_aceptado, uint64_t* nonce_aceptado) {
   // 1. Cabeceras ausentes: sin firma que comprobar, no se responde 403.
   if (peticion.ts == nullptr || peticion.nonce == nullptr || peticion.hmac == nullptr) {
     return Resultado::CabecerasFaltantes;
@@ -255,6 +333,10 @@ Resultado Validador::validar(const Peticion& peticion) {
   if (nonceVisto(nonce_valor)) {
     return Resultado::NonceRepetido;
   }
+  // El piso (arranque o nonce expulsado): ts menor o igual no sirve.
+  if (hay_piso_ && ts_valor <= piso_ts_) {
+    return Resultado::TimestampAntiguo;
+  }
   if (hay_ultimo_ts_ && ts_valor < ultimo_ts_) {
     // La diferencia se calcula sin signo: con los dos valores dentro de int64
     // la resta da el hueco real sin desbordarse.
@@ -264,23 +346,37 @@ Resultado Validador::validar(const Peticion& peticion) {
       return Resultado::TimestampAntiguo;
     }
   }
-  // OJO: no hay límite superior para el ts. El ts lo pone el reloj del borde y
-  // entre dos capturas puede pasar más de una hora (una sesión sin alumunos),
-  // así que un ts "en el futuro" respecto del último no significa que el reloj
-  // haya saltado. Lo que sí puede pasar es que el reloj del borde salte hacia
-  // atrás: entonces todas las peticiones quedan "antiguas" y la captura se
-  // queda muerta hasta que el reloj vuelva a pasar por el valor anterior. Por
-  // eso el borde comprueba que su reloj sea plausible ANTES de firmar
-  // (vision/src/main.cpp, is_plausible_timestamp) y avisa por log: el fallo se
-  // ve en el borde, no como un 403 sin explicación en la placa.
+  // El adelanto: un ts no puede ir más lejos del último aceptado que el tiempo
+  // que lleva corriendo la placa desde entonces (más kAdelantoMaxS de margen).
+  // Sin esto, un ts absurdo aceptado una vez dejaría "último ts" tan arriba
+  // que ninguna petición legítima volvería a alcanzarlo.
+  if (hay_reloj && hay_ultimo_ts_ && ts_valor > ultimo_ts_) {
+    const uint64_t transcurrido_s = ahora_ms > ultimo_ts_ms_ ? (ahora_ms - ultimo_ts_ms_) / 1000 : 0;
+    const uint64_t adelanto = static_cast<uint64_t>(ts_valor) - static_cast<uint64_t>(ultimo_ts_);
+    if (adelanto > transcurrido_s + kAdelantoMaxS) {
+      return Resultado::TimestampFuturo;
+    }
+  }
+  // OJO: el ts lo pone el reloj del borde y entre dos capturas puede pasar más
+  // de una hora (una sesión sin alumnos): el adelanto de arriba crece con el
+  // tiempo que corre la placa, así que una pausa larga legítima no se rechaza.
+  // Lo que sí puede pasar es que el reloj del borde salte hacia atrás: entonces
+  // todas las peticiones quedan "antiguas" y la captura se queda muerta hasta
+  // que el reloj vuelva a pasar por el valor anterior. Por eso el borde
+  // comprueba que su reloj sea plausible ANTES de firmar (vision/src/main.cpp,
+  // is_plausible_timestamp) y avisa por log: el fallo se ve en el borde, no
+  // como un 403 sin explicación en la placa.
 
-  recordarNonce(nonce_valor);
+  recordarNonce(ts_valor, nonce_valor);
   // La marca de frescura no baja nunca: con el reloj del borde avanzando es el
   // último ts aceptado; si el reloj retrocede, la ventana no se afloja.
   if (!hay_ultimo_ts_ || ts_valor > ultimo_ts_) {
     ultimo_ts_ = ts_valor;
+    ultimo_ts_ms_ = hay_reloj ? ahora_ms : 0;
     hay_ultimo_ts_ = true;
   }
+  if (ts_aceptado != nullptr) *ts_aceptado = ts_valor;
+  if (nonce_aceptado != nullptr) *nonce_aceptado = nonce_valor;
   return Resultado::Aceptada;
 }
 
@@ -334,6 +430,45 @@ size_t construirCadenaCanonica(char* destino, size_t capacidad, const char* meto
   i += largoNonce;
   destino[i] = '\0';
   return largo;
+}
+
+void derivarClaveRespuesta(const char* secreto, size_t longitud_secreto, uint8_t* clave) {
+  hmac_sha256::hmacSha256(reinterpret_cast<const uint8_t*>(secreto), longitud_secreto,
+                          reinterpret_cast<const uint8_t*>(kContextoClaveRespuesta),
+                          strlen(kContextoClaveRespuesta), clave);
+}
+
+size_t construirAadRespuesta(char* destino, size_t capacidad, int64_t ts, uint64_t nonce) {
+  if (destino == nullptr || capacidad == 0) {
+    return 0;
+  }
+  const uint64_t magnitudTs = ts < 0 ? (~static_cast<uint64_t>(ts) + 1) : static_cast<uint64_t>(ts);
+  char ts_texto[24];
+  char nonce_texto[24];
+  const size_t largoTs = escribirDecimal(magnitudTs, ts < 0, ts_texto, sizeof ts_texto);
+  const size_t largoNonce = escribirDecimal(nonce, false, nonce_texto, sizeof nonce_texto);
+  if (largoTs == 0 || largoNonce == 0) {
+    return 0;
+  }
+  const size_t largo = 4 + 1 + largoTs + 1 + largoNonce;
+  if (largo + 1 > capacidad) {
+    return 0;
+  }
+  size_t i = 0;
+  memcpy(destino + i, "RESP", 4);
+  i += 4;
+  destino[i++] = '\n';
+  memcpy(destino + i, ts_texto, largoTs);
+  i += largoTs;
+  destino[i++] = '\n';
+  memcpy(destino + i, nonce_texto, largoNonce);
+  i += largoNonce;
+  destino[i] = '\0';
+  return largo;
+}
+
+void ivAHex(const uint8_t* iv, char* destino) {
+  hmac_sha256::aHex(iv, kLongitudIv, destino);
 }
 
 }  // namespace logica_camara

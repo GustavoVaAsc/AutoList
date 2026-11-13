@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -20,6 +22,7 @@
 #include "vision/face_embedder.hpp"
 #include "vision/http_client.hpp"
 #include "vision/message_bus.hpp"
+#include "vision/reloj_guardia.hpp"
 #include "vision/wall_clock.hpp"
 
 namespace vision::fakes {
@@ -39,9 +42,19 @@ class ManualClock final : public Clock {
     if (on_sleep) on_sleep();
     advance(duration);
   }
+  // BOOTTIME: lo que cuenta now() mas el tiempo de suspension (que now() no cuenta).
+  Millis boottime() const override {
+    std::lock_guard lock(mutex_);
+    return std::chrono::duration_cast<Millis>(now_.time_since_epoch()) + suspended_;
+  }
   void advance(Millis duration) {
     std::lock_guard lock(mutex_);
     now_ += duration;
+  }
+  // El equipo se suspende: BOOTTIME avanza y el reloj monotonico no.
+  void suspend(Millis duration) {
+    std::lock_guard lock(mutex_);
+    suspended_ += duration;
   }
 
   std::vector<Millis> sleeps;
@@ -51,6 +64,7 @@ class ManualClock final : public Clock {
  private:
   mutable std::mutex mutex_;
   TimePoint now_{};
+  Millis suspended_{0};
 };
 
 struct PublishedMessage {
@@ -65,9 +79,37 @@ class FixedWallClock final : public WallClock {
     if (on_now) on_now();
     return value;
   }
+  // El epoch del mismo instante que "value" (2026-11-04T09:12:33-06:00). Es un campo
+  // aparte: las pruebas que cambian "value" no mueven el epoch, y al reves.
+  std::int64_t now_epoch_seconds() const override {
+    if (on_now) on_now();
+    return epoch_seconds;
+  }
 
   std::string value = "2026-11-04T09:12:33.120-06:00";
+  std::int64_t epoch_seconds = 1793805153;
   std::function<void()> on_now;  // puede lanzar para simular un fallo
+};
+
+// Anclas del reloj en memoria: el RTC, el id de arranque y el archivo de estado que las
+// pruebas controlan (y pueden "reiniciar" cambiando boot_id sin tocar el estado).
+class FakeAnclasReloj final : public AnclasReloj {
+ public:
+  std::optional<std::int64_t> rtc_epoch_seconds() override { return rtc; }
+  std::optional<std::string> boot_id() override { return boot; }
+  std::optional<std::string> leer_estado() override { return estado; }
+  bool guardar_estado(const std::string& contenido) override {
+    ++escrituras;
+    if (!se_puede_guardar) return false;
+    estado = contenido;
+    return true;
+  }
+
+  std::optional<std::int64_t> rtc;
+  std::optional<std::string> boot = "aaaaaaaa-0000-0000-0000-000000000001";
+  std::optional<std::string> estado;
+  bool se_puede_guardar = true;
+  int escrituras = 0;
 };
 
 // Entrega los mensajes en el hilo que llama a inject. Cumple el contrato de MessageBus:

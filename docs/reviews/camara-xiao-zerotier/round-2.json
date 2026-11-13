@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "round": 2,
+  "slug": "camara-xiao-zerotier",
+  "docFile": "docs/reviews/camara-xiao-zerotier/doc.md",
+  "submittedAt": "2026-11-13T18:18:59.731Z",
+  "docHash": "sha256:b49a0658c73080c12ea43f7c6a19ea60820d826225e29b5b07fd7d25f7798707",
+  "overall": "Únicamente documenta el cambio en la arquitectura sin borrar el plan original, el chiste es hacerlo funcionar ahora, luego vemos cómo se puede implementar la comunicación directa XIAO <> MQTT, agrégalo como pendiente si es que nos da la vida",
+  "comments": [],
+  "answers": [
+    {
+      "id": "puente-forma",
+      "type": "single",
+      "prompt": "¿Cómo cruzan las fotos y el MQTT entre la LAN de la XIAO y ZeroTier?",
+      "selected": [
+        {
+          "index": 0,
+          "label": "(A) Puente C++ `puente_aula` (HTTP + reenvío TCP de MQTT) en un equipo Linux (recomendado)"
+        }
+      ],
+      "other": "",
+      "text": "",
+      "answered": true
+    },
+    {
+      "id": "puente-host",
+      "type": "single",
+      "prompt": "Si es (A) o (B), ¿en qué equipo corre de forma permanente?",
+      "selected": [
+        {
+          "index": 0,
+          "label": "Esta laptop para las pruebas; un equipo dedicado en el aula para el despliegue (recomendado)"
+        }
+      ],
+      "other": "",
+      "text": "",
+      "answered": true
+    },
+    {
+      "id": "aprobar-w3",
+      "type": "single",
+      "prompt": "Con la forma y el equipo elegidos, ¿delego W3?",
+      "selected": [
+        {
+          "index": 0,
+          "label": "Sí, delegar W3"
+        }
+      ],
+      "other": "",
+      "text": "",
+      "answered": true
+    }
+  ],
+  "mac": "hmac-sha256:cff76a339a516f00e4bee0056207a8faa5d5b15c89c6d3b68dc5d2872c614f77"
+}

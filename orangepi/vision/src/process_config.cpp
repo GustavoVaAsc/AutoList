@@ -5,10 +5,12 @@
 // se leen nombres de variables, nunca valores de credenciales.
 #include "vision/process_config.hpp"
 
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -235,6 +237,7 @@ ServiceConfig ProcessConfig::to_service_config() const {
   config.min_dudoso_score = thresholds.min_dudoso_score;
   config.min_pose_similarity = thresholds.min_similitud_pose;
   config.http_timeout = Millis(capture.http_timeout_ms);
+  config.burst_interval = Millis(capture.burst_interval_ms);
   config.max_body_bytes = capture.max_body_bytes;
   config.max_inbox_events = service.max_inbox_events;
   config.accept_png = service.accept_png;
@@ -245,7 +248,8 @@ ServiceConfig ProcessConfig::to_service_config() const {
 bool parse_process_config(const std::string& document, ProcessConfig& out, std::string& error) {
   json parsed;
   try {
-    parsed = json::parse(document);
+    // Con comentarios (// y /* */): vision.conf.example los usa para explicar un valor.
+    parsed = json::parse(document, nullptr, true, /*ignore_comments=*/true);
   } catch (const json::exception&) {
     error = "el documento no es JSON valido";
     return false;
@@ -285,7 +289,9 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
 
   if (!seccion(parsed, "captura", bloque, error)) return false;
   if (!solo_claves(bloque, {"url", "rafaga", "espera_luz_ms", "http_timeout_ms",
-                            "max_body_bytes"},
+                            "max_body_bytes", "intervalo_rafagas_ms", "estado_reloj",
+                            "hmac_secreto_env",
+                            "hmac_requerido"},
                    "captura", error)) {
     return false;
   }
@@ -300,6 +306,26 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   }
   if (!leer_tamano(bloque, "captura", "max_body_bytes", config.capture.max_body_bytes, error)) {
     return false;
+  }
+  if (!leer_entero(bloque, "captura", "intervalo_rafagas_ms", config.capture.burst_interval_ms,
+                   error)) {
+    return false;
+  }
+  if (!exigir(config.capture.burst_interval_ms >= 0, "captura", "intervalo_rafagas_ms",
+              "no puede ser negativo", error)) {
+    return false;
+  }
+  if (!leer_string(bloque, "captura", "estado_reloj", config.capture.clock_state_file, error)) {
+    return false;
+  }
+  if (!leer_string(bloque, "captura", "hmac_secreto_env", config.capture.hmac_secret_env,
+                   error)) {
+    return false;
+  }
+  if (bloque.contains("hmac_requerido")) {
+    bool requerido = false;
+    if (!leer_logico(bloque, "captura", "hmac_requerido", requerido, error)) return false;
+    config.capture.hmac_required = requerido;
   }
   if (!exigir(!config.capture.url.empty(), "captura", "url", "no puede estar vacia", error)) {
     return false;
@@ -487,6 +513,81 @@ std::string resumen_npu(const NpuSettings& npu) {
   return std::string("detector: color ") + texto_color(npu.color_order) + ", escala " +
          texto_escala(npu.scale_mode) + "; embedder: color " +
          texto_color(npu.embed_color_order) + ", escala " + texto_escala(npu.embed_scale_mode);
+}
+
+SecretoCaptura resolver_secreto_captura(const CaptureSettings& captura,
+                                        const std::optional<std::string>& entorno,
+                                        bool dry_run) {
+  SecretoCaptura resultado;
+  const std::string& nombre = captura.hmac_secret_env;
+  // Solo se nombra la variable: el valor del secreto nunca va a un mensaje.
+  std::string motivo;
+  if (nombre.empty() || !entorno.has_value() || entorno->empty()) {
+    motivo = "no esta la variable de entorno " + (nombre.empty() ? "(sin nombre)" : nombre);
+  } else if (entorno->find(kPrefijoPlaceholder) != std::string::npos) {
+    motivo = "la variable " + nombre + " conserva el placeholder de la plantilla";
+  } else if (entorno->size() < kMinLongitudSecreto) {
+    motivo = "la variable " + nombre + " tiene menos de " +
+             std::to_string(kMinLongitudSecreto) + " caracteres";
+  } else if (std::set<char>(entorno->begin(), entorno->end()).size() < kMinCaracteresDistintos) {
+    motivo = "la variable " + nombre + " tiene menos de " +
+             std::to_string(kMinCaracteresDistintos) + " caracteres distintos entre si";
+  } else {
+    resultado.valor = *entorno;
+    return resultado;
+  }
+
+  const bool requerido = captura.hmac_required.value_or(!url_es_loopback(captura.url));
+  if (requerido && !dry_run) {
+    resultado.fatal = true;
+    resultado.mensaje = motivo + ": la peticion de captura tiene que ir firmada";
+  } else {
+    resultado.mensaje = "AVISO: " + motivo + ": la peticion de captura va sin firma" +
+                        (dry_run ? " (--dry-run)" : "");
+  }
+  return resultado;
+}
+
+bool url_es_loopback(const std::string& url) {
+  const std::size_t fin_esquema = url.find("://");
+  if (fin_esquema == std::string::npos) return false;
+  std::size_t inicio = fin_esquema + 3;
+  const std::size_t fin_autoridad = url.find_first_of("/?#", inicio);
+  std::string autoridad = url.substr(inicio, fin_autoridad == std::string::npos
+                                                  ? std::string::npos
+                                                  : fin_autoridad - inicio);
+  const std::size_t arroba = autoridad.rfind('@');
+  if (arroba != std::string::npos) autoridad.erase(0, arroba + 1);
+
+  std::string host;
+  if (!autoridad.empty() && autoridad.front() == '[') {
+    const std::size_t cierre = autoridad.find(']');
+    if (cierre == std::string::npos) return false;
+    host = autoridad.substr(1, cierre - 1);
+  } else {
+    host = autoridad.substr(0, autoridad.find(':'));
+  }
+  for (char& c : host) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (host == "localhost" || host == "::1") return true;
+
+  // 127.0.0.0/8: cuatro numeros decimales de 0 a 255, el primero 127.
+  int octetos[4];
+  std::size_t pos = 0;
+  for (int i = 0; i < 4; ++i) {
+    const std::size_t inicio_numero = pos;
+    int valor = 0;
+    while (pos < host.size() && host[pos] >= '0' && host[pos] <= '9' && pos - inicio_numero < 3) {
+      valor = valor * 10 + (host[pos] - '0');
+      ++pos;
+    }
+    if (pos == inicio_numero || valor > 255) return false;
+    octetos[i] = valor;
+    if (i < 3) {
+      if (pos >= host.size() || host[pos] != '.') return false;
+      ++pos;
+    }
+  }
+  return pos == host.size() && octetos[0] == 127;
 }
 
 bool url_admite_token(const std::string& url) {

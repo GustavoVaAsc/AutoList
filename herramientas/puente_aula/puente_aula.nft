@@ -1,0 +1,69 @@
+#!/usr/sbin/nft -f
+# Plantilla de firewall de puente_aula (nftables). NO se aplica sola: la ajusta y la aplica una
+# persona con sudo. Sustituye los valores de los "define" de abajo (las IPs son de documentacion,
+# RFC 5737 y RFC 3849, y las interfaces son nombres de ejemplo) y comprueba antes de aplicar:
+#
+#   sudo nft -c -f puente_aula.nft           # solo comprueba la sintaxis
+#   sudo nft -f puente_aula.nft              # aplica; se puede repetir: REEMPLAZA la tabla
+#   sudo nft delete table inet puente_aula   # para quitarla
+#
+# Por que: el filtro por IP de origen del puente actua cuando ya hay una conexion TCP y, en HTTP,
+# una cabecera leida. Este firewall corta antes: SOLO la Orange Pi (por ZeroTier) llega al puerto
+# del relevo y SOLO la placa (por la LAN) llega al puerto del MQTT. Todo lo demas a esas
+# direcciones y puertos se descarta, venga por la interfaz que venga y por IPv4 o IPv6 (que aqui no
+# tiene regla de aceptacion). La segunda parte impide que este equipo enrute entre la LAN y ZeroTier
+# aunque net.ipv4.ip_forward valga 1 (Docker lo activa): el puente es el unico camino entre las dos
+# redes. Con la opcion "interfaz" de la configuracion, esto es el limite documentado, no un extra.
+#
+# Las reglas solo tocan las direcciones propias del puente (ZT_IP, LAN_IP y sus equivalentes IPv6):
+# ni el loopback ni otros servicios del equipo se ven afectados. La tabla es "inet puente_aula" y no
+# se mezcla con las de Docker o ufw. Prioridad -10: antes de las cadenas de filtro habituales (0).
+# Un "accept" aqui no salta las reglas de otras tablas.
+#
+# PERSISTENCIA tras un reinicio: este archivo solo vale hasta que se reinicie el equipo. Para que
+# se cargue siempre, copialo a /etc/nftables.d/puente_aula.nft (root, modo 0644), anade a
+# /etc/nftables.conf la linea  include "/etc/nftables.d/puente_aula.nft"  y habilita el servicio:
+#   sudo systemctl enable --now nftables.service
+# Ojo: el /etc/nftables.conf por omision de Debian y Ubuntu empieza con "flush ruleset", que borra
+# tambien las tablas de otros (Docker las vuelve a crear al arrancar, ufw tiene las suyas): revisa
+# ese archivo antes de habilitar el servicio.
+
+define ZT_IF       = "ztXXXXXXXX"        # interfaz de ZeroTier de este equipo   (ip -br link)
+define LAN_IF      = "wlan0"             # interfaz de la LAN del aula
+define ZT_IP       = 192.0.2.10          # IP de ZeroTier de este equipo = http.escucha.ip
+define LAN_IP      = 192.0.2.11          # IP de la LAN de este equipo   = mqtt.escucha.ip
+define ZT_IP6      = 2001:db8::10        # lo mismo en IPv6 (si el equipo no tiene IPv6, queda sin uso)
+define LAN_IP6     = 2001:db8::11
+define OPI_ZT_IP   = 198.51.100.7        # IP de ZeroTier de la Orange Pi = http.permitidos
+define XIAO_LAN_IP = 192.0.2.50          # IP de la placa en la LAN       = mqtt.permitidos
+define HTTP_PORT   = 8080                # http.escucha.puerto
+define MQTT_PORT   = 1883                # mqtt.escucha.puerto
+
+# Reemplazo atomico: "table" crea la tabla si no existe (y no hace nada si existe), "delete table"
+# la borra y el bloque de abajo la vuelve a crear, todo en una sola transaccion. Aplicarlo dos veces
+# deja UNA tabla con UN juego de reglas, nunca reglas duplicadas.
+table inet puente_aula
+delete table inet puente_aula
+
+table inet puente_aula {
+  chain entrada {
+    type filter hook input priority -10; policy accept;
+
+    # Relevo HTTP: solo la Orange Pi, por ZeroTier, hacia la IP de ZeroTier de este equipo.
+    iifname $ZT_IF ip saddr $OPI_ZT_IP ip daddr $ZT_IP tcp dport $HTTP_PORT accept
+    # Reenviador MQTT: solo la placa, por la LAN, hacia la IP de la LAN de este equipo.
+    iifname $LAN_IF ip saddr $XIAO_LAN_IP ip daddr $LAN_IP tcp dport $MQTT_PORT accept
+
+    # Todo lo demas hacia las direcciones del puente y sus puertos (IPv4 e IPv6).
+    ip daddr { $ZT_IP, $LAN_IP } tcp dport { $HTTP_PORT, $MQTT_PORT } drop
+    ip6 daddr { $ZT_IP6, $LAN_IP6 } tcp dport { $HTTP_PORT, $MQTT_PORT } drop
+  }
+
+  # Este equipo no enruta entre la LAN y ZeroTier (los paquetes en transito, no los propios).
+  # "zt*" cubre todas las interfaces de ZeroTier (una por red, cada una con su nombre).
+  chain reenvio {
+    type filter hook forward priority -10; policy accept;
+    iifname $LAN_IF oifname "zt*" drop
+    iifname "zt*" oifname $LAN_IF drop
+  }
+}

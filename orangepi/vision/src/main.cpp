@@ -13,7 +13,8 @@
 // configuracion ausente, sin la contrasena del broker o sin el token de la galeria.
 // Los tres casos son de "fallar cerrado": es preferible que el servicio no este a que
 // este sin autenticar. El modo tolerante queda para --dry-run, que es el recorrido de
-// pruebas.
+// pruebas. El secreto de la firma de la captura es la excepcion controlada: solo es
+// obligatorio con captura.hmac_requerido (ver process_config.hpp).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -23,6 +24,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,6 +40,7 @@
 #include "vision/npu_face_detector.hpp"
 #include "vision/npu_face_embedder.hpp"
 #include "vision/process_config.hpp"
+#include "vision/reloj_guardia.hpp"
 #include "vision/vision_service.hpp"
 #include "vision/wall_clock.hpp"
 
@@ -326,6 +329,35 @@ int main(int argc, char** argv) {
     token.clear();
   }
 
+  // El secreto de la firma de la captura: viene del entorno, como el token de la galeria
+  // (el archivo de configuracion no lleva credenciales). Es el MISMO valor que lleva la
+  // placa; si no cuadra, la placa rechaza la peticion con 401. Con captura.hmac_requerido
+  // (y sin --dry-run) un secreto ausente, el placeholder o corto es un error de
+  // configuracion; si no, solo se avisa y la peticion va sin firma. Nunca se imprime el
+  // valor, solo el nombre de la variable.
+  std::string secreto_captura;
+  {
+    std::optional<std::string> entorno;
+    std::string leido;
+    if (!config.capture.hmac_secret_env.empty() &&
+        leer_entorno(config.capture.hmac_secret_env, leido)) {
+      entorno = std::move(leido);
+    }
+    SecretoCaptura secreto = resolver_secreto_captura(config.capture, entorno, dry_run);
+    if (secreto.fatal) {
+      std::cerr << "[vision] " << secreto.mensaje << '\n';
+      return kSalidaConfig;
+    }
+    if (!secreto.mensaje.empty()) std::cerr << "[vision] " << secreto.mensaje << '\n';
+    secreto_captura = std::move(secreto.valor);
+  }
+  // Una linea de arranque para ver de un vistazo si la captura sale firmada.
+  std::cerr << "[vision] firma de la captura: "
+            << (secreto_captura.empty() ? "inactiva (la peticion va sin firma y la respuesta "
+                                          "no se descifra)"
+                                        : "activa (peticion firmada y respuesta cifrada verificada)")
+            << '\n';
+
   // --- Modelos -----------------------------------------------------------------
   // Sin los modelos .nb no hay detector ni embedder: el proceso solo arranca en
   // --dry-run. Cuando existan, se enchufan los adaptadores reales sobre la NPU
@@ -492,13 +524,19 @@ int main(int argc, char** argv) {
 
   SystemClock reloj;
   SystemWallClock reloj_pared;
+  // Las anclas absolutas del reloj para la primera firma (RTC y archivo de estado).
+  AnclasRelojSistema anclas_reloj(config.capture.clock_state_file);
   // La construccion del servicio puede lanzar (configuracion invalida): sin try/catch
   // el proceso terminaria con std::terminate.
   std::unique_ptr<VisionService> servicio;
   try {
+    // El secreto de la firma se pasa en memoria (el archivo de configuracion no lleva
+    // credenciales) y se MUEVE: solo el servicio conserva una copia.
+    ServiceConfig service_config = config.to_service_config();
+    service_config.capture_hmac_secret = std::move(secreto_captura);
     servicio = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, *detector, *embedder, galeria, reloj, reloj_pared},
-        config.to_service_config());
+        ServiceDeps{bus, http, *detector, *embedder, galeria, reloj, reloj_pared, &anclas_reloj},
+        std::move(service_config));
   } catch (const std::exception& error) {
     std::cerr << "[vision] no se pudo construir el servicio: " << error.what() << '\n';
     return 1;
