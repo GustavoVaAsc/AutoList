@@ -29,6 +29,7 @@ node_modules/
 web/dist/
 web/build/
 orangepi/vision/build/
+herramientas/puente_aula/build/
 
 # Artefactos del firmware de la XIAO: el .bin, el .elf y los .cpp
 # preprocesados llevan el SSID y las claves en claro, como secrets.h. El build

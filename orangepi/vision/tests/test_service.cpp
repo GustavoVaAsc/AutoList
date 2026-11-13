@@ -1,10 +1,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -16,6 +19,8 @@
 
 #include "minitest.hpp"
 #include "vision/alignment.hpp"
+#include "gcm_apoyo.hpp"
+#include "vision/captura_firma.hpp"
 #include "vision/fakes.hpp"
 #include "vision/vision_service.hpp"
 
@@ -76,6 +81,8 @@ struct Harness {
   Gallery gallery;
   fakes::ManualClock clock;
   fakes::FixedWallClock wall_clock;
+  fakes::FakeAnclasReloj anchors;      // RTC, id de arranque y archivo de estado simulados
+  AnclasReloj* anchors_ptr = nullptr;  // las pruebas del reloj lo ponen en &anchors
   ServiceConfig config;
   std::unique_ptr<VisionService> service;
 
@@ -89,7 +96,8 @@ struct Harness {
     gallery.upsert("320068234", std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});
     gallery.upsert("320068235", std::vector<float>{0.0f, 1.0f, 0.0f, 0.0f});
     service = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock}, config);
+        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock, anchors_ptr},
+        config);
   }
 
   // Reconstruye el servicio con otra configuracion (la anterior se da de baja primero).
@@ -97,7 +105,8 @@ struct Harness {
     service.reset();
     config = new_config;
     service = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock}, config);
+        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock, anchors_ptr},
+        config);
   }
 
   void queue_frames(int count) {
@@ -1910,14 +1919,14 @@ TEST(is_valid_account_accepts_exactly_nine_ascii_digits) {
 TEST(captures_pass_the_body_cap_to_the_http_client) {
   Harness h;
   ServiceConfig config = h.config;
-  config.max_body_bytes = 123456;
+  config.max_body_bytes = 3000016;  // la foto mas los 16 bytes de la etiqueta
   h.restart(config);
   h.queue_frames(3);
   h.pir();
   h.service->poll();
 
   CHECK_EQ(h.http.requested_max_body_bytes.size(), std::size_t{3});
-  for (const std::size_t cap : h.http.requested_max_body_bytes) CHECK_EQ(cap, std::size_t{123456});
+  for (const std::size_t cap : h.http.requested_max_body_bytes) CHECK_EQ(cap, std::size_t{3000016});
 }
 
 TEST(png_is_rejected_unless_accept_png_is_set) {
@@ -2325,4 +2334,824 @@ TEST(la_baja_desde_el_propio_manejador_no_se_bloquea) {
   CHECK_EQ(bus.inject(topics::kCameraPir, PirEvent{}), std::size_t{1});
   // La baja ya se aplico: el manejador no vuelve a ejecutarse.
   CHECK_EQ(bus.inject(topics::kCameraPir, PirEvent{}), std::size_t{0});
+}
+
+// --- La firma de la peticion de captura -------------------------------------------
+// La placa (XIAO) rechaza con 401 lo que no trae X-Captura-TS, X-Captura-Nonce y
+// X-Captura-HMAC; el servicio los manda cuando hay secreto (capture_hmac_secret).
+
+namespace {
+
+const std::string kSecretoPrueba = "secreto-de-prueba-con-mas-de-32-caracteres";
+
+// El valor de una cabecera "Nombre:valor" de la lista; vacio si no esta.
+std::string header_value(const std::vector<std::string>& headers, const std::string& name) {
+  const std::string prefix = name + ":";
+  for (const std::string& header : headers) {
+    if (header.rfind(prefix, 0) == 0) return header.substr(prefix.size());
+  }
+  return {};
+}
+
+// Un cliente HTTP que no admite cabeceras (el comportamiento por omision de la interfaz).
+class HeaderlessHttpClient final : public HttpClient {
+ public:
+  HttpResponse get(const std::string& url, Millis, std::size_t) override {
+    requested_urls.push_back(url);
+    return {};
+  }
+  std::vector<std::string> requested_urls;
+};
+
+// Como la placa: a cada 200 de la cola le cifra el cuerpo (AES-256-GCM, clave derivada del
+// secreto, AAD con el ts y el nonce de la ULTIMA peticion) y le pone X-Captura-IV. Un 200
+// que ya trae su IV (una prueba que lo altera a proposito) se deja como esta.
+std::string iv_hex_numero(int n) {
+  char hex[25];
+  std::snprintf(hex, sizeof hex, "%024x", n);
+  return std::string(hex);
+}
+
+void encrypt_like_the_board(HttpResponse& response, std::int64_t ts, std::uint64_t nonce,
+                            const std::string& secret = kSecretoPrueba, int iv_number = 1) {
+  response.resp_iv = iv_hex_numero(iv_number);
+  response.body = gcm_apoyo::cifrar(derivar_clave_respuesta(secret),
+                                    gcm_apoyo::bytes_de_hex(response.resp_iv),
+                                    aad_respuesta(ts, nonce), response.body);
+}
+
+void sign_responses_like_the_board(Harness& h) {
+  auto counter = std::make_shared<int>(0);
+  h.http.on_call = [&h, counter] {
+    if (h.http.responses.empty() || h.http.requested_headers.empty()) return;
+    HttpResponse& response = h.http.responses.front();
+    if (response.status != 200 || !response.resp_iv.empty()) return;
+    const auto& headers = h.http.requested_headers.back();
+    encrypt_like_the_board(response, std::stoll(header_value(headers, kHeaderCapturaTs)),
+                           std::stoull(header_value(headers, kHeaderCapturaNonce)),
+                           kSecretoPrueba, ++*counter);
+  };
+}
+
+// Reconstruye el servicio del arnes con secreto de firma (y, si se pide, otra URL), y con
+// una placa que firma sus respuestas.
+void enable_signing(Harness& h, const std::string& capture_url = kCaptureUrl) {
+  ServiceConfig config = h.config;
+  config.capture_url = capture_url;
+  config.capture_hmac_secret = kSecretoPrueba;
+  h.restart(config);
+  sign_responses_like_the_board(h);
+}
+
+}  // namespace
+
+// Sin secreto la peticion es la de siempre: sin cabeceras (camara_falsa las ignora).
+TEST(sin_secreto_la_captura_no_manda_cabeceras) {
+  Harness h;
+  h.queue_frames(3);
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
+  CHECK(h.http.requested_headers.empty());
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+}
+
+// Cada foto de la rafaga lleva su ts del reloj del borde, su propio nonce y la firma que
+// verifica la placa (HMAC de "GET\n/capture\n<ts>\n<nonce>").
+TEST(con_secreto_cada_captura_va_firmada_con_el_ts_del_reloj_y_un_nonce_propio) {
+  Harness h;
+  enable_signing(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.queue_frames(3);
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.http.requested_headers.size(), std::size_t{3});
+  std::set<std::string> nonces;
+  for (const std::vector<std::string>& headers : h.http.requested_headers) {
+    CHECK_EQ(headers.size(), std::size_t{3});
+    CHECK_EQ(header_value(headers, kHeaderCapturaTs), std::string("1793805153"));
+    const std::string nonce_text = header_value(headers, kHeaderCapturaNonce);
+    CHECK(!nonce_text.empty());
+    CHECK(nonce_text.find_first_not_of("0123456789") == std::string::npos);
+    nonces.insert(nonce_text);
+    const std::uint64_t nonce = std::stoull(nonce_text);
+    CHECK_EQ(header_value(headers, kHeaderCapturaHmac),
+             firma_captura(kSecretoPrueba, 1793805153, nonce));
+  }
+  CHECK_EQ(nonces.size(), std::size_t{3});  // la placa rechaza un nonce repetido
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+}
+
+// El ts se lee del reloj en cada peticion, no una vez por rafaga.
+TEST(con_secreto_el_ts_se_lee_del_reloj_en_cada_peticion) {
+  Harness h;
+  enable_signing(h);
+  h.wall_clock.epoch_seconds = 1793805000;
+  h.wall_clock.on_now = [&] { ++h.wall_clock.epoch_seconds; };
+  h.queue_frames(3);
+
+  h.pir();
+  h.service->poll();
+
+  std::set<std::string> instantes;
+  for (const std::vector<std::string>& headers : h.http.requested_headers) {
+    instantes.insert(header_value(headers, kHeaderCapturaTs));
+  }
+  CHECK_EQ(instantes.size(), std::size_t{3});
+}
+
+// El camino firmado es "/capture" fijo: la URL puede llevar "?res=SVGA" (se manda tal
+// cual) y apuntar a un puente con otro camino, y la firma no cambia.
+TEST(la_firma_usa_el_camino_fijo_y_la_url_se_manda_con_su_query) {
+  const std::string url = "http://10.0.0.7:8080/capture?res=SVGA";
+  Harness h;
+  enable_signing(h, url);
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.at(0), url);
+  const auto& headers = h.http.requested_headers.at(0);
+  CHECK_EQ(header_value(headers, kHeaderCapturaHmac),
+           firma_captura(kSecretoPrueba, 1793805153,
+                         std::stoull(header_value(headers, kHeaderCapturaNonce))));
+
+  Harness otro;
+  enable_signing(otro, "http://10.0.0.7:8080/otro/camino?res=SVGA");
+  otro.queue_frames(3);
+  otro.pir();
+  otro.service->poll();
+  const auto& otras = otro.http.requested_headers.at(0);
+  CHECK_EQ(header_value(otras, kHeaderCapturaHmac),
+           firma_captura(kSecretoPrueba, 1793805153,
+                         std::stoull(header_value(otras, kHeaderCapturaNonce))));
+}
+
+// Con el reloj del borde en 1970 (RTC sin pila) no se firma ni se pide la foto: la placa
+// aceptaria esa hora y rechazaria despues las buenas.
+TEST(con_secreto_y_el_reloj_en_1970_no_se_pide_la_foto) {
+  Harness h;
+  enable_signing(h);
+  h.wall_clock.epoch_seconds = 12;
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  CHECK(h.http.requested_urls.empty());
+  CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kCaptureFailed));
+  CHECK(log.count("no es plausible") > 0);
+  CHECK_EQ(log.count(kSecretoPrueba), std::size_t{0});
+}
+
+// Con secreto y un cliente HTTP sin cabeceras no se manda la peticion sin firma.
+TEST(con_secreto_y_un_cliente_sin_cabeceras_no_se_pide_la_foto) {
+  fakes::FakeMessageBus bus;
+  HeaderlessHttpClient http;
+  fakes::FakeFaceDetector detector;
+  fakes::FakeFaceEmbedder embedder;
+  Gallery gallery;
+  fakes::ManualClock clock;
+  fakes::FixedWallClock wall_clock;
+  ServiceConfig config;
+  config.capture_url = kCaptureUrl;
+  config.burst_size = 3;
+  config.capture_hmac_secret = kSecretoPrueba;
+  VisionService service(ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock},
+                        config);
+  CapturedStderr log;
+
+  bus.inject(topics::kCameraPir, PirEvent{});
+  service.poll();
+
+  CHECK(http.requested_urls.empty());
+  CHECK(log.count("no admite cabeceras") > 0);
+}
+
+// Cada codigo de la placa deja su propia linea de log, UNA por rafaga y con la cuenta, sin
+// volcar el cuerpo, la firma ni el secreto. (El 429 tiene su propio comportamiento: se
+// reintenta; ver mas abajo.)
+TEST(el_log_distingue_los_codigos_de_la_placa_una_vez_por_rafaga) {
+  struct Caso {
+    int codigo;
+    const char* texto;
+  };
+  const Caso casos[] = {{401, "rechazo 3/3 fotos con 401"},
+                        {403, "rechazo 3/3 fotos con 403"},
+                        {503, "rechazo 3/3 fotos con 503"},
+                        {500, "rechazo 3/3 fotos con 500"}};
+  for (const Caso& caso : casos) {
+    Harness h;
+    enable_signing(h);
+    HttpResponse rechazo;
+    rechazo.rejected_status = caso.codigo;
+    for (int i = 0; i < 3; ++i) h.http.responses.push_back(rechazo);
+    CapturedStderr log;
+
+    h.pir();
+    h.service->poll();
+
+    CHECK_EQ(log.count(caso.texto), std::size_t{1});
+    CHECK_EQ(log.count("la placa rechazo"), std::size_t{1});  // una sola linea por rafaga
+    CHECK_EQ(log.count(kSecretoPrueba), std::size_t{0});
+    CHECK_EQ(log.count("X-Captura"), std::size_t{0});
+    CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kCaptureFailed));
+  }
+}
+
+// Un fallo de red (sin respuesta HTTP) no se confunde con un codigo de la placa.
+TEST(un_fallo_de_red_no_se_registra_como_un_codigo_de_la_placa) {
+  Harness h;
+  enable_signing(h);
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();  // sin respuestas: status 0 y rejected_status 0
+
+  CHECK_EQ(log.count("la placa rechazo"), std::size_t{0});
+}
+
+// El suelo del reloj plausible es el 1 de enero de 2026.
+TEST(el_suelo_del_reloj_es_el_1_de_enero_de_2026) {
+  Harness antes;
+  enable_signing(antes);
+  antes.wall_clock.epoch_seconds = 1767225599;  // 2025-12-31T23:59:59Z
+  antes.queue_frames(3);
+  antes.pir();
+  antes.service->poll();
+  CHECK(antes.http.requested_urls.empty());
+
+  Harness justo;
+  enable_signing(justo);
+  justo.wall_clock.epoch_seconds = 1767225600;  // 2026-01-01T00:00:00Z
+  justo.queue_frames(3);
+  justo.pir();
+  justo.service->poll();
+  CHECK_EQ(justo.http.requested_urls.size(), std::size_t{3});
+}
+
+// --- El espaciado entre rafagas y el 429 -------------------------------------------
+// La placa permite 4 capturas por ventana de 2000 ms y despues exige 1000 ms de pausa: la
+// siguiente rafaga no puede empezar antes de 3000 ms despues de la primera foto de la
+// anterior. El PIR rebota cada 2 s, asi que dos rafagas seguidas daban 4 x 429.
+
+namespace {
+
+HttpResponse too_many_requests(int retry_after_s = 0) {
+  HttpResponse response;
+  response.rejected_status = 429;
+  response.retry_after_s = retry_after_s;
+  return response;
+}
+
+std::size_t count_sleeps(const Harness& h, Millis duration) {
+  return static_cast<std::size_t>(std::count(h.clock.sleeps.begin(), h.clock.sleeps.end(), duration));
+}
+
+}  // namespace
+
+TEST(dos_rafagas_seguidas_empiezan_con_al_menos_el_intervalo_entre_ellas) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.burst_interval = 3000ms;
+  h.restart(config);
+  std::vector<TimePoint> request_times;
+  h.http.on_call = [&] { request_times.push_back(h.clock.now()); };
+  h.queue_frames(6);
+
+  h.pir();
+  h.service->poll();
+  h.pir();  // el PIR rebota: otra rafaga justo despues
+  h.service->poll();
+
+  CHECK_EQ(request_times.size(), std::size_t{6});
+  CHECK(request_times[3] - request_times[0] >= 3000ms);
+  // La primera rafaga no espera nada por esto: no habia una anterior.
+  CHECK(request_times[3] - request_times[0] < 3000ms + 1ms);
+  CHECK_EQ(h.results().size(), std::size_t{2});
+  CHECK_EQ(h.results().at(1).account.value(), std::string("320068234"));
+}
+
+TEST(una_rafaga_que_empieza_despues_del_intervalo_no_espera_de_mas) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.burst_interval = 3000ms;
+  h.restart(config);
+  std::vector<TimePoint> request_times;
+  h.http.on_call = [&] { request_times.push_back(h.clock.now()); };
+  h.queue_frames(6);
+
+  h.pir();
+  h.service->poll();
+  h.clock.advance(10s);  // pasa mucho mas que el intervalo
+  const std::size_t sleeps_before = h.clock.sleeps.size();
+  h.pir();
+  h.service->poll();
+
+  // Entre las dos solo la espera de la luz (settle_time), ningun sleep de espaciado.
+  CHECK_EQ(h.clock.sleeps.size() - sleeps_before, std::size_t{1});
+  CHECK(request_times[3] - request_times[0] >= 10s);
+}
+
+// Con intervalo 0 (el valor por omision del servicio) no se espera nada de mas.
+TEST(con_intervalo_cero_no_hay_espaciado) {
+  Harness h;
+  h.queue_frames(6);
+  h.pir();
+  h.service->poll();
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.clock.sleeps.size(), std::size_t{2});  // solo la espera de la luz de cada una
+}
+
+TEST(un_429_se_repite_una_vez_y_recupera_la_foto) {
+  Harness h;
+  enable_signing(h);
+  h.http.responses.push_back(too_many_requests());
+  h.queue_frames(3);
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  // 3 fotos + 1 reintento; el reintento espero los 1100 ms por omision.
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{4});
+  CHECK_EQ(count_sleeps(h, 1100ms), std::size_t{1});
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+  CHECK_EQ(log.count("la placa rechazo"), std::size_t{0});  // se recupero: nada que avisar
+  // El reintento es una peticion nueva: otro ts y otro nonce, no la misma repetida.
+  std::set<std::string> nonces;
+  for (const auto& headers : h.http.requested_headers) {
+    nonces.insert(header_value(headers, kHeaderCapturaNonce));
+  }
+  CHECK_EQ(nonces.size(), std::size_t{4});
+}
+
+TEST(el_reintento_del_429_usa_el_retry_after_de_la_placa) {
+  Harness h;
+  h.http.responses.push_back(too_many_requests(2));
+  h.queue_frames(3);
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(count_sleeps(h, 2000ms), std::size_t{1});
+  CHECK_EQ(count_sleeps(h, 1100ms), std::size_t{0});
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+}
+
+// El reintento es UNO: si el segundo intento tambien da 429, la foto se pierde (no se sigue
+// insistiendo con lo que quede de presupuesto).
+TEST(un_429_se_repite_solo_una_vez_por_foto) {
+  Harness h;
+  h.http.responses.push_back(too_many_requests());
+  h.http.responses.push_back(too_many_requests());
+  h.queue_frames(2);
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  // 1a foto: 429 y 429 (se pierde); 2a y 3a: bien. 4 peticiones, no 5.
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{4});
+  CHECK_EQ(count_sleeps(h, 1100ms), std::size_t{1});
+  CHECK_EQ(log.count("la placa rechazo 1/3 fotos con 429"), std::size_t{1});
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+}
+
+// Un Retry-After que no cabe en el tope de espera extra no se espera: la foto falla.
+TEST(un_retry_after_mayor_que_el_tope_no_se_espera) {
+  Harness h;
+  h.http.responses.push_back(too_many_requests(4));  // 4 s > 3 s de tope
+  h.queue_frames(2);
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(count_sleeps(h, 4000ms), std::size_t{0});
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});  // sin reintento: 1 + 2 fotos
+}
+
+// Un 429 que no cede termina en la via de fallo de siempre, sin pasar del tope de espera
+// extra de la rafaga (3 s en total).
+TEST(un_429_persistente_termina_en_captura_fallida_dentro_del_tope) {
+  Harness h;
+  enable_signing(h);
+  for (int i = 0; i < 20; ++i) h.http.responses.push_back(too_many_requests());
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kCaptureFailed));
+  CHECK(h.results().at(0).decision == Decision::InsufficientImage);
+  // Esperas por 429: solo las que caben en 3000 ms (dos de 1100 ms).
+  CHECK_EQ(count_sleeps(h, 1100ms), std::size_t{2});
+  // Una sola linea por rafaga, con la cuenta.
+  CHECK_EQ(log.count("la placa rechazo 3/3 fotos con 429"), std::size_t{1});
+  CHECK_EQ(log.count("la placa rechazo"), std::size_t{1});
+  // 3 fotos + 2 reintentos, nada mas: ningun bucle.
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{5});
+}
+
+// --- La respuesta de la placa va cifrada y autenticada (AES-256-GCM) ---------------------
+
+// Un 200 sin X-Captura-IV (una placa suplantada que contesta con una foto cualquiera) se
+// descarta sin decodificar. El cuerpo es una foto VALIDA: si se mirara, llegaria al detector.
+TEST(con_secreto_un_200_sin_iv_se_descarta_sin_decodificar) {
+  Harness h;
+  enable_signing(h);
+  h.http.on_call = nullptr;  // la placa "suplantada" no cifra
+  h.queue_frames(3);
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.detector.calls, 0);
+  CHECK_EQ(log.count("respuesta no autentica: 3/3"), std::size_t{1});
+  CHECK_EQ(log.count("3 sin X-Captura-IV"), std::size_t{1});
+  CHECK_EQ(log.count("foto descartada"), std::size_t{0});  // nunca se decodifico
+  CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kCaptureFailed));
+}
+
+TEST(con_secreto_un_iv_mal_formado_o_un_cuerpo_corto_se_descartan_y_se_cuentan_por_motivo) {
+  Harness h;
+  enable_signing(h);
+  h.http.on_call = nullptr;
+  HttpResponse iv_malo = ok(noise_frame(1));
+  iv_malo.resp_iv = "zz";
+  HttpResponse corto;
+  corto.status = 200;
+  corto.body = std::vector<std::uint8_t>(10, 1);
+  corto.resp_iv = iv_hex_numero(1);
+  HttpResponse sin_iv = ok(noise_frame(3));
+  h.http.responses = {iv_malo, corto, sin_iv};
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.detector.calls, 0);
+  CHECK_EQ(log.count("respuesta no autentica: 3/3"), std::size_t{1});
+  CHECK_EQ(log.count("1 sin X-Captura-IV, 1 con un IV mal formado, 1 con menos de 16 bytes, 0 que"),
+           std::size_t{1});
+}
+
+// Cada manera de que la respuesta no sea de ESTA peticion o de esta placa falla la etiqueta.
+TEST(con_secreto_una_respuesta_que_no_verifica_descarta_la_foto_sin_decodificar) {
+  struct Caso {
+    const char* nombre;
+    std::function<void(HttpResponse&, std::int64_t, std::uint64_t)> fabrica;
+  };
+  const Caso casos[] = {
+      {"otro nonce (la respuesta de otra peticion)",
+       [](HttpResponse& r, std::int64_t ts, std::uint64_t nonce) {
+         encrypt_like_the_board(r, ts, nonce + 1);
+       }},
+      {"otro ts",
+       [](HttpResponse& r, std::int64_t ts, std::uint64_t nonce) {
+         encrypt_like_the_board(r, ts + 1, nonce);
+       }},
+      {"otro secreto",
+       [](HttpResponse& r, std::int64_t ts, std::uint64_t nonce) {
+         encrypt_like_the_board(r, ts, nonce, "otro-secreto-de-mas-de-32-caracteres-ok");
+       }},
+      {"etiqueta alterada",
+       [](HttpResponse& r, std::int64_t ts, std::uint64_t nonce) {
+         encrypt_like_the_board(r, ts, nonce);
+         r.body.back() ^= 0x01;
+       }},
+      {"texto cifrado alterado un byte",
+       [](HttpResponse& r, std::int64_t ts, std::uint64_t nonce) {
+         encrypt_like_the_board(r, ts, nonce);
+         r.body[r.body.size() / 2] ^= 0x01;
+       }},
+      {"IV distinto del que cifro",
+       [](HttpResponse& r, std::int64_t ts, std::uint64_t nonce) {
+         encrypt_like_the_board(r, ts, nonce);
+         r.resp_iv = iv_hex_numero(99);
+       }},
+      {"foto en claro con un IV inventado",
+       [](HttpResponse& r, std::int64_t, std::uint64_t) { r.resp_iv = iv_hex_numero(5); }},
+  };
+  for (const Caso& caso : casos) {
+    Harness h;
+    enable_signing(h);
+    h.queue_frames(3);
+    h.http.on_call = [&h, &caso] {
+      if (h.http.responses.empty()) return;
+      const auto& headers = h.http.requested_headers.back();
+      caso.fabrica(h.http.responses.front(), std::stoll(header_value(headers, kHeaderCapturaTs)),
+                   std::stoull(header_value(headers, kHeaderCapturaNonce)));
+    };
+    CapturedStderr log;
+
+    h.pir();
+    h.service->poll();
+
+    CHECK_EQ(h.detector.calls, 0);
+    CHECK_EQ(log.count("respuesta no autentica: 3/3"), std::size_t{1});
+    CHECK_EQ(log.count("3 que no verifican"), std::size_t{1});
+    CHECK_EQ(log.count("foto descartada"), std::size_t{0});
+    CHECK_EQ(log.count(kSecretoPrueba), std::size_t{0});
+    CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kCaptureFailed));
+  }
+}
+
+// La respuesta cifrada buena llega al detector; una sola mala de la rafaga no tumba las demas.
+TEST(con_secreto_solo_se_descartan_las_fotos_que_no_verifican) {
+  Harness h;
+  enable_signing(h);
+  h.queue_frames(3);
+  // La 2a foto llega con un IV valido pero que no es el de su cifrado.
+  h.http.responses[1].resp_iv = iv_hex_numero(77);
+  h.http.responses[1].body = std::vector<std::uint8_t>(64, 7);
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+  CHECK_EQ(log.count("respuesta no autentica: 1/3"), std::size_t{1});
+}
+
+// El tope del cuerpo se aplica a lo que viaja (cifrado || etiqueta), 16 bytes mas que la foto.
+TEST(con_secreto_el_tope_de_bytes_se_pasa_al_cliente_http_tal_cual) {
+  Harness h;
+  enable_signing(h);
+  ServiceConfig config = h.config;
+  config.max_body_bytes = 3000016;  // la foto mas los 16 bytes de la etiqueta
+  h.restart(config);
+  sign_responses_like_the_board(h);
+  h.queue_frames(3);
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.http.requested_max_body_bytes.at(0), std::size_t{3000016});
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+}
+
+// Un texto vacio con etiqueta valida no es una foto: se descarta sin ser un fallo de
+// autenticidad.
+TEST(con_secreto_un_cuerpo_cifrado_vacio_no_es_una_foto) {
+  Harness h;
+  enable_signing(h);
+  for (int i = 0; i < 3; ++i) {
+    HttpResponse vacia;
+    vacia.status = 200;
+    h.http.responses.push_back(vacia);
+  }
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(log.count("respuesta no autentica"), std::size_t{0});
+  CHECK_EQ(h.detector.calls, 0);
+  CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kCaptureFailed));
+}
+
+// Sin secreto no hay peticion firmada ni cifrado (camara_falsa sirve la JPEG en claro).
+TEST(sin_secreto_no_se_exige_la_respuesta_cifrada) {
+  Harness h;
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+}
+
+// --- Guardia del reloj del borde ---------------------------------------------------
+
+// Un salto de reloj de pared hacia adelante (mas de 10 minutos de mas respecto del
+// monotonico) no se firma: la placa quedaria con un "ultimo ts" en el futuro.
+TEST(un_salto_del_reloj_de_pared_hacia_adelante_no_se_firma) {
+  Harness h;
+  enable_signing(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.queue_frames(6);
+
+  h.pir();
+  h.service->poll();  // la primera peticion tras arrancar siempre se permite
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
+
+  h.wall_clock.epoch_seconds += 700;  // el monotonico no se movio: salto de ~11 minutos
+  CapturedStderr log;
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});  // no se pidio nada mas
+  CHECK(log.count("salto hacia adelante") > 0);
+  CHECK_EQ(h.results().at(1).reason.value(), std::string(reasons::kCaptureFailed));
+}
+
+// Hasta 10 minutos de mas se tolera; y lo que avanza el reloj monotonico se descuenta.
+TEST(el_reloj_de_pared_puede_avanzar_con_el_monotonico_o_hasta_10_minutos_de_mas) {
+  Harness h;
+  enable_signing(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.queue_frames(9);
+
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
+
+  h.wall_clock.epoch_seconds += 590;  // 590 s de pared y ~0 de monotonico: dentro del margen
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{6});
+
+  // Una hora de pared que SI paso en el monotonico (el servicio estuvo ocioso): normal.
+  h.wall_clock.epoch_seconds += 3600;
+  h.clock.advance(3600s);
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{9});
+}
+
+// Un salto a una hora imposible (2100 en adelante) se rechaza aunque sea la primera peticion.
+TEST(un_ts_mas_alla_del_techo_de_2100_no_se_firma) {
+  Harness arriba;
+  enable_signing(arriba);
+  arriba.wall_clock.epoch_seconds = 4102444801;  // 2100-01-01T00:00:01Z
+  arriba.queue_frames(3);
+  CapturedStderr log;
+  arriba.pir();
+  arriba.service->poll();
+  CHECK(arriba.http.requested_urls.empty());
+  CHECK(log.count("no es plausible") > 0);
+
+  Harness techo;
+  enable_signing(techo);
+  techo.wall_clock.epoch_seconds = 4102444800;  // el techo mismo
+  techo.queue_frames(3);
+  techo.pir();
+  techo.service->poll();
+  CHECK_EQ(techo.http.requested_urls.size(), std::size_t{3});
+}
+
+// --- Las poses del registro cuentan para el ritmo de la placa ----------------------
+
+TEST(una_pose_del_registro_espacia_la_rafaga_que_viene_despues) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.burst_interval = 3000ms;
+  h.restart(config);
+  std::vector<TimePoint> request_times;
+  h.http.on_call = [&] { request_times.push_back(h.clock.now()); };
+  h.queue_frames(5);
+
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  h.enrollment_step();  // captura la primera pose (una foto)
+  CHECK_EQ(request_times.size(), std::size_t{1});
+  h.service->shutdown();  // cierra el registro: la rafaga siguiente es del pase de lista
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(request_times.size(), std::size_t{4});
+  CHECK(request_times[1] - request_times[0] >= 3000ms);
+}
+
+// --- La primera firma tras arrancar se ancla a algo absoluto -------------------------------
+
+namespace {
+
+// El servicio del arnes con las anclas del reloj conectadas (RTC, id de arranque y estado).
+void connect_clock_anchors(Harness& h) {
+  h.anchors_ptr = &h.anchors;
+  h.restart(h.config);
+  sign_responses_like_the_board(h);
+}
+
+}  // namespace
+
+TEST(la_primera_firma_sin_coincidencia_con_el_rtc_no_se_firma) {
+  Harness h;
+  enable_signing(h);
+  connect_clock_anchors(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.anchors.rtc = 1793805153 - 5000;  // el RTC no confirma la hora de pared
+  h.queue_frames(3);
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  CHECK(h.http.requested_urls.empty());
+  CHECK(log.count("RTC de hardware") > 0);
+  CHECK(log.count("NTP") > 0);
+  CHECK_EQ(log.count("reinicia el servicio"), std::size_t{0});
+  CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kCaptureFailed));
+}
+
+TEST(la_primera_firma_con_el_rtc_de_acuerdo_se_firma) {
+  Harness h;
+  enable_signing(h);
+  connect_clock_anchors(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.anchors.rtc = 1793805153 + 30;
+  h.queue_frames(3);
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
+  CHECK_EQ(h.results().at(0).account.value(), std::string("320068234"));
+}
+
+// Un salto hacia adelante que el RTC confirma se acepta sin reiniciar el servicio.
+TEST(un_salto_que_el_rtc_confirma_se_firma_sin_reiniciar) {
+  Harness h;
+  enable_signing(h);
+  connect_clock_anchors(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.anchors.rtc = 1793805153;
+  h.queue_frames(6);
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
+
+  h.wall_clock.epoch_seconds += 4000;  // NTP corrige: el monotonico no se movio
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});  // el RTC aun no lo confirma: no
+
+  h.anchors.rtc = h.wall_clock.epoch_seconds;  // el RTC ya se puso al dia
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{6});
+}
+
+// Una suspension: BOOTTIME avanza y el reloj monotonico no. Sin RTC, no es un salto.
+TEST(una_suspension_no_se_confunde_con_un_salto_del_reloj) {
+  Harness h;
+  enable_signing(h);
+  connect_clock_anchors(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.queue_frames(6);
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
+
+  h.wall_clock.epoch_seconds += 7200;  // dos horas de pared...
+  h.clock.suspend(7200s);              // ...que son dos horas de BOOTTIME, no de monotonico
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{6});
+}
+
+// Sin RTC, el archivo de estado ancla la primera firma tras un "reinicio del equipo".
+TEST(sin_rtc_el_estado_guardado_ancla_la_primera_firma_tras_un_reinicio) {
+  Harness h;
+  enable_signing(h);
+  connect_clock_anchors(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.queue_frames(6);
+  CapturedStderr primera;
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
+  CHECK(h.anchors.estado.has_value());                       // se dejo el estado
+  CHECK(primera.count("primera instalacion") > 0);           // y se aviso de que no habia ancla
+
+  // El equipo se reinicia: otro boot_id y el reloj arranca con una hora vieja.
+  h.anchors.boot = "bbbbbbbb-0000-0000-0000-000000000002";
+  h.wall_clock.epoch_seconds = 1793805153 - 86400;
+  h.restart(h.config);
+  sign_responses_like_the_board(h);
+  CapturedStderr tras;
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});  // no se pidio nada mas
+  CHECK(tras.count("anterior a la ultima firma") > 0);
+
+  // NTP sincroniza: la hora ya es posterior a la guardada.
+  h.wall_clock.epoch_seconds = 1793805153 + 600;
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{6});
+}
+
+// Estado corrupto o ausente: se firma con un aviso fuerte (ver reloj_guardia.hpp).
+TEST(con_el_estado_corrupto_se_firma_con_un_aviso) {
+  Harness h;
+  enable_signing(h);
+  connect_clock_anchors(h);
+  h.wall_clock.epoch_seconds = 1793805153;
+  h.anchors.estado = "###";
+  h.queue_frames(3);
+  CapturedStderr log;
+
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.http.requested_urls.size(), std::size_t{3});
+  CHECK(log.count("AVISO") > 0);
+  CHECK(log.count("corrupto") > 0);
 }

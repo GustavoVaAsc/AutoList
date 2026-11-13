@@ -52,6 +52,11 @@ std::string SystemWallClock::now_iso8601() const {
   return result;
 }
 
+std::int64_t SystemWallClock::now_epoch_seconds() const {
+  return static_cast<std::int64_t>(
+      std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+}
+
 bool is_iso8601_with_zone(std::string_view text) {
   // "AAAA-MM-DDTHH:MM:SS"
   if (text.size() < 25) return false;

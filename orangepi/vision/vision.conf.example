@@ -7,11 +7,18 @@
     "client_id": "vision"
   },
   "captura": {
-    "url": "http://192.168.1.50/capture",
+    "url": "http://<ip-zerotier-del-puente>:<puerto>/capture?res=SVGA",
     "rafaga": 4,
     "espera_luz_ms": 300,
-    "http_timeout_ms": 2000,
-    "max_body_bytes": 2097152
+    // 5000: la primera captura tras un rato de inactividad de la placa incluye el arranque
+    // en frio de la camara, que todavia no esta medido (prueba E2). Ajustar tras medirlo.
+    "http_timeout_ms": 5000,
+    "max_body_bytes": 2097152,
+    // La placa limita el ritmo de capturas: una rafaga no empieza antes de este tiempo
+    // desde el inicio de la anterior.
+    "intervalo_rafagas_ms": 3000,
+    "hmac_secreto_env": "CAPTURA_HMAC_SECRETO",
+    "hmac_requerido": true
   },
   "galeria": {
     "url": "https://127.0.0.1:1880/api/galeria",

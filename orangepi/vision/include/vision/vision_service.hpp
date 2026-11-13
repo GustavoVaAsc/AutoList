@@ -2,25 +2,47 @@
 
 #include <atomic>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
+#include "vision/captura_firma.hpp"
 #include "vision/clock.hpp"
 #include "vision/face_detector.hpp"
 #include "vision/face_embedder.hpp"
 #include "vision/gallery.hpp"
 #include "vision/http_client.hpp"
 #include "vision/message_bus.hpp"
+#include "vision/reloj_guardia.hpp"
 #include "vision/wall_clock.hpp"
 
 namespace vision {
 
 struct ServiceConfig {
   std::string capture_url;  // GET que devuelve una foto, p. ej. la /capture de la XIAO
+  // Secreto compartido con la placa para firmar la peticion de captura (HMAC-SHA256,
+  // vision/captura_firma.hpp). Lo lee el proceso del entorno y se pasa aqui en memoria:
+  // nunca va en el archivo de configuracion. Vacio = la peticion va sin firma (la
+  // camara falsa de pruebas ignora las cabeceras). Con secreto, si el cliente HTTP no
+  // admite cabeceras o no se puede firmar, no se pide la foto: nunca se manda sin firma
+  // una peticion que se queria firmada.
+  std::string capture_hmac_secret;
+  // La placa limita el ritmo de capturas (4 por ventana de 2000 ms y despues una pausa de
+  // 1000 ms): una rafaga no empieza antes de este tiempo despues del inicio de la anterior
+  // (se espera con Clock::sleep_for). 0 = sin espaciado (las pruebas); el proceso de
+  // produccion lo toma de captura.intervalo_rafagas_ms (3000).
+  Millis burst_interval{0};
+  // Ante un 429 se espera y se repite esa foto UNA vez: lo que diga Retry-After, o
+  // retry_wait si no viene. Entre todas las fotos de una rafaga (o de una pose) la espera
+  // extra no pasa de max_retry_wait: una espera que ya no cabe no se hace y la foto cuenta
+  // como fallida.
+  Millis retry_wait{1100};
+  Millis max_retry_wait{3000};
   int burst_size = 4;       // plan 5.1: de 3 a 5 fotos
   Millis settle_time{300};  // espera tras encender la luz, para que se estabilice la exposicion
   // Umbrales sin calibrar: se fijan con las pruebas E3 y la calibracion con LFW (plan sec. 9).
@@ -69,6 +91,10 @@ struct ServiceDeps {
   // Reloj de pared: estampa "ts" en los mensajes que publica el servicio. El de
   // milisegundos (Clock) no lleva fecha.
   WallClock& wall_clock;
+  // Anclas absolutas del reloj (RTC, id de arranque, archivo de estado) para la guardia de la
+  // firma de la captura. nullptr (pruebas, --dry-run): la primera firma no se ancla a nada
+  // absoluto y solo se vigila el salto del reloj dentro del proceso.
+  AnclasReloj* clock_anchors = nullptr;
 };
 
 enum class ServiceState { Idle, AttendanceInProgress, Enrolling };
@@ -143,7 +169,20 @@ class VisionService {
   void run_attendance(TimePoint received, AttendanceMode mode);
   AttendanceResult evaluate_attendance(TimePoint start, AttendanceMode mode);
   std::vector<cv::Mat> capture_burst();
-  cv::Mat capture_frame();
+  // Lo que paso con las fotos de una rafaga (o de una pose), para un solo log por rafaga.
+  struct CaptureStats {
+    int requested = 0;                      // fotos pedidas
+    std::map<int, int> rejected;            // fotos rechazadas por la placa, por codigo HTTP
+    // 200 que no es una respuesta autentica, por motivo (ver ResultadoDescifrado).
+    int auth_iv_missing = 0;                // sin X-Captura-IV
+    int auth_iv_invalid = 0;                // IV que no son 24 hex en minuscula
+    int auth_short_body = 0;                // menos de 16 bytes: no cabe la etiqueta
+    int auth_bad_tag = 0;                   // la etiqueta no cuadra
+  };
+  // Una foto (con un solo reintento ante un 429). `retry_budget` es lo que queda de la
+  // espera extra permitida para la rafaga.
+  cv::Mat capture_frame(Millis& retry_budget, CaptureStats& stats);
+  void log_capture_stats(const CaptureStats& stats) const;
   FaceOutcome analyze(const cv::Mat& frame);
   // Las publicaciones del servicio no lanzan: un fallo del bus se registra y se sigue.
   void publish_light(bool on);
@@ -169,6 +208,13 @@ class VisionService {
   ServiceConfig config_;
   std::atomic<ServiceState> state_{ServiceState::Idle};
   std::optional<Enrollment> enrollment_;
+  // El inicio de la ultima rafaga (reloj monotono), para espaciar la siguiente.
+  std::optional<TimePoint> last_burst_start_;
+  // La clave de la respuesta cifrada (se deriva una vez, al construir, si hay secreto) y la
+  // guardia del reloj de pared (reloj_guardia.hpp), que decide si el ts es de fiar antes de
+  // firmarlo.
+  std::optional<ClaveRespuesta> response_key_;
+  GuardiaReloj clock_guard_;
 
   std::mutex inbox_mutex_;
   std::deque<Event> inbox_;

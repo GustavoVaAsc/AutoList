@@ -1,0 +1,52 @@
+// puente_aula: configuracion de ejemplo. Copiala a ~/.config/puente_aula/puente_aula.conf y
+// cambia las direcciones. Las de aqui (192.0.2.x y 198.51.100.x) son de documentacion
+// (RFC 5737): no son de nadie. Se escriben IPs, nunca nombres.
+//
+// El archivo no lleva secretos: el puente reenvia las firmas sin conocer el secreto, y la
+// contrasena MQTT solo la ve el broker.
+{
+  // 1. Relevo de GET /capture: la Orange Pi (por ZeroTier) pide la foto aqui y el puente la
+  //    pide a la placa (en la LAN).
+  "http": {
+    // La IP de ZeroTier de ESTE equipo (zerotier-cli listnetworks / ip -4 addr). Es la que
+    // va en captura.url de vision.conf. Nunca 0.0.0.0 (el puente se niega).
+    // "interfaz" (opcional): ata el socket a esa interfaz (SO_BINDTODEVICE, sin root en
+    // Linux >= 5.7) y cierra el puerto a lo que llegue por otra, aunque el equipo enrute. Recomendado.
+    "escucha": { "ip": "192.0.2.10", "puerto": 8080, "interfaz": "ztXXXXXXXX" },
+    // Solo estas IPs de origen pasan: la IP de ZeroTier de la Orange Pi.
+    "permitidos": ["198.51.100.7"],
+    // La placa (XIAO) en la LAN.
+    "upstream": { "ip": "192.0.2.50", "puerto": 80 },
+    "max_body_bytes": 2097152,    // mas que esto -> 502
+    "connect_timeout_ms": 2000,   // sin conectar a tiempo -> 504
+    "read_timeout_ms": 3000,      // la placa callada tanto tiempo -> 504
+    // Tope de TODA la llamada a la placa (mientras se tiene tomado el cerrojo de "una captura a
+    // la vez"). Va por debajo del timeout del cliente (el servicio de vision usa 5000 ms): asi el
+    // puente contesta 504 y suelta el cerrojo antes de que el cliente se rinda.
+    "total_timeout_ms": 4000
+  },
+
+  // 2. Reenviador TCP del MQTT: la placa (en la LAN) se conecta aqui y el puente abre la
+  //    conexion hacia el Mosquitto de la Orange Pi (por ZeroTier). No interpreta MQTT.
+  "mqtt": {
+    // La IP de la LAN de ESTE equipo. Es la que va en MQTT_HOST del firmware.
+    // "interfaz" igual que arriba: la de la LAN (p. ej. wlan0).
+    "escucha": { "ip": "192.0.2.11", "puerto": 1883, "interfaz": "wlan0" },
+    // Solo la placa: su IP de la LAN (reservala en el router para que no cambie).
+    "permitidos": ["192.0.2.50"],
+    // La IP de ZeroTier de la Orange Pi.
+    "upstream": { "ip": "198.51.100.7", "puerto": 1883 },
+    // Con el tope lleno, una conexion nueva de la MISMA IP expulsa a la mas antigua (la sesion
+    // zombi que la placa abandono); de otra IP permitida, se rechaza.
+    "max_conexiones": 2,
+    "connect_timeout_ms": 3000,
+    // Detecta una ruta de ZeroTier muerta o una placa que desaparecio: con 10 + 5 x 3 = 25 s
+    // sin respuesta se cierran las dos puntas.
+    "keepalive": { "inactividad_s": 10, "intervalo_s": 5, "sondeos": 3 }
+  }
+
+  // Solo si de verdad hace falta escuchar en todas las interfaces (incluida la LAN para el
+  // relevo HTTP). Deja el puerto abierto a quien llegue; el filtro por IP de origen es
+  // entonces la unica defensa. Sin esto, 0.0.0.0 y :: se rechazan al arrancar.
+  // , "inseguro_permitir_escuchar_en_todas_las_interfaces": false
+}

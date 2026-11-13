@@ -4,6 +4,7 @@
 // El reloj de milisegundos (vision/clock.hpp) no sirve para esto: no lleva fecha ni
 // zona horaria.
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -14,6 +15,9 @@ class WallClock {
  public:
   virtual ~WallClock() = default;
   virtual std::string now_iso8601() const = 0;
+  // El mismo instante en segundos de epoch (UTC). Lo usa la firma de la captura: el
+  // "ts" de la cabecera X-Captura-TS es el del reloj del borde.
+  virtual std::int64_t now_epoch_seconds() const = 0;
 };
 
 // Reloj del sistema: la hora local de la placa (que tiene RTC). La zona sale de la
@@ -21,6 +25,7 @@ class WallClock {
 class SystemWallClock final : public WallClock {
  public:
   std::string now_iso8601() const override;
+  std::int64_t now_epoch_seconds() const override;
 };
 
 // Comprueba el formato de la hora anterior: "AAAA-MM-DDTHH:MM:SS", con milisegundos

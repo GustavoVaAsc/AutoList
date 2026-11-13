@@ -4,14 +4,17 @@
 //   - La tira LED de 12 V por MQTT (campo "luz" de aula/actuador/cmd).
 //   - La cámara: endpoint HTTP /capture, con la firma HMAC-SHA256 que el
 //     servicio de visión manda en las cabeceras X-Captura-TS, X-Captura-Nonce
-//     y X-Captura-HMAC.
+//     y X-Captura-HMAC. La cámara está apagada salvo mientras se usa, con
+//     resolución acotada, límite de ritmo y corte por temperatura (captura.h).
 //   - El PIR: publica aula/camara/pir cuando detecta movimiento.
 //   - Los actuadores: servo, LED RGB y buzzer (campos "servo", "led" y
 //     "buzzer" de aula/actuador/cmd).
+//   - La salud: aula/camara/estado (retenido) al conectar y cada 30 s, con
+//     rssi, heap y temperatura del chip.
 //
 // La lógica de cada parte está en módulos de C++ puro con pruebas de host
-// (logica_luz, logica_camara, logica_pir, logica_actuadores); aquí solo se
-// hace la E/S: leer el pin, escribir el pin, hablar con el broker.
+// (logica_luz, logica_camara, logica_pir, logica_actuadores, logica_proteccion);
+// aquí solo se hace la E/S: leer el pin, escribir el pin, hablar con el broker.
 //
 // La tira se apaga sola a los kApagadoAutomaticoMs (360 s) del último luz:1: quien
 // necesite la luz más tiempo debe reenviar luz:1 antes (logica_luz.h).
@@ -29,7 +32,17 @@
 #include "logica_camara.h"
 #include "logica_luz.h"
 #include "logica_pir.h"
+#include "logica_proteccion.h"
 #include "secrets.h"
+
+// RELAY_IP es obligatoria: es la única IP desde la que /capture acepta conexiones
+// (captura.h). Sin ella, cualquiera en la LAN podría abrir conexiones al puerto
+// 80 de la cámara y retener sockets o probar firmas. Defínela en secrets.h
+// (secrets.h.example, última sección) con la IP del puente (relay) que llega a
+// la placa.
+#ifndef RELAY_IP
+#error "Falta RELAY_IP en secrets.h: la IP del puente (relay) o del servicio de visión que llega a /capture. Ver secrets.h.example. Sin ella la cámara aceptaría conexiones de toda la LAN."
+#endif
 
 using logica_actuadores::PedidoBuzzer;
 using logica_actuadores::PedidoLed;
@@ -95,6 +108,7 @@ static unsigned long ultimoMuestreoPir = 0;
 static bool estadoPendiente = false;
 static bool reintentoInmediato = false;  // el próximo loop() con enlace publica sin esperar
 static unsigned long ultimoReintentoEstado = 0;
+static uint32_t ultimoLatido = 0;  // último intento de publicar aula/camara/estado
 
 static void escribirPin() {
   digitalWrite(PIN_LUZ, controlLuz.encendida() ? HIGH : LOW);
@@ -153,6 +167,23 @@ static void publicarMovimiento() {
   }
   mqtt.publish(TOPICO_PIR, carga, false);
   Serial.println("PIR: movimiento");
+}
+
+// Salud de la XIAO (contrato, sección 3): aula/camara/estado retenido, con
+// rssi, heap, la temperatura del chip, si la cámara está encendida o en corte
+// (por temperatura o por enfriamiento) y si el NVS funciona. El LWT {"en_linea":false} lo pone el
+// broker si la placa se cae. Si falla la publicación, el próximo intento es el
+// del siguiente latido.
+static void publicarLatido() {
+  char carga[logica_proteccion::kLatidoBytesMax];
+  ultimoLatido = millis();
+  const size_t n = logica_proteccion::construirLatido(carga, sizeof carga, WiFi.RSSI(),
+                                                      ESP.getFreeHeap(), captura::temperatura(),
+                                                      captura::camaraEncendida(), captura::enCorte(),
+                                                      captura::nvsBien());
+  if (n == 0 || !mqtt.publish(TOPICO_ESTADO_CAMARA, carga, true)) {
+    Serial.println("No se pudo publicar aula/camara/estado");
+  }
 }
 
 static void alRecibir(char* topico, byte* carga, unsigned int longitud) {
@@ -296,10 +327,64 @@ static bool conectarMqtt() {
     return false;
   }
 
-  mqtt.publish(TOPICO_ESTADO_CAMARA, "{\"en_linea\":true}", true);
+  publicarLatido();  // {"en_linea":true,...} al conectar y luego cada 30 s (loop())
   publicarEstado();
   Serial.println("MQTT: conectado");
   return true;
+}
+
+// IP fija opcional (secrets.h: IP_ESTATICA, IP_PUERTA_ENLACE, IP_MASCARA y,
+// opcionalmente, IP_DNS). Sin esas definiciones, o con alguna vacía o que no sea
+// una IPv4, se queda en DHCP. Va con macros y no con constexpr para que un
+// secrets.h anterior, que no las tiene, siga compilando.
+// Devuelve true si dejó puesta una IP fija. El modo (DHCP o IP fija) se anuncia
+// una sola vez, en comenzarWifi().
+static bool configurarIpEstatica(IPAddress* fijada) {
+#if defined(IP_ESTATICA) && defined(IP_PUERTA_ENLACE) && defined(IP_MASCARA)
+  IPAddress ip, puerta, mascara, dns;
+  if (IP_ESTATICA[0] == '\0' || IP_PUERTA_ENLACE[0] == '\0' || IP_MASCARA[0] == '\0') {
+    return false;  // sin rellenar: DHCP
+  }
+  if (!ip.fromString(IP_ESTATICA) || !puerta.fromString(IP_PUERTA_ENLACE) ||
+      !mascara.fromString(IP_MASCARA)) {
+    Serial.println("Wi-Fi: IP fija mal escrita en secrets.h, se usa DHCP");
+    return false;
+  }
+#if defined(IP_DNS)
+  if (IP_DNS[0] == '\0' || !dns.fromString(IP_DNS)) {
+    dns = puerta;  // sin DNS propio, el de la puerta de enlace
+  }
+#else
+  dns = puerta;
+#endif
+  if (!WiFi.config(ip, puerta, mascara, dns)) {
+    Serial.println("Wi-Fi: no se pudo fijar la IP, se usa DHCP");
+    return false;
+  }
+  *fijada = ip;
+  return true;
+#else
+  (void)fijada;
+  return false;
+#endif
+}
+
+// WiFi.config() tiene que ir antes de cada WiFi.begin(). Anuncia por el serie,
+// la primera vez, si usa DHCP o una IP fija.
+static void comenzarWifi() {
+  static bool anunciado = false;
+  IPAddress fija;
+  const bool conIpFija = configurarIpEstatica(&fija);
+  if (!anunciado) {
+    anunciado = true;
+    if (conIpFija) {
+      Serial.print("Wi-Fi: IP fija ");
+      Serial.println(fija);
+    } else {
+      Serial.println("Wi-Fi: DHCP");
+    }
+  }
+  WiFi.begin(WIFI_SSID, WIFI_CLAVE);
 }
 
 static void iniciarWifi() {
@@ -309,7 +394,7 @@ static void iniciarWifi() {
   // llegar más tarde que la ventana de descarte (VENTANA_RETENIDOS_MS).
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_CLAVE);
+  comenzarWifi();
 }
 
 // Una pasada de reconexión por cada vuelta de loop(); nunca espera en un bucle.
@@ -322,7 +407,7 @@ static void mantenerConexion() {
     if (ahora - ultimoWifiOk >= WIFI_REINICIO_MS) {
       Serial.println("Wi-Fi: sin enlace, se reinicia la conexión");
       WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_CLAVE);
+      comenzarWifi();
       ultimoWifiOk = ahora;
     }
     return;
@@ -335,12 +420,56 @@ static void mantenerConexion() {
   }
 }
 
+// Borrar el piso de ts de la flash (la salida si un ts absurdo lo dejó fuera de
+// alcance): con CAPTURA_BORRAR_PISO_TS definida en secrets.h, o manteniendo el
+// botón BOOT (GPIO0) pulsado 1 s en los 3 s siguientes al arranque.
+//
+// OJO: BOOT NO se puede mantener pulsado AL DAR CORRIENTE ni al pulsar RESET:
+// GPIO0 en bajo en ese momento hace que el chip entre en el modo de descarga de
+// la ROM y no ejecute este firmware. Hay que arrancar normalmente y pulsar BOOT
+// después, con el mensaje de abajo en el serie. GPIO0 solo se mira como pin de
+// strapping en el reinicio; después es un pin normal (la cámara y el resto del
+// firmware usan otros), y se lee con el pull-up interno.
+static const uint8_t PIN_BOOT = 0;
+static const unsigned long BOOT_VENTANA_MS = 3000;
+static const unsigned long BOOT_MANTENER_MS = 1000;
+
+static bool pedidoBorrarPisoTs() {
+#if defined(CAPTURA_BORRAR_PISO_TS)
+  Serial.println("CAPTURA_BORRAR_PISO_TS definida en secrets.h: se borra el piso de ts (quítala tras este arranque)");
+  return true;
+#else
+  pinMode(PIN_BOOT, INPUT_PULLUP);
+  Serial.println("Para borrar el piso de ts: mantén BOOT pulsado 1 s en los próximos 3 s");
+  const unsigned long inicio = millis();
+  unsigned long desde = 0;
+  bool abajo = false;
+  while (millis() - inicio < BOOT_VENTANA_MS) {
+    if (digitalRead(PIN_BOOT) == LOW) {
+      if (!abajo) {
+        abajo = true;
+        desde = millis();
+      } else if (millis() - desde >= BOOT_MANTENER_MS) {
+        Serial.println("BOOT mantenido: se borra el piso de ts");
+        return true;
+      }
+    } else {
+      abajo = false;
+    }
+    delay(10);
+  }
+  return false;
+#endif
+}
+
 void setup() {
   // Lo primero: tira apagada. D2 es un pin de strapping; el pull-down externo la
   // mantiene apagada hasta aquí.
   pinMode(PIN_LUZ, OUTPUT);
   digitalWrite(PIN_LUZ, LOW);
-  pinMode(PIN_PIR, INPUT);
+  // Con pull-down interno: sin PIR conectado la entrada no flota y no publica
+  // {"mov":1} de la nada (cada uno dispara una ráfaga de reconocimiento).
+  pinMode(PIN_PIR, INPUT_PULLDOWN);
 
   Serial.begin(115200);  // con "USB CDC On Boot" activado, es el USB Serial/JTAG
   Serial.println("XIAO: nodo de campo (tira, cámara, PIR y actuadores)");
@@ -354,10 +483,12 @@ void setup() {
   // arranca, el resto del firmware sigue funcionando.
   actuadores::iniciar();
 
-  // Cámara y endpoint /capture. El servidor HTTP va en su propia tarea: la
-  // captura no bloquea el lazo del MQTT (captura.h).
-  if (captura::iniciar(CAPTURA_HMAC_SECRETO)) {
-    Serial.println("cámara: /capture listo");
+  // Endpoint /capture. El servidor HTTP va en su propia tarea: la captura no
+  // bloquea el lazo del MQTT (captura.h). La cámara NO se enciende aquí: la
+  // enciende la primera petición firmada y se apaga sola en reposo.
+  // RELAY_IP (obligatoria, secrets.h): /capture solo acepta esa IP de origen.
+  if (captura::iniciar(CAPTURA_HMAC_SECRETO, RELAY_IP, pedidoBorrarPisoTs())) {
+    Serial.println("cámara: /capture listo (cámara apagada hasta la primera petición)");
   } else {
     Serial.println("cámara: no se pudo arrancar; /capture no responde");
   }
@@ -402,6 +533,10 @@ void loop() {
   const bool enLinea = WiFi.status() == WL_CONNECTED && mqtt.connected();
   if (enLinea) {
     mqtt.loop();
+    if (logica_proteccion::intervaloCumplido(ahora, ultimoLatido,
+                                             logica_proteccion::kIntervaloLatidoMs)) {
+      publicarLatido();
+    }
     if (estadoPendiente &&
         (reintentoInmediato || ahora - ultimoReintentoEstado >= ESTADO_REINTENTO_MS)) {
       reintentoInmediato = false;

@@ -12,6 +12,18 @@ namespace vision {
 struct HttpResponse {
   int status = 0;  // 0 = no hubo respuesta HTTP (error de red o de conexion)
   std::vector<std::uint8_t> body;
+  // Solo para el log: el codigo HTTP de una respuesta que la implementacion descarto por
+  // no ser 200 (entonces `status` queda en 0 y el cuerpo vacio). 0 si no hubo respuesta
+  // o si el fallo fue otro (red, plazo, tope del cuerpo). No cambia el contrato de
+  // `status`: quien solo mira `status` sigue viendo 0 ante cualquier fallo.
+  int rejected_status = 0;
+  // Solo en un rechazo: el Retry-After de la respuesta, en segundos enteros. 0 si no vino
+  // o no es un entero (la fecha HTTP no se interpreta). Lo usa el servicio para esperar
+  // antes de repetir una captura que la placa rechazo con 429.
+  int retry_after_s = 0;
+  // Solo en un 200: el valor de X-Captura-IV (el IV del AES-GCM con que la placa cifra la
+  // foto, vision/captura_firma.hpp). Vacio si la respuesta no lo traia.
+  std::string resp_iv{};
 };
 
 // La libreria HTTP aun no esta decidida; solo existe esta interfaz y un fake en memoria.

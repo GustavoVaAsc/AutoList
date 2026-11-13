@@ -1,7 +1,28 @@
 // Endpoint /capture de la XIAO: cámara, firma HMAC y respuesta con la foto.
 //
 // Esta es la parte que depende de Arduino (la lógica pura vive en
-// logica_camara.h). El sketch (xiao.ino) la llama desde setup().
+// logica_camara.h y logica_proteccion.h). El sketch (xiao.ino) la llama desde
+// setup().
+//
+// La cámara es segura por construcción (la placa anterior se quemó con captura
+// continua a alta resolución):
+//   - Apagada en reposo: setup() NO la inicializa. Se enciende con la primera
+//     petición que pasó la firma y se apaga (esp_camera_deinit) tras
+//     kInactividadCamaraMs (15 s) sin capturas. Con la cámara encendida el
+//     sensor transmite sin parar aunque nadie pida fotos, por eso no se deja así.
+//   - Presupuesto de encendido: como mucho 300 s encendida en cualquier ventana
+//     de 10 min; pasado eso, 503 "enfriamiento" y 2 min sin capturas.
+//   - Un solo búfer y captura bajo demanda (fb_count = 1, GRAB_WHEN_EMPTY).
+//   - Resolución acotada a HVGA, VGA, SVGA o XGA (res=, SVGA por defecto).
+//   - Límite de 4 capturas en 2 s con pausa tras la ráfaga: si se pasa, 429.
+//   - Una sola captura con la cámara a la vez (503 "ocupada" si el candado
+//     está tomado). El envío de la foto va fuera del candado y con plazo.
+//   - La respuesta va CIFRADA con AES-256-GCM (X-Captura-IV); el piso de ts se
+//     guarda en la flash y se rechazan los reenvíos tras un reinicio, y un ts
+//     absurdo no puede bloquear la cámara para siempre.
+//   - El enfriamiento y el corte térmico sobreviven a un reinicio por software.
+//   - Guarda térmica con el sensor interno: aviso a 65 °C, corte a 75 °C.
+//   - No hay /stream ni otro endpoint de vídeo.
 //
 // El servidor HTTP va en su propia tarea de FreeRTOS (la que crea el servidor
 // HTTP del IDF, httpd): el manejador de /capture saca la foto y la sirve ahí
@@ -11,12 +32,19 @@
 //
 // Protocolo de la petición (tiene que coincidir byte a byte con el del
 // servicio de visión):
-//   GET /capture?res=UXGA
+//   GET /capture?res=SVGA
 //   X-Captura-TS:    epoch en segundos del reloj del BORDE
 //   X-Captura-Nonce: entero aleatorio de 64 bits
 //   X-Captura-HMAC:  64 caracteres hex
-// Respuestas: 200 con la JPEG, 401 si falta una cabecera o la firma no cuadra,
-// 403 si el nonce se repitió o el ts es antiguo, 503 si la cámara no está lista.
+// La query (res=) NO va firmada: limitación documentada del protocolo. Quien
+// pueda reenviar una petición firmada podría cambiar la resolución, pero solo
+// dentro de la lista blanca.
+// Respuestas: 200 con la JPEG cifrada (application/octet-stream, X-Captura-IV),
+// 401 si falta una cabecera o la firma no cuadra, 403 si el nonce se repitió o
+// el ts es antiguo o futuro, 429 si
+// se pasó el límite de capturas, 503 si la cámara no está lista, está ocupada
+// ("ocupada"), hace demasiado calor ("temperatura") o está en enfriamiento
+// ("enfriamiento").
 #pragma once
 
 #include <stddef.h>
@@ -46,52 +74,65 @@ constexpr int kPinHref = 47;
 constexpr int kPinPclk = 13;
 
 // --- Resolución y calidad ----------------------------------------------------
-// La visión acepta hasta 2048x1536 y corta el cuerpo a 2 MB. El sensor OV3660
-// de la placa llega hasta 2048x1536, así que se sirve a esa resolución.
+// La resolución y la calidad de cada foto salen de logica_proteccion.h
+// (perfil()): HVGA, VGA, SVGA y XGA, y nada más.
 //
-// OJO con el nombre: en el driver de cámara, FRAMESIZE_QXGA es 2048x1536 y
-// FRAMESIZE_UXGA son 1600x1200. El "UXGA" del plan y de la URL (res=UXGA)
-// significa 2048x1536 para este proyecto. La constante del driver se usa en
-// captura.cpp.
-constexpr int kResolucionAncho = 2048;
-constexpr int kResolucionAlto = 1536;
-
-// Calidad del JPEG del sensor: 0 es la máxima, 63 la mínima. Con 8 la foto
-// típico ronda 0.2-0.4 MB (el driver reserva 1 MB, ver kBufferJpegBytes), muy
-// por debajo del corte de 2 MB de la visión, y con detalle de sobra para el
-// recorte a 320x320 que hace la NPU. Bajar más (4, 2, 0) acerca la foto al
-// megabyte y puede hacer que un cuadro no quepa en el búfer.
-constexpr int kCalidadJpeg = 8;
-
-// Tamaño del búfer de cada cuadro JPEG. El driver, si no se le dice otra
-// cosa, reserva ancho*alto/5 (unos 630 KB a 2048x1536); se reserva 1 MB para
-// que un cuadro con mucho detalle (una escena ruidosa) no se quede corto y se
-// pierda la foto. Con dos búferes son 2 MB de PSRAM.
-constexpr size_t kBufferJpegBytes = 1024 * 1024;
-
-// Cuadros que se descartan al despertar el sensor: los primeros salen con la
-// exposición y el balance de blanco todavía settling (plan, sección 6.1).
-constexpr int kCuadrosInicialesDescartados = 3;
+// El driver se inicializa SIEMPRE con la mayor resolución permitida (XGA,
+// 1024x768): con ella dimensiona sus búferes y DMA, y después baja a la pedida
+// con sensor->set_framesize. Inicializar a una resolución menor y subir luego
+// desbordaría el búfer (logica_proteccion::kBufferJpegBytes, 512 KB, un solo
+// búfer). En el driver FRAMESIZE_XGA es 1024x768.
 
 // Puerto del servidor HTTP. La visión apunta a http://<ip-de-la-xiao>/capture.
 constexpr uint16_t kPuertoHttp = 80;
 
-// Arranca la cámara y el servidor HTTP de /capture.
+// Arranca el servidor HTTP de /capture y la tarea de mantenimiento. NO enciende
+// la cámara: se enciende con la primera petición firmada y se apaga sola tras
+// kInactividadCamaraMs sin capturas, al agotar el presupuesto de encendido o
+// por calor (todo en la tarea de mantenimiento, que corre cada segundo aparte
+// de loop(): una reconexión del MQTT no la retrasa).
 //
 // `secreto` es el secreto compartido con el servicio de visión (en el sketch
-// sale de secrets.h, CAPTURA_HMAC_SECRETO). Debe seguir vivo mientras la
-// cámara esté en marcha: se guarda el puntero, no se copia.
+// sale de secrets.h, CAPTURA_HMAC_SECRETO). Debe seguir vivo mientras el
+// servidor esté en marcha: se guarda el puntero, no se copia. Tiene que medir
+// 32 caracteres o más, con 8 distintos o más, y no ser el valor de ejemplo.
 //
-// Devuelve true si todo arrancó. Si la cámara no se puede inicializar, el
-// servidor también se queda sin arrancar y /capture no responde.
-bool iniciar(const char* secreto);
+// `ipPermitida` (RELAY_IP de secrets.h) es OBLIGATORIA: httpd solo acepta
+// conexiones de esa IPv4. Si falta o está mal escrita, la cámara no arranca (no
+// se abre el puerto a todos por un descuido). No autentica: el ARP spoofing la
+// salta; sube el listón, lo que autentica es la firma.
+//
+// `borrarPisoTs`: borra de la flash el ts guardado (el piso contra reenvíos)
+// antes de leerlo. Es la salida si un ts absurdo lo dejó fuera de alcance (la
+// pulsación de BOOT al arrancar, o CAPTURA_BORRAR_PISO_TS en secrets.h).
+//
+// Al arrancar también valida el cifrado de la respuesta (autodiagnóstico de
+// AES-256-GCM contra vectores conocidos); si falla, la cámara no arranca.
+//
+// Devuelve true si el servidor arrancó. Si falla (secreto flojo, IP ausente o
+// mal escrita, cifrado, servidor), /capture no responde.
+bool iniciar(const char* secreto, const char* ipPermitida, bool borrarPisoTs = false);
 
-// Apaga en orden: primero el servidor HTTP (deja de aceptar peticiones) y
-// luego la cámara (libera la PSRAM de los búferes). Se puede volver a
-// arrancar después con iniciar().
+// Última temperatura leída del chip (°C), o NaN si aún no hay lectura. La lee
+// quien la necesite (el latido de salud) sin tocar el sensor: solo captura.cpp
+// lee temperatureRead(), así que dos tareas no lo usan a la vez.
+float temperatura();
+
+// Si la cámara está encendida ahora, y si las capturas están suspendidas (por
+// temperatura o por el enfriamiento del presupuesto de encendido). Para el
+// latido de salud; se pueden leer desde cualquier tarea.
+bool camaraEncendida();
+bool enCorte();
+// Si el NVS (donde se guarda el piso de ts) funciona: abierto y sin fallo de
+// escritura. Con false no hay defensa contra el reenvío tras un reinicio.
+bool nvsBien();
+
+// Apaga en orden: primero el servidor HTTP (deja de aceptar peticiones), luego
+// la tarea de mantenimiento y por último la cámara si estaba encendida (libera
+// la PSRAM del búfer). Se puede volver a arrancar después con iniciar().
 void detener();
 
-// Si la cámara está inicializada y el servidor accepting peticiones.
+// Si el servidor de /capture está en marcha (la cámara puede estar apagada).
 bool activa();
 
 }  // namespace captura

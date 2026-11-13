@@ -1,5 +1,7 @@
 #pragma once
 
+#include <time.h>
+
 #include <chrono>
 #include <thread>
 
@@ -15,12 +17,21 @@ class Clock {
  public:
   virtual ~Clock() = default;
   virtual TimePoint now() const = 0;
+  // CLOCK_BOOTTIME: lo que lleva el sistema encendido, INCLUIDA la suspension (now() es
+  // monotonico y no la cuenta). Lo usa la guardia del reloj de pared: un reloj de pared que
+  // avanza lo mismo que BOOTTIME no ha saltado, aunque el equipo haya estado suspendido.
+  virtual Millis boottime() const = 0;
   virtual void sleep_for(Millis duration) = 0;
 };
 
 class SystemClock final : public Clock {
  public:
   TimePoint now() const override { return std::chrono::steady_clock::now(); }
+  Millis boottime() const override {
+    timespec ahora{};
+    clock_gettime(CLOCK_BOOTTIME, &ahora);
+    return Millis(static_cast<long long>(ahora.tv_sec) * 1000 + ahora.tv_nsec / 1000000);
+  }
   void sleep_for(Millis duration) override { std::this_thread::sleep_for(duration); }
 };
 
