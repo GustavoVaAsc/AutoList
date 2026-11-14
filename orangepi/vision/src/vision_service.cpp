@@ -17,6 +17,7 @@
 #include "vision/image_header.hpp"
 #include "vision/mqtt_contract.hpp"
 #include "vision/sharpness.hpp"
+#include "vision/thumbnail.hpp"
 
 namespace vision {
 
@@ -681,6 +682,7 @@ VisionService::FaceOutcome VisionService::analyze(const cv::Mat& frame) {
   const FaceDetection& best = *std::max_element(
       faces.begin(), faces.end(),
       [](const FaceDetection& a, const FaceDetection& b) { return a.score < b.score; });
+  outcome.bbox = best.bbox;
   const TimePoint emb_start = deps_.clock.now();
   outcome.embedding = deps_.embedder.embed(align_face(frame, best.landmarks));
   outcome.emb_ms = elapsed_ms(emb_start);
@@ -804,6 +806,9 @@ void VisionService::advance_enrollment() {
   publish_progress(e, EnrollmentStatus::Capturing);
   std::string_view reason;
   std::vector<float> embedding;
+  // La miniatura del rostro: solo sale en el mensaje de esta pose. No se guarda en
+  // ningun sitio (ni disco, ni base de datos, ni galeria).
+  std::optional<std::string> miniatura;
   bool internal_failure = false;
   try {
     Millis retry_budget = config_.max_retry_wait;
@@ -816,6 +821,8 @@ void VisionService::advance_enrollment() {
       const FaceOutcome face = analyze(frame);
       reason = face.reason;
       if (reason.empty()) embedding = l2_normalized(face.embedding);
+      // Sin rostro no hay recorte: el campo "miniatura" no se manda.
+      miniatura = encode_thumbnail(frame, face.bbox);
     }
   } catch (const std::exception& error) {
     log_error("fallo la captura de la pose", error);
@@ -833,7 +840,7 @@ void VisionService::advance_enrollment() {
   }
 
   if (!reason.empty()) {
-    publish_progress(e, EnrollmentStatus::Rejected, reason);
+    publish_progress(e, EnrollmentStatus::Rejected, reason, miniatura);
     if (++e.attempts >= config_.max_attempts_per_pose) {
       publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kNpu);
       finish_enrollment();
@@ -852,7 +859,7 @@ void VisionService::advance_enrollment() {
     return;
   }
 
-  publish_progress(e, EnrollmentStatus::Accepted);
+  publish_progress(e, EnrollmentStatus::Accepted, std::nullopt, miniatura);
   e.embeddings.push_back(std::move(embedding));
   e.attempts = 0;
   if (e.step + 1 < kEnrollmentPoses.size()) {
@@ -947,7 +954,8 @@ void VisionService::shutdown() {
 
 // `paso` es 1-based.
 void VisionService::publish_progress(const Enrollment& e, EnrollmentStatus status,
-                                     std::optional<std::string_view> reason) {
+                                     std::optional<std::string_view> reason,
+                                     std::optional<std::string_view> miniatura) {
   EnrollmentProgress progress;
   progress.timestamp = stamp_now();
   progress.account = e.account;
@@ -956,6 +964,11 @@ void VisionService::publish_progress(const Enrollment& e, EnrollmentStatus statu
   progress.pose = std::string(kEnrollmentPoses[e.step]);
   progress.status = status;
   if (reason) progress.reason = std::string(*reason);
+  // La miniatura viaja solo con la pose aceptada o rechazada (contrato MQTT): es la
+  // foto de lo que la camara vio, y solo se ve mientras el registro esta abierto.
+  if (miniatura && (status == EnrollmentStatus::Accepted || status == EnrollmentStatus::Rejected)) {
+    progress.thumbnail = std::string(*miniatura);
+  }
   try_publish(topics::kVisionEnrollment, progress, "el progreso del registro");
 }
 

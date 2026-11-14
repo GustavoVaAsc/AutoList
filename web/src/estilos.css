@@ -1957,6 +1957,17 @@ code {
   color: var(--suave);
 }
 
+/* La miniatura del rostro de la pose: la cámara la mandó con esa foto y el registro
+   la mostró mientras estuvo abierto. Va sobre el nombre de la pose. */
+.pose__miniatura {
+  display: block;
+  width: 120px;
+  height: auto;
+  margin-bottom: var(--e-1);
+  border: 1px solid var(--regla);
+  border-radius: var(--r-papel);
+}
+
 /* Con .rostro delante: la regla base de .rostro (más abajo) tiene la misma especificidad. */
 .rostro.rostro--pose-capturando,
 .rostro.rostro--pose-esperando_pose {

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -309,6 +310,19 @@ TEST(enrolamiento_sin_miniatura_no_la_inventa) {
   const nj::json doc = serialize_json(sample_enrollment());
   CHECK(!doc.contains("miniatura"));
   CHECK(!doc.contains("parecido_a"));
+}
+
+// La miniatura viaja como un string mas del mensaje de la pose (contrato MQTT): el
+// campo no aparece si no la hay.
+TEST(enrolamiento_con_miniatura_la_publica) {
+  EnrollmentProgress progress = sample_enrollment();
+  progress.thumbnail = "BASE64";
+  const nj::json doc = serialize_json(progress);
+  CHECK(doc.contains("miniatura"));
+  CHECK_EQ(doc["miniatura"].get<std::string>(), std::string("BASE64"));
+
+  const Payload leida = deserialize_or_fail(topics::kVisionEnrollment, doc);
+  CHECK_EQ(std::get<EnrollmentProgress>(leida).thumbnail.value(), std::string("BASE64"));
 }
 
 // --- Embedding ------------------------------------------------------------------

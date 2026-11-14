@@ -33,6 +33,12 @@ export interface PoseRegistro {
   estado: EstadoPose
   /** Código del motivo del rechazo (borrosa, rostro_chico...), si lo hay. */
   motivo: string | null
+  /**
+   * La miniatura del rostro (JPEG en base64) que la cámara mandó con esa pose.
+   * Es efímera: solo existe mientras el registro está abierto y no se guarda en
+   * ninguna parte. Si no llega o no tiene esa forma, es `null`.
+   */
+  miniatura: string | null
 }
 
 /** Una de las fotos no se parece a nadie más; solo la cuenta parecida, nunca embeddings. */
@@ -40,7 +46,7 @@ export interface AdvertenciaParecido {
   parecidoA: string | null
 }
 
-/** GET /api/enrolamiento/estado. Nunca lleva embeddings ni imágenes: aquí no hay dónde guardarlos. */
+/** GET /api/enrolamiento/estado. Nunca lleva embeddings; las miniaturas de las poses sí, y solo mientras el registro está abierto. */
 export interface Registro {
   abierto: boolean
   cuenta: string | null
@@ -63,6 +69,22 @@ function objeto(valor: unknown): Record<string, unknown> | null {
 
 function textoONulo(valor: unknown): string | null | undefined {
   return valor === null ? null : typeof valor === 'string' ? valor : undefined
+}
+
+/** Tope de la miniatura: el contrato dice ~8 KB de JPEG, que en base64 son ~11 KB. */
+const MINIMIURA_MAX = 12288
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+
+/**
+ * La miniatura de una pose, si es una miniatura (JPEG en base64). Lo que no tenga
+ * esa forma se ignora (queda `null`): una miniatura rara no es motivo para rechazar
+ * el estado entero del registro.
+ */
+function miniaturaDe(valor: unknown): string | null {
+  if (typeof valor !== 'string' || valor.length === 0 || valor.length > MINIMIURA_MAX) {
+    return null
+  }
+  return BASE64.test(valor) ? valor : null
 }
 
 function fechaONula(valor: unknown): number | null | undefined {
@@ -123,7 +145,7 @@ export function leerRegistro(cuerpo: unknown): LecturaRegistro {
     ) {
       return { ok: false, motivo: NO_RECONOCIDO }
     }
-    porNombre.set(pose as NombrePose, { pose: pose as NombrePose, estado: estadoPose as EstadoPose, motivo: motivoPose })
+    porNombre.set(pose as NombrePose, { pose: pose as NombrePose, estado: estadoPose as EstadoPose, motivo: motivoPose, miniatura: miniaturaDe(p?.miniatura) })
   }
   let advertencia: AdvertenciaParecido | null = null
   if (o.advertencia !== null && o.advertencia !== undefined) {
@@ -142,7 +164,7 @@ export function leerRegistro(cuerpo: unknown): LecturaRegistro {
       nombre,
       estado: estado as EstadoRegistro,
       motivo,
-      poses: POSES.map((pose) => porNombre.get(pose) ?? { pose, estado: 'pendiente', motivo: null }),
+      poses: POSES.map((pose) => porNombre.get(pose) ?? { pose, estado: 'pendiente', motivo: null, miniatura: null }),
       advertencia,
       inicio,
       actualizado,

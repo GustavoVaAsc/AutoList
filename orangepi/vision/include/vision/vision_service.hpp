@@ -147,6 +147,9 @@ class VisionService {
     std::string_view reason;  // vacio si hubo rostro
     int det_ms = 0;
     int emb_ms = 0;
+    // Recuadro del rostro con mejor score, en pixeles de la foto: lo usa la
+    // miniatura. Vacio si no hubo rostro.
+    cv::Rect2f bbox;
   };
 
   struct Enrollment {
@@ -198,8 +201,11 @@ class VisionService {
   void advance_enrollment();
   void finish_enrollment();
   void cancel_enrollment(const std::string& account);
+  // `miniatura` es el JPEG del rostro en base64 (contrato MQTT): viaja solo con la
+  // pose aceptada o rechazada y no se guarda en ningun sitio.
   void publish_progress(const Enrollment& e, EnrollmentStatus status,
-                        std::optional<std::string_view> reason = std::nullopt);
+                        std::optional<std::string_view> reason = std::nullopt,
+                        std::optional<std::string_view> miniatura = std::nullopt);
   void publish_refusal(const std::string& account, std::string_view reason);
 
   int elapsed_ms(TimePoint since) const;

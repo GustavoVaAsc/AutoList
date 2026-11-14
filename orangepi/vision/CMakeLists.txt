@@ -56,6 +56,7 @@ add_library(vision_core STATIC
   src/retinaface_decode.cpp
   src/sharpness.cpp
   src/tensor.cpp
+  src/thumbnail.cpp
   src/vision_service.cpp
   src/wall_clock.cpp)
 target_include_directories(vision_core PUBLIC include)
@@ -135,6 +136,7 @@ add_executable(test_core
   tests/test_retinaface_decode.cpp
   tests/test_sharpness.cpp
   tests/test_tensor.cpp
+  tests/test_thumbnail.cpp
   tests/test_wall_clock.cpp)
 target_link_libraries(test_core PRIVATE vision_core minitest_main)
 # Para que las pruebas lean el vision.conf.example versionado.

@@ -72,6 +72,21 @@ FaceDetection face_in_frame() {
   return face;
 }
 
+// La misma cara, pero con el recuadro que usa la miniatura.
+FaceDetection face_con_bbox() {
+  FaceDetection face = face_in_frame();
+  face.bbox = cv::Rect2f(120.0f, 60.0f, 80.0f, 80.0f);
+  return face;
+}
+
+// Una foto lisa (un disco claro): la miniatura de una foto de ruido no siempre cabe
+// en el tope del contrato, y esta prueba no va de eso.
+cv::Mat frame_liso() {
+  cv::Mat imagen(240, 320, CV_8UC3, cv::Scalar(170, 170, 170));
+  cv::circle(imagen, cv::Point(160, 120), 60, cv::Scalar(215, 215, 215), -1);
+  return imagen;
+}
+
 // Servicio completo con dobles. La dimension del embedding (4) es arbitraria a proposito.
 struct Harness {
   fakes::FakeMessageBus bus;
@@ -966,6 +981,60 @@ TEST(enrollment_aborts_after_too_many_rejections_of_one_pose) {
   CHECK(h.progress().back().status == EnrollmentStatus::Error);
   CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kNpu));
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+}
+
+// La miniatura del rostro viaja solo en el mensaje de la pose (aceptada o rechazada):
+// es efimera, no se guarda en ningun sitio y los demas mensajes del registro no la
+// llevan.
+TEST(la_pose_aceptada_lleva_miniatura_y_los_demas_mensajes_no) {
+  Harness h;
+  h.detector.detections = {face_con_bbox()};
+  h.http.responses.push_back(ok(frame_liso()));
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  h.enrollment_step();
+
+  const auto progress = h.progress();
+  int con_miniatura = 0;
+  for (const EnrollmentProgress& p : progress) {
+    if (p.status == EnrollmentStatus::Accepted) {
+      CHECK(p.thumbnail.has_value());
+      CHECK(!p.thumbnail->empty());
+      ++con_miniatura;
+    } else {
+      CHECK(!p.thumbnail.has_value());
+    }
+  }
+  CHECK_EQ(con_miniatura, 1);
+}
+
+// Sin rostro no hay recorte: el mensaje de la pose rechazada va sin miniatura (el
+// campo se omite, no se manda vacio).
+TEST(una_pose_sin_rostro_no_lleva_miniatura) {
+  Harness h;
+  h.detector.detections.clear();
+  h.http.responses.push_back(ok(frame_liso()));
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  h.enrollment_step();
+
+  const auto progress = h.progress();
+  CHECK(progress.back().status == EnrollmentStatus::Rejected);
+  CHECK(!progress.back().thumbnail.has_value());
+}
+
+// Sin foto no hay miniatura tampoco: el fallo de captura se rechaza sin ella.
+TEST(una_pose_sin_foto_no_lleva_miniatura) {
+  Harness h;
+  h.http.responses.push_back({500, {}});  // la placa no contesta
+  h.command(VisionAction::Enroll, "100000001");
+  h.service->poll();
+  h.enrollment_step();
+
+  const auto progress = h.progress();
+  CHECK(progress.back().status == EnrollmentStatus::Rejected);
+  CHECK_EQ(progress.back().reason.value(), std::string(enrollment_reasons::kCaptureFailure));
+  CHECK(!progress.back().thumbnail.has_value());
 }
 
 TEST(enrollment_waits_for_the_pose_delay_before_capturing) {

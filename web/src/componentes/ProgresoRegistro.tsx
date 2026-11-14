@@ -16,7 +16,8 @@ const RESALTE_POSE_MS = 1300
  * vacía en los demás casos) y el estado en palabras. Una foto rechazada lleva debajo el
  * motivo, traducido. Cuando una pose pasa a `aceptada` en vivo, la fila resalta y la
  * palomita se traza con tinta de pluma. Todo sale de lo que informó la visión por
- * Node-RED: sin fotos ni miniaturas (el contrato no define cómo llegarían al navegador).
+ * Node-RED: si la pose trae miniatura, se muestra junto a su nombre (la cámara la
+ * mandó con esa foto; es efímera y solo se ve mientras el registro está abierto).
  */
 export function ProgresoRegistro({ poses, idTitulo }: Props) {
   const previos = useRef<Map<string, PoseRegistro['estado']> | null>(null)
@@ -77,6 +78,7 @@ export function ProgresoRegistro({ poses, idTitulo }: Props) {
                 {posicion + 1}
               </td>
               <th scope="row" className="pose__nombre">
+                {p.miniatura !== null && <img className="pose__miniatura" src={`data:image/jpeg;base64,${p.miniatura}`} alt="" />}
                 {ETIQUETA_POSE[p.pose]}
                 {detalle !== null && <span className="pose__detalle">{detalle}</span>}
               </th>
