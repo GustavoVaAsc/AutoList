@@ -14,8 +14,14 @@ include(CheckPIESupported)
 check_pie_supported(LANGUAGES CXX)
 
 add_compile_options(-Wall -Wextra -Wpedantic -Werror=format-security
-                    -fstack-protector-strong -fstack-clash-protection -fcf-protection
+                    -fstack-protector-strong -fstack-clash-protection
                     -D_GLIBCXX_ASSERTIONS)
+# -fcf-protection (CET) solo existe en x86: en aarch64 el compilador la rechaza.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-fcf-protection" TIENE_CF_PROTECTION)
+if(TIENE_CF_PROTECTION)
+  add_compile_options(-fcf-protection)
+endif()
 # _FORTIFY_SOURCE necesita optimizacion: solo en las configuraciones optimizadas.
 add_compile_options($<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE>
                     $<$<NOT:$<CONFIG:Debug>>:-D_FORTIFY_SOURCE=3>)

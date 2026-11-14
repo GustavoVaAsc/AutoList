@@ -483,6 +483,17 @@ void setup() {
   // arranca, el resto del firmware sigue funcionando.
   actuadores::iniciar();
 
+  // El Wi-Fi va ANTES que la cámara: el core de Arduino inicializa la pila
+  // TCP/IP (esp_netif_init, que es lo que crea el candado de lwIP) en
+  // WiFi.mode()/WiFi.begin(), y el servidor HTTP de /capture abre un socket al
+  // arrancar (httpd_start). Si ese socket se abre antes de que lwIP esté
+  // inicializado, lwIP toma un candado nulo: la placa revienta con un assert de
+  // FreeRTOS y se reinicia en bucle.
+  iniciarWifi();
+  ultimoWifiOk = millis();
+  ultimoMuestreoPir = millis();
+  ultimoIntentoMqtt = millis() - MQTT_REINTENTO_MS;  // primer intento en cuanto haya Wi-Fi
+
   // Endpoint /capture. El servidor HTTP va en su propia tarea: la captura no
   // bloquea el lazo del MQTT (captura.h). La cámara NO se enciende aquí: la
   // enciende la primera petición firmada y se apaga sola en reposo.
@@ -492,11 +503,6 @@ void setup() {
   } else {
     Serial.println("cámara: no se pudo arrancar; /capture no responde");
   }
-
-  iniciarWifi();
-  ultimoWifiOk = millis();
-  ultimoMuestreoPir = millis();
-  ultimoIntentoMqtt = millis() - MQTT_REINTENTO_MS;  // primer intento en cuanto haya Wi-Fi
 }
 
 void loop() {
