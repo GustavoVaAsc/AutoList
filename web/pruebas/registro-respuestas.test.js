@@ -96,10 +96,32 @@ test('leerRegistro: la advertencia guarda solo la cuenta parecida', () => {
   assert.deepEqual(registro({ advertencia: { parecido_a: null } }).advertencia, { parecidoA: null })
 })
 
-test('leerRegistro: no conserva campos de más, aunque la API los mandara (embeddings, miniaturas)', () => {
-  const r = registro({ embedding: [0.1], miniatura: 'BASE64', poses: POSES.map((pose) => ({ pose, estado: 'aceptada', motivo: null, miniatura: 'BASE64' })) })
-  assert.ok(!JSON.stringify(r).includes('BASE64'))
+test('leerRegistro: nunca conserva embeddings ni campos de más, aunque la API los mandara', () => {
+  const r = registro({ embedding: [0.1], miniatura: 'BASE64', poses: POSES.map((pose) => ({ pose, estado: 'aceptada', motivo: null })) })
   assert.ok(!('embedding' in r))
+  assert.equal(r.miniatura, undefined)
+  assert.ok(!JSON.stringify(r.poses[0]).includes('BASE64'))
+})
+
+test('leerRegistro: la miniatura de la pose se conserva tal cual (es lo que se muestra)', () => {
+  const r = registro({ poses: POSES.map((pose) => ({ pose, estado: 'aceptada', motivo: null, miniatura: 'BASE64POSE' })) })
+  assert.deepEqual(r.poses.map((p) => p.miniatura), POSES.map(() => 'BASE64POSE'))
+})
+
+test('leerRegistro: sin miniatura la pose queda sin ella (no es un error)', () => {
+  const r = registro()
+  assert.ok(r.poses.every((p) => p.miniatura === null))
+  const sinClave = registro({ poses: POSES.map((pose) => ({ pose, estado: 'aceptada', motivo: null })) })
+  assert.ok(sinClave.poses.every((p) => p.miniatura === null))
+})
+
+test('leerRegistro: una miniatura mal formada o fuera de tamaño se ignora, sin rechazar el estado', () => {
+  const malas = [5, {}, [], 'no es base64!', '', 'A'.repeat(12289), 'con_guion_bajo']
+  for (const mala of malas) {
+    const res = leerRegistro(cuerpo({ poses: POSES.map((pose) => ({ pose, estado: 'aceptada', motivo: null, miniatura: mala })) }))
+    assert.equal(res.ok, true, JSON.stringify(mala))
+    assert.ok(res.registro.poses.every((p) => p.miniatura === null), JSON.stringify(mala))
+  }
 })
 
 test('leerRegistro: rechaza formas que no son las del contrato', () => {

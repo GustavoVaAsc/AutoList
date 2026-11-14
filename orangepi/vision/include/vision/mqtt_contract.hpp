@@ -270,7 +270,7 @@ struct EnrollmentProgress {
   EnrollmentStatus status = EnrollmentStatus::WaitingPose;  // "estado"
   std::optional<std::string> reason;   // "motivo": ver namespace enrollment_reasons
   std::optional<std::string> similar_to;  // "parecido_a": opcional, el esqueleto no lo emite
-  std::optional<std::string> thumbnail;   // "miniatura": opcional, el esqueleto no la emite
+  std::optional<std::string> thumbnail;   // "miniatura": JPEG en base64 (160x120, ~8 KB); solo con aceptada o rechazada
 };
 
 // aula/vision/embedding  {"ts":"...","cuenta":"320068234","dim":512,"modelo":"...",

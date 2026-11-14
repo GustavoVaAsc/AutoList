@@ -243,7 +243,7 @@ test("registro: aparta el lugar con 5 poses pendientes y deja el parámetro enla
     assert.equal(insc.nombre, null);
     assert.equal(insc.estado, "esperando_vision");
     assert.equal(insc.inicio_ms, 1_000_000);
-    assert.deepEqual(insc.poses, POSES.map((pose) => ({ pose, estado: "pendiente", motivo: null })));
+    assert.deepEqual(insc.poses, POSES.map((pose) => ({ pose, estado: "pendiente", motivo: null, miniatura: null })));
     assert.equal(insc.id, salida[0].reserva);
 });
 
@@ -378,25 +378,39 @@ test("estado: con un registro abierto trae cuenta, nombre, 5 poses y fechas ISO"
     assert.equal(salida.payload.estado, "esperando_vision");
     assert.equal(salida.payload.motivo, null);
     assert.equal(salida.payload.advertencia, null);
-    assert.deepEqual(salida.payload.poses.map((p) => Object.keys(p)), POSES.map(() => ["pose", "estado", "motivo"]));
+    assert.deepEqual(salida.payload.poses.map((p) => Object.keys(p)), POSES.map(() => ["pose", "estado", "motivo", "miniatura"]));
     assert.deepEqual(salida.payload.poses.map((p) => p.pose), POSES);
     assert.match(salida.payload.inicio, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     assert.match(salida.payload.actualizado, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 });
 
-test("estado: copia solo los campos conocidos; ni embeddings ni miniaturas salen aunque estuvieran en el contexto", () => {
+test("estado: nunca salen embeddings; la miniatura sale solo de su pose y mientras el registro está abierto", () => {
     const flow = abrirInscripcion();
     const insc = flow.get("inscripcion");
     insc.embedding = [0.5, 0.25];
-    insc.miniatura = "BASE64SECRETO";
-    insc.poses[0].miniatura = "BASE64SECRETO";
+    insc.miniatura = "BASE64SECRETO"; // fuera de las poses: no sale
+    insc.poses[0].miniatura = "BASE64POSE"; // la de la pose: sí sale
     insc.poses[0].embedding = [1];
     insc.advertencia = { parecido_a: OTRA, embedding: [1, 2] };
     flow.set("inscripcion", insc);
     const { salida } = ejecutar(ID.estado, { req: { method: "GET" } }, { flow });
     const texto = JSON.stringify(salida.payload);
-    assert.ok(!/embedding|miniatura|BASE64SECRETO/.test(texto), texto);
+    assert.ok(!/embedding/.test(texto), texto);
+    assert.ok(!texto.includes("BASE64SECRETO"), texto);
+    assert.equal(salida.payload.poses[0].miniatura, "BASE64POSE");
+    assert.equal(salida.payload.poses[1].miniatura, null);
     assert.deepEqual(salida.payload.advertencia, { parecido_a: OTRA });
+});
+
+test("estado: al cerrarse el registro, la miniatura se borra del contexto y ya no sale", () => {
+    const flow = abrirInscripcion();
+    progreso(flow, mensajeProgreso({ pose: "frente", estado: "aceptada", miniatura: "BASE64POSE" }));
+    assert.equal(ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload.poses[0].miniatura, "BASE64POSE");
+    ejecutar(ID.cancelar, { req: { method: "POST" } }, { flow });
+    const { salida } = ejecutar(ID.estado, { req: { method: "GET" } }, { flow });
+    assert.equal(salida.payload.poses[0].miniatura, null);
+    assert.ok(!JSON.stringify(salida.payload).includes("BASE64POSE"));
+    assert.ok(!JSON.stringify(flow.get("inscripcion")).includes("BASE64POSE"));
 });
 
 test("estado: tras cerrarse, sigue devolviendo cómo terminó, con abierto false", () => {
@@ -543,7 +557,7 @@ test("progreso: reintentar una pose rechazada borra el motivo anterior", () => {
     const flow = abrirInscripcion();
     progreso(flow, mensajeProgreso({ pose: "frente", estado: "rechazada", motivo: "rostro_chico" }));
     progreso(flow, mensajeProgreso({ pose: "frente", estado: "capturando" }));
-    assert.deepEqual(flow.get("inscripcion").poses[0], { pose: "frente", estado: "capturando", motivo: null });
+    assert.deepEqual(flow.get("inscripcion").poses[0], { pose: "frente", estado: "capturando", motivo: null, miniatura: null });
 });
 
 test("progreso: el motivo solo se acepta como código en minúsculas; el texto libre no llega al frontend", () => {
@@ -564,10 +578,42 @@ test("progreso: una pose o un estado desconocidos se descartan sin tocar la insc
     assert.equal(JSON.stringify(flow.get("inscripcion")), antes);
 });
 
-test("progreso: la miniatura no se guarda", () => {
+test("progreso: la miniatura se guarda en la pose, en el contexto del flujo, y no sale por ninguna salida", () => {
     const flow = abrirInscripcion();
-    progreso(flow, mensajeProgreso({ pose: "frente", estado: "aceptada", miniatura: "BASE64SECRETO" }));
-    assert.ok(!JSON.stringify(flow.get("inscripcion")).includes("BASE64SECRETO"));
+    const r = progreso(flow, mensajeProgreso({ pose: "frente", estado: "aceptada", miniatura: "BASE64POSE" }));
+    assert.equal(r.salida[0], null, "no revierte el consentimiento");
+    assert.equal(r.salida[1], null, "no va al descarte");
+    assert.equal(flow.get("inscripcion").poses[0].miniatura, "BASE64POSE");
+});
+
+test("progreso: una miniatura que no es base64 o que excede el tope se ignora con aviso, sin romper el mensaje", () => {
+    const flow = abrirInscripcion();
+    for (const mala of [12345, "BASE64_SECRETA", "", "A".repeat(12289)]) {
+        const r = progreso(flow, mensajeProgreso({ pose: "frente", estado: "aceptada", miniatura: mala }));
+        assert.equal(r.salida[0], null, "el mensaje sigue su curso");
+        assert.equal(r.salida[1], null);
+        assert.equal(flow.get("inscripcion").poses[0].estado, "aceptada");
+        assert.equal(flow.get("inscripcion").poses[0].miniatura, null, JSON.stringify(mala));
+        assert.ok(r.avisos.length >= 1, "avisa: " + JSON.stringify(mala));
+        assert.ok(!r.avisos.join(" ").includes("BASE64_SECRETA"));
+    }
+});
+
+test("progreso: un reintento sin miniatura borra la de la pose anterior (sería la foto de otra toma)", () => {
+    const flow = abrirInscripcion();
+    progreso(flow, mensajeProgreso({ pose: "frente", estado: "rechazada", motivo: "borrosa", miniatura: "BASE64POSE" }));
+    assert.equal(flow.get("inscripcion").poses[0].miniatura, "BASE64POSE");
+    progreso(flow, mensajeProgreso({ pose: "frente", estado: "capturando" }));
+    assert.equal(flow.get("inscripcion").poses[0].miniatura, null);
+});
+
+test("progreso: una miniatura sin registro abierto se descarta y no se guarda en ninguna parte", () => {
+    const flow = nuevoFlow();
+    const r = progreso(flow, mensajeProgreso({ pose: "frente", estado: "aceptada", miniatura: "BASE64POSE" }));
+    assert.equal(r.salida[0], null);
+    assert.match(r.salida[1].payload, /no hay un registro abierto/);
+    assert.ok(!r.salida[1].payload.includes("BASE64POSE"));
+    assert.equal(flow.get("inscripcion"), undefined);
 });
 
 test("progreso: cada mensaje aceptado renueva el plazo de 5 minutos", () => {
