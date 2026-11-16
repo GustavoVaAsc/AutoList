@@ -1,9 +1,11 @@
 # Spec: la cámara de la XIAO por ZeroTier, de punta a punta
 
-Estado: **borrador para revisión**, 13 nov. Nada de esto está implementado todavía.
+Estado: **implementado en parte y probado**, 15 nov. El relay `puente_aula` está construido y desplegado, y el registro de caras funciona de punta a punta por la ruta de este spec (ver [Estado a 15 nov](#estado-a-15-nov)). El modo seguro de la cámara (W1) no consta en las pruebas del 15 nov.
 
 ## Contenido
 
+- [Estado a 15 nov](#estado-a-15-nov)
+- [Despliegue en Fedora](#despliegue-en-fedora)
 - [Objetivo y alcance](#objetivo-y-alcance)
 - [Qué cambia respecto a la prueba con webcam](#qué-cambia-respecto-a-la-prueba-con-webcam)
 - [Punto de partida](#punto-de-partida)
@@ -12,6 +14,37 @@ Estado: **borrador para revisión**, 13 nov. Nada de esto está implementado tod
 - [Workstreams](#workstreams)
 - [Plan de pruebas de punta a punta](#plan-de-pruebas-de-punta-a-punta)
 - [Decisiones abiertas](#decisiones-abiertas)
+
+## Estado a 15 nov
+
+| Parte | Estado | Evidencia |
+|---|---|---|
+| W3. Relay | Construido y desplegado en la laptop del puente (Fedora 44), como servicio de usuario de systemd. Es el código C++ de `herramientas/puente_aula/`, la opción (A) de la [revisión](../reviews/camara-xiao-zerotier/doc.md), no el script de Python de D2. | `ctest` pasa. Ping de la laptop a la Orange Pi por ZeroTier: 8.7 ms de media, 0 % de pérdida (20 paquetes). |
+| W2. Firma en la visión | Funciona de punta a punta: la visión firma, el puente reenvía y la placa responde. | Registro de 5 poses hecho dos veces, con 5 y 8 capturas firmadas. |
+| Ruta de MQTT | La placa se conecta al puente por LAN y el puente reenvía al Mosquitto de la Orange Pi por ZeroTier. | Log del puente con la conexión de la placa y el reenvío. |
+| W1. Modo seguro | No consta en las pruebas del 15 nov. La placa probada corre el sketch completo con MQTT, y el flag `SOLO_CAMARA` no aparece en `firmware/xiao/`. | Pendiente: S1 a S8 en la placa. |
+| Tiempos de captura | Medidos: primera foto en frío 770-820 ms, siguientes 87-135 ms; JPEG SVGA de 19-22 KB. | [Sección 7.2 de RESULTADOS-PRUEBAS](../RESULTADOS-PRUEBAS.md#72-métricas). |
+
+Dos desvíos respecto a este spec, para revisar: la placa probada usa MQTT, que D3 dejaba fuera de v1, y el relay está en C++ y no en Python (D2). Hasta decidirlo, el documento sigue como referencia del diseño.
+
+Etapas del [plan de pruebas](#plan-de-pruebas-de-punta-a-punta): E2 y E4 están cubiertas en parte (los tiempos de la primera foto y de las siguientes se midieron, y la ruta con firma funciona; no constan el 401 sin firma ni el 403 por nonce repetido a través del puente). E6 cubre el registro de 5 poses; el pase de lista disparado con `aula/camara/pir` no consta.
+
+### Despliegue en Fedora
+
+En la laptop del puente, Fedora tiene firewalld activo. En vez de aplicar la plantilla `herramientas/puente_aula/puente_aula.nft`, los puertos se abren con reglas ricas de firewalld restringidas por origen y destino. Las reglas van con `--permanent`: `firewall-cmd --reload` descarta las reglas que solo existen en el runtime.
+
+| Puerto | Origen | Destino | Para qué |
+|---|---|---|---|
+| 8080/tcp | IP de ZeroTier de la Orange Pi | IP de ZeroTier de la laptop | `GET /capture` hacia el relay |
+| 1883/tcp | IP LAN de la placa | IP LAN de la laptop | MQTT de la placa hacia el relay |
+
+```bash
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<ip-zt-orange-pi>" destination address="<ip-zt-laptop>" port port="8080" protocol="tcp" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<ip-lan-placa>" destination address="<ip-lan-laptop>" port port="1883" protocol="tcp" accept'
+sudo firewall-cmd --reload
+```
+
+La compilación de `puente_aula` necesita el paquete `json-devel` en Fedora (`sudo dnf install json-devel`), además de CMake.
 
 ## Objetivo y alcance
 

@@ -363,7 +363,82 @@ Las mediciones directas sobre la Orange Pi Zero 3W arrojaron los siguientes tiem
 
 ---
 
-## 7. Conclusión
+## 7. Pruebas del nodo de campo con la XIAO real (15 nov)
+
+El 15 nov se probó la XIAO ESP32S3 Sense real en la placa, con el firmware de la tira, la cámara, los LEDs, el zumbador y el INA219 compilados en el mismo sketch. Las pruebas cubren el Wi-Fi, el MQTT a través del puente de la laptop, la cámara con firma y el registro de caras de punta a punta. La lista de lo que falta está en la [sección 7.4](#74-pendientes).
+
+### 7.1 Entorno
+
+| Elemento | Valor |
+|---|---|
+| Placa | XIAO ESP32S3 Sense con sensor OV3660 (PID 0x3660) |
+| Toolchain | arduino-cli 1.5.1 (sha256 comprobado); core esp32 3.3.12; PubSubClient 2.8.0; ArduinoJson 7.4.3 |
+| Puente | `puente_aula` en la laptop del puente (Fedora 44), construido con CMake, `ctest` pasa, como servicio de usuario de systemd habilitado |
+| Resolución de reconocimiento | SVGA |
+| Ruta de la cámara | Orange Pi → ZeroTier → puente → LAN → placa |
+| Ruta del MQTT | Placa → LAN → puente → ZeroTier → Mosquitto de la Orange Pi |
+
+### 7.2 Métricas
+
+Tamaño del firmware (sketch compilado):
+
+| Medida | Valor |
+|---|---|
+| Flash del sketch original | 1 015 717 B (30 %) |
+| Flash con el INA219 y los LEDs nuevos | 1 026 993 B (30 %) |
+| RAM con el INA219 y los LEDs nuevos | 60 224 B (18 %) |
+
+Cámara (rangos observados en la sesión):
+
+| Medida | Valor |
+|---|---|
+| Inicialización de la cámara | 348-349 ms |
+| Arranque en frío desde la petición | 647-648 ms |
+| Primera captura SVGA (en frío) | 770-820 ms |
+| Capturas siguientes (en caliente) | 87-135 ms |
+| Tamaño de la JPEG SVGA | 19-22 KB |
+| Cifrado de la respuesta (AES-256-GCM) | 6-8 ms |
+| Envío de la respuesta | 24-93 ms |
+
+Red:
+
+| Medida | Valor |
+|---|---|
+| Ping de la laptop del puente a la Orange Pi por ZeroTier | 8.7 ms de media, 0 % de pérdida (20 paquetes) |
+
+### 7.3 Resultados
+
+| Prueba | Resultado |
+|---|---|
+| Flasheo por USB | Funciona: compilación con `--build-path` y subida. Se verificó el hash de la subida. Dos errores de los scripts, con su workaround en el [README del firmware](../firmware/xiao/README.md#problemas-conocidos-al-flashear-15-nov). |
+| Wi-Fi | DHCP funciona. El firmware no imprime su IP: la placa se localizó por su MAC en la tabla ARP. |
+| MQTT a través del puente | Conecta (`MQTT: conectado`). El log del puente muestra la conexión de la placa y el reenvío al Mosquitto de la Orange Pi. Con `MQTT_HOST` apuntando a la IP de ZeroTier de la laptop, la placa daba el estado -2 hasta cambiarlo a la IP LAN de la laptop. |
+| Cámara | Sensor OV3660 detectado. Con el valor de ejemplo de `CAPTURA_HMAC_SECRETO` la cámara no arranca (`[captura] falta el secreto de la firma`), como está diseñado. Con el secreto real, `/capture` solo acepta peticiones desde la IP de la laptop del puente, y el autodiagnóstico GCM da OK. |
+| Registro de caras de punta a punta | Hecho dos veces, con 5 y 8 capturas firmadas. La placa recibe `luz:1` y `luz:0` y los aplica. La tira todavía no está cableada: se prueba el camino de la orden, no la tira. |
+| Estado de la sesión | Al conectar, la placa recibe `aula/sesion/estado` retenido (`sesión activa: LED azul`), y también los cambios al iniciar y terminar la sesión. |
+| LEDs RGB (D8, D9, D10) | Los tres canales funcionan. El primer intento no encendió por un fallo de cableado, no del firmware. |
+| LED de retroalimentación | Un color durante la sesión se muestra 3 s exactos y vuelve al azul (log `LED cambiado` a las 21:19:52 y `LED: vuelve al azul de la sesión` a las 21:19:55). Al terminar la sesión el LED se apaga. |
+| Zumbador | Pitido simple y doble, con un buzzer magnético, un NPN BC547 con 1 kΩ en la base y alimentación desde 3V3. |
+| INA219 | Módulo recibido, sin cablear. Sin el módulo, el serie dice `INA219: no responde (error I2C 4); se reintenta más tarde` cada 30 s y el resto del firmware sigue igual. |
+
+### 7.4 Pendientes
+
+| Pendiente | Qué falta |
+|---|---|
+| Servo | Probarlo (es la siguiente prueba). |
+| PIR | Probar la lectura de D0 con el divisor de 10 kΩ/20 kΩ. |
+| Tira LED con MOSFET | Probar la etapa de potencia y la tira. |
+| INA219 cableado | Cablear el módulo, verificar las lecturas y confirmar que la cámara sigue funcionando con el INA219 en el bus. |
+| LWT | Comprobar el `{"en_linea":false}` al cortar la alimentación. |
+| Reconexión y apagado de seguridad | Probar la reconexión del Wi-Fi y del broker, y el apagado de la luz al perder el enlace. |
+| Ventana de retenidos | Comprobar que el retenido se descarta dentro de la ventana de 1500 ms. |
+| Apagado automático | Comprobar en la placa el apagado a los 360 s. |
+| Diodo del zumbador | Añadir el diodo de libre circulación (1N4148 o similar) en paralelo con el buzzer. Hasta entonces, solo pruebas cortas. |
+| Latencia | Otro observador reportó comandos de 4-5 s y un mensaje de estado cada 2 s. Una revisión del código no encontró bloqueo en `loop()` ni publicación de estado cada 2 s fuera de las reconexiones. La causa sospechosa es la propia medición: usó los usuarios MQTT de servicio, que se expulsan entre sí. **Sin confirmar:** falta repetir la medición sin esos usuarios. |
+| Foto a UXGA | Medir UXGA (2048×1536) y comprobar que su tamaño cabe en los 2 MB que acepta la visión. Las medidas de este día son de SVGA. |
+| Errores de la placa | Probar que la placa rechaza con 401 una firma incorrecta y con 403 un nonce repetido. |
+
+## 8. Conclusión
 
 Las pruebas de integración demostraron que el sistema **AutoList se encuentra completamente funcional de extremo a extremo**:
 
