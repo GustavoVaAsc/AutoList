@@ -9,11 +9,15 @@
 //   - El PIR: publica aula/camara/pir cuando detecta movimiento.
 //   - Los actuadores: servo, LED RGB y buzzer (campos "servo", "led" y
 //     "buzzer" de aula/actuador/cmd).
+//   - La energía: lee el INA219 por I2C y publica aula/camara/energia cada 1 s
+//     (voltaje, corriente y potencia de la entrada de 12 V). Sin el módulo, el
+//     resto del firmware sigue igual.
 //   - La salud: aula/camara/estado (retenido) al conectar y cada 30 s, con
 //     rssi, heap y temperatura del chip.
 //
 // La lógica de cada parte está en módulos de C++ puro con pruebas de host
-// (logica_luz, logica_camara, logica_pir, logica_actuadores, logica_proteccion);
+// (logica_luz, logica_camara, logica_pir, logica_actuadores, logica_proteccion,
+// logica_energia);
 // aquí solo se hace la E/S: leer el pin, escribir el pin, hablar con el broker.
 //
 // La tira se apaga sola a los kApagadoAutomaticoMs (360 s) del último luz:1: quien
@@ -28,8 +32,10 @@
 
 #include "actuadores.h"
 #include "captura.h"
+#include "energia.h"
 #include "logica_actuadores.h"
 #include "logica_camara.h"
+#include "logica_energia.h"
 #include "logica_luz.h"
 #include "logica_pir.h"
 #include "logica_proteccion.h"
@@ -98,6 +104,8 @@ static logica_actuadores::ControlActuadores controlActuadores;
 // El calentamiento del PIR corre desde el arranque de la placa: millis() empieza
 // en 0, así que el validador con arranque en 0 cuenta los primeros 60 s.
 static logica_pir::ControlPir controlPir;
+// El INA219 empieza ausente: la primera pasada de loop() intenta detectarlo.
+static logica_energia::ControlEnergia controlEnergia;
 
 static bool enVentanaInicial = false;
 static unsigned long ultimoIntentoMqtt = 0;
@@ -167,6 +175,66 @@ static void publicarMovimiento() {
   }
   mqtt.publish(TOPICO_PIR, carga, false);
   Serial.println("PIR: movimiento");
+}
+
+// El INA219: detecta el módulo, lee y publica aula/camara/energia (QoS 0, sin
+// retención). Sin módulo, o si falla, solo avisa por el serie (con límite de
+// ritmo) y no publica nada: ni lecturas inventadas ni valores que Node-RED
+// descartaría. Cada paso son unos pocos milisegundos de I2C con plazo propio
+// (energia.h): no bloquea loop() de forma apreciable. Se lee aunque no haya
+// enlace, pero entonces la lectura se descarta: no hay nada que acumular.
+static void atenderEnergia(uint32_t ahora) {
+  using logica_energia::Tarea;
+  switch (controlEnergia.siguiente(ahora)) {
+    case Tarea::Nada:
+      return;
+    case Tarea::Iniciar: {
+      // Tras un fallo o una pérdida, el bus puede estar colgado: se reinicia
+      // antes de reintentar (como mucho una vez por reintento, cada 30 s).
+      if (controlEnergia.reiniciarBusAntes() && !energia::reiniciarBus()) {
+        Serial.println("INA219: el bus I2C no volvió a arrancar");
+      }
+      const bool detectado = energia::configurar();
+      if (controlEnergia.registrarInicio(detectado)) {
+        Serial.println("INA219: detectado, publicando aula/camara/energia");
+      } else if (!detectado) {
+        Serial.print("INA219: no responde (error I2C ");
+        Serial.print(energia::ultimoError());
+        Serial.println("); se reintenta más tarde");
+      }
+      return;
+    }
+    case Tarea::Leer:
+      break;
+  }
+
+  int16_t shunt = 0;
+  uint16_t bus = 0;
+  if (!energia::leerCrudo(&shunt, &bus)) {
+    Serial.print("INA219: fallo de lectura (error I2C ");
+    Serial.print(energia::ultimoError());
+    Serial.println(")");
+    if (controlEnergia.registrarLectura(false)) {
+      Serial.println("INA219: perdido tras varios fallos seguidos; se reintenta más tarde");
+    }
+    return;
+  }
+  controlEnergia.registrarLectura(true);
+
+  logica_energia::Lectura lectura = {};
+  const logica_energia::Resultado resultado = logica_energia::interpretar(shunt, bus, &lectura);
+  if (resultado != logica_energia::Resultado::Ok) {
+    if (controlEnergia.avisarLecturaInvalida(ahora)) {
+      Serial.print("INA219: lectura descartada: ");
+      Serial.println(logica_energia::describir(resultado));
+    }
+    return;
+  }
+
+  if (!mqtt.connected()) return;  // sin enlace la lectura se pierde (QoS 0, periódica)
+  char carga[logica_energia::kEnergiaBytesMax + 1];
+  if (logica_energia::construirEnergia(carga, sizeof carga, &lectura) == 0) return;
+  mqtt.publish(logica_energia::kTopicoEnergia, carga, false);
 }
 
 // Salud de la XIAO (contrato, sección 3): aula/camara/estado retenido, con
@@ -472,7 +540,7 @@ void setup() {
   pinMode(PIN_PIR, INPUT_PULLDOWN);
 
   Serial.begin(115200);  // con "USB CDC On Boot" activado, es el USB Serial/JTAG
-  Serial.println("XIAO: nodo de campo (tira, cámara, PIR y actuadores)");
+  Serial.println("XIAO: nodo de campo (tira, cámara, PIR, actuadores y energía)");
 
   mqtt.setServer(MQTT_HOST, MQTT_PUERTO);
   mqtt.setCallback(alRecibir);
@@ -482,6 +550,13 @@ void setup() {
   // Servo, LED RGB y buzzer: los canales LEDC y los pines. Si la cámara no
   // arranca, el resto del firmware sigue funcionando.
   actuadores::iniciar();
+
+  // INA219 en el I2C0 (Wire) por D4/D5. La cámara va en el I2C1 por otros pines
+  // (captura.cpp), así que no se estorban. Si el bus no arranca, el firmware
+  // sigue sin lecturas de energía.
+  if (!energia::iniciarBus()) {
+    Serial.println("INA219: el bus I2C no arrancó; sin lecturas de energía");
+  }
 
   // El Wi-Fi va ANTES que la cámara: el core de Arduino inicializa la pila
   // TCP/IP (esp_netif_init, que es lo que crea el candado de lwIP) en
@@ -535,6 +610,8 @@ void loop() {
       publicarMovimiento();
     }
   }
+
+  atenderEnergia(ahora);
 
   const bool enLinea = WiFi.status() == WL_CONNECTED && mqtt.connected();
   if (enLinea) {
