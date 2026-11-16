@@ -137,16 +137,16 @@ static void servo_con_desbordamiento_de_millis() {
 static void led_solo_cambia_si_cambia_de_verdad() {
   ControlActuadores c;
   VERIFICAR(c.colorLed() == ColorLed::Apagado);  // arranca apagado
-  VERIFICAR(c.aplicarLed(PedidoLed::Verde));
+  VERIFICAR(c.aplicarLed(PedidoLed::Verde, 0));
   VERIFICAR(c.colorLed() == ColorLed::Verde);
-  VERIFICAR(!c.aplicarLed(PedidoLed::Verde));   // repetir no cambia
+  VERIFICAR(!c.aplicarLed(PedidoLed::Verde, 0));   // repetir no cambia
   VERIFICAR(c.colorLed() == ColorLed::Verde);
-  VERIFICAR(!c.aplicarLed(PedidoLed::Ausente));  // lo ausente no cambia
-  VERIFICAR(!c.aplicarLed(PedidoLed::Invalido));  // lo inválido no cambia
+  VERIFICAR(!c.aplicarLed(PedidoLed::Ausente, 0));  // lo ausente no cambia
+  VERIFICAR(!c.aplicarLed(PedidoLed::Invalido, 0));  // lo inválido no cambia
   VERIFICAR(c.colorLed() == ColorLed::Verde);
-  VERIFICAR(c.aplicarLed(PedidoLed::Rojo));
+  VERIFICAR(c.aplicarLed(PedidoLed::Rojo, 0));
   VERIFICAR(c.colorLed() == ColorLed::Rojo);
-  VERIFICAR(c.aplicarLed(PedidoLed::Apagado));
+  VERIFICAR(c.aplicarLed(PedidoLed::Apagado, 0));
   VERIFICAR(c.colorLed() == ColorLed::Apagado);
 }
 
@@ -157,19 +157,22 @@ static void el_azul_de_la_sesion_manda() {
   VERIFICAR(c.sesionActiva());
   VERIFICAR(c.colorLed() == ColorLed::Azul);
   VERIFICAR(c.colorRetroalimentacion() == ColorLed::Apagado);
-  // Con la sesión activa, el azul manda sobre el color de retroalimentación:
-  // el color pedido se recuerda, pero no se ve.
-  VERIFICAR(!c.aplicarLed(PedidoLed::Verde));
+  // Azul y apagado no destellan: con la sesión activa el LED sigue azul.
+  VERIFICAR(!c.aplicarLed(PedidoLed::Azul, 0));
+  VERIFICAR(!c.aplicarLed(PedidoLed::Apagado, 0));
   VERIFICAR(c.colorLed() == ColorLed::Azul);
-  VERIFICAR(c.colorRetroalimentacion() == ColorLed::Verde);
-  VERIFICAR(!c.aplicarLed(PedidoLed::Rojo));
+  VERIFICAR(!c.revisarLed(10000));
+  // Con un color recordado y sin ventana, al terminar la sesión se apaga y el
+  // color viejo no reaparece.
+  c.aplicarLed(PedidoLed::Verde, 0);
+  c.revisarLed(kRetroSesionMs);  // la ventana vence: vuelve al azul
   VERIFICAR(c.colorLed() == ColorLed::Azul);
-  VERIFICAR(c.colorRetroalimentacion() == ColorLed::Rojo);
-  // Al terminar la sesión vuelve el último color de retroalimentación.
   VERIFICAR(c.aplicarSesionActiva(false));
   VERIFICAR(!c.sesionActiva());
-  VERIFICAR(c.colorLed() == ColorLed::Rojo);
-  // Y si no hubo ningún color de retroalimentación, se apaga.
+  VERIFICAR(c.colorLed() == ColorLed::Apagado);
+  VERIFICAR(c.colorRetroalimentacion() == ColorLed::Apagado);
+  VERIFICAR(!c.revisarLed(5000));  // ya no hay ventana
+  // Y si no hubo ningún color de retroalimentación, también se apaga.
   ControlActuadores d;
   VERIFICAR(d.aplicarSesionActiva(true));
   VERIFICAR(d.colorLed() == ColorLed::Azul);
@@ -177,6 +180,131 @@ static void el_azul_de_la_sesion_manda() {
   VERIFICAR(d.colorLed() == ColorLed::Apagado);
   // Repetir el mismo estado de sesión no cambia nada.
   VERIFICAR(!d.aplicarSesionActiva(false));
+  // Si la sesión empieza con un color de retroalimentación sin sesión, azul.
+  ControlActuadores e;
+  e.aplicarLed(PedidoLed::Rojo, 0);
+  VERIFICAR(e.aplicarSesionActiva(true));
+  VERIFICAR(e.colorLed() == ColorLed::Azul);
+  VERIFICAR(!e.revisarLed(10));
+}
+
+static void retroalimentacion_con_sesion_dura_3_s() {
+  ControlActuadores c;
+  c.aplicarSesionActiva(true);
+  VERIFICAR(c.aplicarLed(PedidoLed::Verde, 1000));  // se ve de inmediato
+  VERIFICAR(c.colorLed() == ColorLed::Verde);
+  VERIFICAR(!c.revisarLed(1000 + kRetroSesionMs - 1));
+  VERIFICAR(c.colorLed() == ColorLed::Verde);
+  VERIFICAR(c.revisarLed(1000 + kRetroSesionMs));  // vuelve al azul
+  VERIFICAR(c.colorLed() == ColorLed::Azul);
+  VERIFICAR(c.colorRetroalimentacion() == ColorLed::Verde);
+  VERIFICAR(!c.revisarLed(1000 + kRetroSesionMs + 1));  // solo una vez
+  // Un color nuevo dentro de la ventana la reinicia con el color nuevo.
+  VERIFICAR(c.aplicarLed(PedidoLed::Ambar, 10000));
+  VERIFICAR(c.aplicarLed(PedidoLed::Rojo, 12000));
+  VERIFICAR(c.colorLed() == ColorLed::Rojo);
+  VERIFICAR(!c.revisarLed(10000 + kRetroSesionMs));  // la ventana vieja no cuenta
+  VERIFICAR(c.colorLed() == ColorLed::Rojo);
+  VERIFICAR(c.revisarLed(12000 + kRetroSesionMs));
+  VERIFICAR(c.colorLed() == ColorLed::Azul);
+  // El mismo color repetido reinicia la ventana sin cambiar el efectivo.
+  VERIFICAR(c.aplicarLed(PedidoLed::Verde, 20000));
+  VERIFICAR(!c.aplicarLed(PedidoLed::Verde, 22000));
+  VERIFICAR(!c.revisarLed(20000 + kRetroSesionMs));
+  VERIFICAR(c.revisarLed(22000 + kRetroSesionMs));
+  // Azul o apagado dentro de la ventana la cancelan.
+  VERIFICAR(c.aplicarLed(PedidoLed::Rojo, 30000));
+  VERIFICAR(c.aplicarLed(PedidoLed::Azul, 30500));
+  VERIFICAR(c.colorLed() == ColorLed::Azul);
+  VERIFICAR(!c.revisarLed(40000));
+  VERIFICAR(c.aplicarLed(PedidoLed::Rojo, 50000));
+  VERIFICAR(c.aplicarLed(PedidoLed::Apagado, 50500));
+  VERIFICAR(c.colorLed() == ColorLed::Azul);
+  // Sin sesión no hay ventana: el color persiste.
+  ControlActuadores d;
+  VERIFICAR(d.aplicarLed(PedidoLed::Verde, 0));
+  VERIFICAR(!d.revisarLed(100000));
+  VERIFICAR(d.colorLed() == ColorLed::Verde);
+}
+
+static void retroalimentacion_con_desbordamiento_de_millis() {
+  ControlActuadores c;
+  c.aplicarSesionActiva(true);
+  const uint32_t t0 = 0xFFFFFFFFu - 1000;  // millis() da la vuelta dentro de la ventana
+  VERIFICAR(c.aplicarLed(PedidoLed::Ambar, t0));
+  VERIFICAR(!c.revisarLed(t0 + 2000));  // ya desbordado: 2000 ms
+  VERIFICAR(c.colorLed() == ColorLed::Ambar);
+  VERIFICAR(c.revisarLed(t0 + kRetroSesionMs));
+  VERIFICAR(c.colorLed() == ColorLed::Azul);
+}
+
+static void sesion_repetida_no_corta_la_ventana() {
+  ControlActuadores c;
+  c.aplicarSesionActiva(true);
+  VERIFICAR(c.aplicarLed(PedidoLed::Verde, 1000));
+  // (a) Repetir activa:true dentro de la ventana no cambia nada ni la acorta.
+  VERIFICAR(!c.aplicarSesionActiva(true));
+  VERIFICAR(c.colorLed() == ColorLed::Verde);
+  VERIFICAR(!c.revisarLed(1000 + kRetroSesionMs - 1));
+  VERIFICAR(c.revisarLed(1000 + kRetroSesionMs));  // vence a la hora original
+  VERIFICAR(c.colorLed() == ColorLed::Azul);
+  // (b) La sesión termina con la ventana ya vencida: el LED se apaga.
+  VERIFICAR(c.aplicarSesionActiva(false));
+  VERIFICAR(c.colorLed() == ColorLed::Apagado);
+  VERIFICAR(!c.revisarLed(100000));
+  // (c) Ausente e Invalido no tocan la ventana abierta ni su inicio.
+  ControlActuadores d;
+  d.aplicarSesionActiva(true);
+  VERIFICAR(d.aplicarLed(PedidoLed::Rojo, 5000));
+  VERIFICAR(!d.aplicarLed(PedidoLed::Ausente, 6000));
+  VERIFICAR(!d.aplicarLed(PedidoLed::Invalido, 7000));
+  VERIFICAR(d.colorLed() == ColorLed::Rojo);
+  VERIFICAR(!d.revisarLed(5000 + kRetroSesionMs - 1));
+  VERIFICAR(d.revisarLed(5000 + kRetroSesionMs));
+}
+
+static void fin_de_sesion_apaga_el_led() {
+  // Sin ventana abierta: se apaga de inmediato, aunque se hubiera pedido un color.
+  ControlActuadores c;
+  c.aplicarSesionActiva(true);
+  c.aplicarLed(PedidoLed::Rojo, 0);
+  c.revisarLed(kRetroSesionMs);
+  VERIFICAR(c.aplicarSesionActiva(false));
+  VERIFICAR(c.colorLed() == ColorLed::Apagado);
+  VERIFICAR(!c.aplicarSesionActiva(false));  // repetir no cambia nada
+  // Con la ventana abierta: el color se queda hasta el vencimiento original.
+  ControlActuadores d;
+  d.aplicarSesionActiva(true);
+  VERIFICAR(d.aplicarLed(PedidoLed::Ambar, 1000));
+  VERIFICAR(!d.aplicarSesionActiva(false));  // el efectivo no cambia
+  VERIFICAR(!d.sesionActiva());
+  VERIFICAR(d.colorLed() == ColorLed::Ambar);
+  VERIFICAR(!d.revisarLed(1000 + kRetroSesionMs - 1));
+  VERIFICAR(d.colorLed() == ColorLed::Ambar);
+  VERIFICAR(d.revisarLed(1000 + kRetroSesionMs));  // se apaga
+  VERIFICAR(d.colorLed() == ColorLed::Apagado);
+  VERIFICAR(d.colorRetroalimentacion() == ColorLed::Apagado);
+  VERIFICAR(!d.revisarLed(1000 + kRetroSesionMs + 1));
+  // Sin sesión, un led nuevo vuelve a persistir como antes.
+  VERIFICAR(d.aplicarLed(PedidoLed::Verde, 20000));
+  VERIFICAR(!d.revisarLed(100000));
+  VERIFICAR(d.colorLed() == ColorLed::Verde);
+  // Un led nuevo sin sesión durante la ventana sobrante la reemplaza y persiste.
+  ControlActuadores e;
+  e.aplicarSesionActiva(true);
+  e.aplicarLed(PedidoLed::Rojo, 0);
+  e.aplicarSesionActiva(false);
+  VERIFICAR(e.aplicarLed(PedidoLed::Verde, 500));
+  VERIFICAR(!e.revisarLed(kRetroSesionMs));
+  VERIFICAR(e.colorLed() == ColorLed::Verde);
+  // Si la sesión vuelve a empezar durante la ventana sobrante, manda el azul.
+  ControlActuadores f;
+  f.aplicarSesionActiva(true);
+  f.aplicarLed(PedidoLed::Rojo, 0);
+  f.aplicarSesionActiva(false);
+  VERIFICAR(f.aplicarSesionActiva(true));
+  VERIFICAR(f.colorLed() == ColorLed::Azul);
+  VERIFICAR(!f.revisarLed(kRetroSesionMs));
 }
 
 static void buzzer_pitido_de_exito() {
@@ -290,6 +418,10 @@ int main() {
   servo_con_desbordamiento_de_millis();
   led_solo_cambia_si_cambia_de_verdad();
   el_azul_de_la_sesion_manda();
+  retroalimentacion_con_sesion_dura_3_s();
+  retroalimentacion_con_desbordamiento_de_millis();
+  sesion_repetida_no_corta_la_ventana();
+  fin_de_sesion_apaga_el_led();
   buzzer_pitido_de_exito();
   buzzer_doble_pitido_de_error();
   buzzer_silencio_corta_el_pitido();
