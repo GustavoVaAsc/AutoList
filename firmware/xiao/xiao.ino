@@ -148,7 +148,8 @@ static void marcarEstadoPendiente() {
 }
 
 // El estado de la sesión (aula/sesion/estado, retenido): con la sesión activa el
-// LED muestra azul. Es un tópico retenido, así que NO pasa por la ventana de
+// LED muestra azul, salvo durante la ventana de retroalimentación; al terminar la
+// sesión se apaga. Es un tópico retenido, así que NO pasa por la ventana de
 // descarte: el valor retenido es justo lo que hay que aplicar.
 static void aplicarEstadoSesion(byte* carga, unsigned int longitud) {
   if (longitud == 0) return;  // payload vacío: no es una orden
@@ -162,7 +163,7 @@ static void aplicarEstadoSesion(byte* carga, unsigned int longitud) {
   if (!controlActuadores.aplicarSesionActiva(activa.as<bool>())) return;
   actuadores::aplicar(controlActuadores);
   marcarEstadoPendiente();
-  Serial.println(activa.as<bool>() ? "sesión activa: LED azul" : "sesión terminada");
+  Serial.println(activa.as<bool>() ? "sesión activa: LED azul" : "sesión terminada: LED apagado");
 }
 
 // El PIR detectó movimiento: se publica el evento (QoS 0, sin retención).
@@ -321,7 +322,7 @@ static void alRecibir(char* topico, byte* carga, unsigned int longitud) {
   if (pedidoLed == PedidoLed::Invalido) {
     Serial.println("cmd: \"led\" inválido, se ignora");
   }
-  if (controlActuadores.aplicarLed(pedidoLed)) {
+  if (controlActuadores.aplicarLed(pedidoLed, ahora)) {
     cambio = true;
     Serial.println("LED cambiado");
   }
@@ -596,6 +597,15 @@ void loop() {
     actuadores::aplicar(controlActuadores);
     marcarEstadoPendiente();
     Serial.println("servo: se cierra solo");
+  }
+
+  // Vence la ventana de 3 s del color de retroalimentación: vuelve al azul si la
+  // sesión sigue activa, o se apaga si terminó durante la ventana.
+  if (controlActuadores.revisarLed(ahora)) {
+    actuadores::aplicar(controlActuadores);
+    marcarEstadoPendiente();
+    Serial.println(controlActuadores.sesionActiva() ? "LED: vuelve al azul de la sesión"
+                                                    : "LED: vence la retroalimentación, se apaga");
   }
 
   // El buzzer avanza su patrón (un pitido o dos, con su pausa).

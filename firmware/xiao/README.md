@@ -34,7 +34,7 @@ Primera versión: controla la **tira LED de 12 V** por MQTT (campo `luz` de `aul
 | `logica_luz.h`, `logica_luz.cpp` | Decisiones en C++ puro, sin Arduino: descarte de retenidos y vacíos, interpretación de `luz`, estado de la luz y payload de `aula/actuador/estado`. |
 | `pruebas/test_logica_luz.cpp` | Pruebas de host de `logica_luz` (`g++`, sin dependencias). El IDE de Arduino no compila esta carpeta. |
 | `logica_pir.h`, `logica_pir.cpp` | Lógica del PIR: flanco de subida, calentamiento, antirrebote y el payload `{"mov":1}`. |
-| `logica_actuadores.h`, `logica_actuadores.cpp` | Lógica del servo, el LED RGB y el buzzer: interpretación de las órdenes, temporizado del servo, prioridad del LED azul y el payload completo del estado. |
+| `logica_actuadores.h`, `logica_actuadores.cpp` | Lógica del servo, el LED RGB y el buzzer: interpretación de las órdenes, temporizado del servo, azul de la sesión con la ventana de retroalimentación de 3 s y el payload completo del estado. |
 | `actuadores.h`, `actuadores.cpp` | La parte con Arduino de los actuadores: pines, canales LEDC, pulso del servo, tono y color. |
 | `hmac_sha256.h`, `hmac_sha256.cpp` | SHA-256 y HMAC-SHA256 en C++ puro, sin dependencias. La copia del servicio de visión es la misma. |
 | `logica_camara.h`, `logica_camara.cpp` | Lógica de la petición de captura: cabeceras, cadena canónica, firma, frescura y anti-replay. |
@@ -51,7 +51,7 @@ Primera versión: controla la **tira LED de 12 V** por MQTT (campo `luz` de `aul
 ## Qué hace
 
 - **Se conecta** al Wi-Fi y al broker con el usuario `xiao` (client id `xiao`; el broker usa el nombre de usuario como client id, así que **no hay que conectar otro cliente con el usuario `xiao`** mientras la placa esté encendida: se expulsarían entre sí).
-- **Se suscribe** a `aula/actuador/cmd` (QoS 1, sesión limpia) y a `aula/sesion/estado` (retenido). Del `cmd` aplica `luz` (el entero `0` apaga y el `1` enciende la tira en D2/GPIO3), `servo` (solo `"abrir"`), `led` (azul, verde, rojo, ambar, apagado) y `buzzer` (0, 1, 2). Cualquier valor fuera de esos se ignora. Del estado de la sesión toma `activa`: con la sesión activa el LED azul manda sobre el color de retroalimentación.
+- **Se suscribe** a `aula/actuador/cmd` (QoS 1, sesión limpia) y a `aula/sesion/estado` (retenido). Del `cmd` aplica `luz` (el entero `0` apaga y el `1` enciende la tira en D2/GPIO3), `servo` (solo `"abrir"`), `led` (azul, verde, rojo, ambar, apagado) y `buzzer` (0, 1, 2). Cualquier valor fuera de esos se ignora. Del estado de la sesión toma `activa`: con la sesión activa el LED es azul y un verde, rojo o ámbar se muestra 3 s (`kRetroSesionMs`) antes de volver al azul; un color nuevo reinicia la ventana y `azul` o `apagado` no destellan. Al terminar la sesión el LED se apaga (si termina dentro de la ventana, ese color se ve hasta que venza y luego se apaga). Sin sesión el color persiste.
 - **Descarta** los mensajes con payload vacío y los que pueden ser retenidos (contrato, sección 1). Ver [Desviaciones del contrato](#desviaciones-del-contrato).
 - **Publica** `aula/actuador/estado` retenido y **completo**: `{"servo":"cerrado","led":"azul","luz":0}`. Lo publica cada vez que cambia cualquier actuador, al (re)conectar y en respuesta a **toda** orden válida, aunque no cambie nada. Si una publicación falla, queda pendiente y `loop()` la reintenta cada segundo mientras haya enlace.
 - **Cámara:** sirve `GET /capture?res=UXGA` con una JPEG de 2048×1536, **solo si la petición viene firmada** (ver [La cámara y el endpoint /capture](#la-cámara-y-el-endpoint-capture)). El servidor HTTP va en su propia tarea de FreeRTOS: la captura no bloquea el lazo del MQTT.
@@ -300,7 +300,7 @@ No uses desde la línea de comandos el usuario `xiao` (es la placa) ni `nodered`
 | Will | Quitar la alimentación de la XIAO | Tras unos 20 a 30 s llega `{"en_linea":false}` retenido a `aula/camara/estado` |
 | Actuadores | `{"servo":"abrir"}` | El servo abre 90° y se cierra solo a los 3 s; llega `aula/actuador/estado {"servo":"cerrado","led":"apagado","luz":0}` (el LED está apagado si no hay sesión activa) |
 | LED y buzzer | `{"led":"verde","buzzer":1}` | El LED se pone verde y suena un pitido; el estado trae los tres campos |
-| Sesión activa | (la publica Node-RED) `aula/sesion/estado {"activa":true}` | El LED se pone azul mientras la sesión está activa; al terminarla vuelve al último color |
+| Sesión activa | (la publica Node-RED) `aula/sesion/estado {"activa":true}` | El LED se pone azul mientras la sesión está activa; con `{"led":"verde"}` en `aula/actuador/cmd` se ve verde 3 s y vuelve al azul (el estado se republica en ambos cambios); al publicar `{"activa":false}` el LED se apaga y llega `aula/actuador/estado` con `"led":"apagado"` (si hay un color en su ventana de 3 s, se ve hasta que venza y luego se apaga) |
 | PIR | (no hay orden: es un evento) | Al pasar por delante del PIR llega `aula/camara/pir {"mov":1}`; en la terminal de Node-RED, `aula/camara/pir` con `mqtt in` |
 | Energía | (no hay orden: es periódico) | Con el INA219 conectado llega `aula/camara/energia {"v":12.10,"i":0.850,"p":10.29}` cada 1 s; el monitor serie dice `INA219: detectado`. Sin el módulo, no llega nada y el monitor dice `INA219: no responde` (reintenta cada 30 s) |
 | Cámara | (la pide la visión) | `curl http://<ip-xiao>/capture?res=UXGA` **sin firma** devuelve 401; con la firma bien, devuelve la JPEG. La firma la calcula el servicio de visión: `orangepi/vision` la manda sola |
@@ -334,7 +334,7 @@ Los seis módulos y sus pruebas:
 |---|---|
 | `logica_luz` | Descarte de retenidos y de payloads vacíos, `luz` ausente, no entera y fuera de 0 y 1, cambio de estado solo cuando cambia, el apagado automático (vence en el límite, se renueva con otro `luz:1`, no vence si se apaga antes, y con el desbordamiento de `millis()`). |
 | `logica_pir` | Flanco de subida (el de bajada no publica), antirrebote, calentamiento del sensor, el desbordamiento de `millis()` y el payload exacto `{"mov":1}`. |
-| `logica_actuadores` | Los valores del contrato de `servo`, `led` y `buzzer` (y lo que se ignora), el temporizado de 3 s del servo, la prioridad del LED azul con la sesión activa, y el payload `{"servo":...,"led":...,"luz":N}` incluido cuando no cabe en el búfer. |
+| `logica_actuadores` | Los valores del contrato de `servo`, `led` y `buzzer` (y lo que se ignora), el temporizado de 3 s del servo, el azul de la sesión y la ventana de 3 s de la retroalimentación (reinicio, cancelación, desbordamiento de `millis()`), y el payload `{"servo":...,"led":...,"luz":N}` incluido cuando no cabe en el búfer. |
 | `hmac_sha256` | Los vectores del protocolo (los mismos cinco que usa el servicio de visión) y la comparación en tiempo constante. |
 | `logica_camara` | Las cabeceras ausentes, la firma inválida, el nonce repetido, el `ts` antiguo, el camino con query y el payload que no cabe. |
 | `logica_energia` | La conversión de los registros a V, A y W (con los límites exactos: 30 V, saturación a 32000 cuentas, -10 mA), lo que no se publica (saturada, negativa, fuera de rango, no finita), el payload exacto y el que no cabe, y el reparto del tiempo: lectura cada 1 s, reintento de detección cada 30 s, módulo perdido tras 3 fallos seguidos, sin acumular lecturas tras un `loop()` bloqueado, el límite de ritmo de los avisos y el desbordamiento de `millis()`. |
@@ -359,7 +359,7 @@ Hasta que Gustavo flashee la placa, **nada de lo siguiente se ha ejecutado**:
 - **El endpoint `/capture` de punta a punta:** que la visión (con la firma) saque la foto y que la placa la rechace con 401 si la firma está mal o el nonce se repite. El lado de la visión **no está compilado** (en este equipo no hay OpenCV 4.6): el `cmake` y el `ctest` se correrán en la Orange Pi.
 - **El divisor del PIR** (10 kΩ/20 kΩ) y el nivel real del HC-SR501 en D0.
 - **El sentido del servo:** si la puerta abre hacia el lado contrario, se ajustan los dos pulsos en `actuadores.h`.
-- **Los LEDs RGB** en D8/D9/D10: que el ámbar (rojo + verde) se vea y que el azul de la sesión mande sobre el color de retroalimentación.
+- **Los LEDs RGB** en D8/D9/D10: que el ámbar (rojo + verde) se vea y que, con la sesión activa, el verde, rojo y ámbar se vean 3 s y vuelvan al azul.
 - **El buzzer:** que suene y que el doble pitido del error se oiga.
 - **El INA219 en la placa** (el firmware compila, pero nunca se ha ejecutado con el módulo):
   - Que `Wire.begin(5, 6)` arranque el I2C0 y que **la cámara siga arrancando y capturando** con el bus del INA219 activo (la SCCB va en el I2C1; es lo que dice `captura.cpp`, no está comprobado).

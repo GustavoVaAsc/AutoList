@@ -61,6 +61,10 @@ enum class ColorLed {
 // Tiempo que el servo queda abierto antes de cerrarse solo (contrato: 3 s).
 const uint32_t kDuracionServoAbiertoMs = 3000;
 
+// Tiempo que se ve un color de retroalimentación (verde, rojo o ámbar) con la
+// sesión activa, antes de que el LED vuelva al azul de la sesión.
+const uint32_t kRetroSesionMs = 3000;
+
 // Tiempos del buzzer (semántica provisional, ver PedidoBuzzer).
 const uint32_t kPitidoBuzzerMs = 100;    // duración de cada pitido
 const uint32_t kPausaBuzzerMs = 120;     // separación entre los dos pitidos
@@ -113,20 +117,30 @@ class ControlActuadores {
   // --- LED RGB -------------------------------------------------------------
 
   // Aplica el color de retroalimentación pedido. Devuelve true si el color
-  // EFECTIVO cambia (con la sesión activa el azul manda, ver más abajo).
-  bool aplicarLed(PedidoLed pedido);
+  // EFECTIVO cambia. Con la sesión activa, verde, rojo y ámbar se muestran
+  // kRetroSesionMs y luego el LED vuelve al azul (revisarLed); un color nuevo
+  // reinicia esa ventana. "azul" y "apagado" no destellan: con la sesión
+  // activa el LED se queda azul (y cancelan una ventana en curso).
+  bool aplicarLed(PedidoLed pedido, uint32_t ahora_ms);
+
+  // Cierra la ventana de retroalimentación si lleva kRetroSesionMs o más.
+  // Devuelve true si el color efectivo cambió (vuelve al azul, o se apaga si la
+  // sesión ya terminó).
+  bool revisarLed(uint32_t ahora_ms);
 
   // Aplica el estado de la sesión (aula/sesion/estado, tópico retenido). Con
-  // la sesión activa el LED muestra azul; al terminar la sesión vuelve al
-  // último color de retroalimentación. Devuelve true si el color efectivo
-  // cambia.
+  // la sesión activa el LED muestra azul (salvo la ventana de
+  // retroalimentación); al terminar la sesión el LED se apaga y se olvida el
+  // color recordado. Si termina con una ventana abierta, ese color se ve hasta
+  // que venza (revisarLed) y entonces el LED se apaga. Devuelve true si el
+  // color efectivo cambia.
   bool aplicarSesionActiva(bool activa);
 
   // Color que se está mostrando (el efectivo).
   ColorLed colorLed() const;
 
   // Último color de retroalimentación pedido por el cmd (el que se recuerda
-  // mientras la sesión está activa).
+  // mientras la sesión está activa; se olvida al terminar la sesión).
   ColorLed colorRetroalimentacion() const;
 
   bool sesionActiva() const;
@@ -155,6 +169,8 @@ class ControlActuadores {
   uint32_t servo_desde_ms_ = 0;
   ColorLed color_retro_ = ColorLed::Apagado;
   bool sesion_activa_ = false;
+  bool retro_visible_ = false;  // ventana de retroalimentación abierta (solo con sesión)
+  uint32_t retro_desde_ms_ = 0;
   FaseBuzzer fase_buzzer_ = FaseBuzzer::Inactivo;
   uint8_t pitidos_restantes_ = 0;
   uint32_t buzzer_desde_ms_ = 0;
