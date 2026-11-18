@@ -7,6 +7,7 @@ const fs = require("fs");
 const { execFileSync } = require("child_process");
 const bcrypt = require("bcryptjs");
 const { crearMiddlewareApi, validarSecretosApi } = require("./autenticacion-api");
+const { crearManejadorLog } = require("./registro-log");
 
 const usuario = process.env.NODERED_ADMIN_USER;
 const clave = process.env.NODERED_ADMIN_PASSWORD;
@@ -204,7 +205,11 @@ module.exports = {
         modules: { allowInstall: false }
     },
 
+    // Registro: la consola de siempre (mismo nivel, sin métricas ni auditoría), pero con un manejador propio que
+    // enmascara los números de cuenta de toda línea y recorta las de los http in (registro-log.js explica por qué:
+    // un cuerpo JSON mal formado lo rechaza el body-parser antes del flujo y su mensaje cita un fragmento del cuerpo).
+    // Con la clave "console" y un `handler`, Node-RED usa este manejador en lugar de la consola por defecto.
     logging: {
-        console: { level: "info", metrics: false, audit: false }
+        console: { level: "info", metrics: false, audit: false, handler: crearManejadorLog() }
     }
 };

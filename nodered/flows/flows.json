@@ -301,6 +301,112 @@
         ]
     },
     {
+        "id": "a1f0c0de0000002d",
+        "type": "comment",
+        "z": "a1f0c0de00000001",
+        "name": "API: GET /api/metricas/latencia",
+        "info": "Devuelve [{hora,cap,det,emb,total}] de la más nueva a la más vieja: la latencia de inferencia de la NPU (ms; null si la etapa no corrió) que Node-RED guarda por cada aula/vision/resultado (pestaña Pase de lista, origen 'npu'). Parámetros: limite (100 por defecto, máx. 1000) y desde (fecha ISO). Solo lectura.",
+        "x": 180,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000028",
+        "type": "http in",
+        "z": "a1f0c0de00000001",
+        "name": "",
+        "url": "/api/metricas/latencia",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 170,
+        "y": 600,
+        "wires": [
+            [
+                "a1f0c0de00000029"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000029",
+        "type": "function",
+        "z": "a1f0c0de00000001",
+        "name": "Validar limite y desde (latencia)",
+        "func": "// GET /api/metricas/latencia?limite=N&desde=<fecha ISO 8601>\n// Mismos parámetros y reglas que \"Validar limite y desde\" de la ruta de energía (una prueba comprueba que\n// sigan iguales).\n// limite: entero >= 1, 100 por defecto, tope de 1000.\n// desde: solo mediciones desde esa fecha. Formatos: 2026-11-04, 2026-11-04T10:00,\n// 2026-11-04T10:00:00Z, 2026-11-04T10:00:00.5-06:00 (años 1970 a 9999).\nconst POR_DEFECTO = 100;\nconst MAXIMO = 1000;\nconst ISO_8601 = /^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]{1,9})?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?$/;\nconst q = msg.req.query || {};\n\nfunction rechazar(texto) {\n    msg.statusCode = 400;\n    msg.payload = { error: texto };\n    return [null, msg];\n}\n\nlet limite = POR_DEFECTO;\nif (q.limite !== undefined) {\n    if (typeof q.limite !== \"string\" || !/^[0-9]+$/.test(q.limite) || Number(q.limite) < 1) {\n        return rechazar(\"limite debe ser un entero mayor o igual a 1\");\n    }\n    limite = Math.min(Number(q.limite), MAXIMO);\n}\n\nlet desde = null;\nif (q.desde !== undefined) {\n    const fecha = (typeof q.desde === \"string\" && ISO_8601.test(q.desde)) ? new Date(q.desde) : new Date(NaN);\n    // El año se revisa tras convertir a UTC: una zona horaria puede empujar 9999 a 10000.\n    if (Number.isNaN(fecha.getTime()) || fecha.getUTCFullYear() < 1970 || fecha.getUTCFullYear() > 9999) {\n        return rechazar(\"desde debe ser una fecha ISO 8601 entre 1970 y 9999, por ejemplo 2026-11-04T10:00:00Z\");\n    }\n    desde = fecha.toISOString();\n}\n\nmsg.params = [desde, limite];\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 600,
+        "wires": [
+            [
+                "a1f0c0de0000002a"
+            ],
+            [
+                "a1f0c0de00000025"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000002a",
+        "type": "postgresql",
+        "z": "a1f0c0de00000001",
+        "name": "SELECT latencia de la NPU",
+        "query": "SELECT hora, lat_cap_ms AS cap, lat_det_ms AS det, lat_emb_ms AS emb, lat_total_ms AS total FROM metricas_energia\nWHERE origen = 'npu'\n  AND ($1::timestamptz IS NULL OR hora >= $1::timestamptz)\nORDER BY hora DESC, id DESC\nLIMIT $2",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 690,
+        "y": 580,
+        "wires": [
+            [
+                "a1f0c0de00000025"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000002b",
+        "type": "catch",
+        "z": "a1f0c0de00000001",
+        "name": "Errores de la API de latencia",
+        "scope": [
+            "a1f0c0de00000029",
+            "a1f0c0de0000002a"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 700,
+        "wires": [
+            [
+                "a1f0c0de0000002c"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000002c",
+        "type": "function",
+        "z": "a1f0c0de00000001",
+        "name": "Responder 500 (latencia)",
+        "func": "// Error al consultar la base de datos: se registra solo el SQLSTATE (o un mensaje truncado y sin\n// secuencias de 9 dígitos) y se responde 500 sin detalle.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nnode.warn(\"GET /api/metricas/latencia falló: \" + causa);\nmsg.statusCode = 500;\nmsg.payload = { error: \"No se pudo consultar la base de datos\" };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 700,
+        "wires": [
+            [
+                "a1f0c0de00000025"
+            ]
+        ]
+    },
+    {
         "id": "a1f0c0de00000030",
         "type": "tab",
         "label": "Limpieza de retenidos",
@@ -737,7 +843,7 @@
         "type": "function",
         "z": "a1f0c0de00000060",
         "name": "Validar y apartar inscripción",
-        "func": "// POST /api/enrolamiento {\"cuenta\":\"320068234\",\"consentimiento\":true}\n// Cuerpo JSON (Content-Type: application/json). Valida la entrada, comprueba que no\n// haya otro registro abierto y aparta el lugar de la inscripción ANTES de tocar la\n// base: esta función corre sin interrupción, así que dos peticiones a la vez (doble\n// clic, segunda pestaña) no pueden pasar las dos, y la segunda no escribe nada.\n// Si la base falla o el alumno no sirve, el lugar se libera (\"Abrir inscripción y\n// ordenar enrolar\" y \"Cerrar y responder 500\").\n// Salida 1: sigue al UPDATE del consentimiento (msg.params, msg.reserva).\n// Salida 2: respuesta de error (400, 409 o 415).\nconst CUENTA = /^[0-9]{9}$/;\nconst POSES = [\"frente\", \"izquierda\", \"derecha\", \"arriba\", \"frente_2\"];\n\nfunction rechazar(codigo, cuerpo) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    return [null, msg];\n}\n\n// Solo application/json: los tipos que un formulario HTML de otro sitio puede enviar\n// sin permiso (text/plain, urlencoded) se rechazan; la segunda capa contra CSRF está\n// en autenticacion-api.js (X-Pase-Lista y el mismo origen).\nconst tipo = String(msg.req.headers[\"content-type\"] || \"\").split(\";\")[0].trim().toLowerCase();\nif (tipo !== \"application/json\") {\n    return rechazar(415, { error: \"El Content-Type debe ser application/json\" });\n}\nconst cuerpo = msg.payload;\nif (cuerpo === null || typeof cuerpo !== \"object\" || Array.isArray(cuerpo)) {\n    return rechazar(400, { error: \"El cuerpo debe ser un objeto JSON con cuenta y consentimiento\" });\n}\nif (typeof cuerpo.cuenta !== \"string\" || !CUENTA.test(cuerpo.cuenta)) {\n    return rechazar(400, { error: \"cuenta debe ser un texto de 9 dígitos\" });\n}\nif (cuerpo.consentimiento !== true) {\n    return rechazar(400, { error: \"Sin consentimiento no se registra el rostro: consentimiento debe ser true\" });\n}\nconst abierta = flow.get(\"inscripcion\");\nif (abierta && abierta.abierto === true) {\n    return rechazar(409, { error: \"Ya hay un registro abierto: termínalo o cancélalo antes de iniciar otro\", motivo: \"registro_abierto\" });\n}\n\nconst ahora = Date.now();\nconst id = \"r\" + ahora + \"-\" + Math.random().toString(36).slice(2, 8);\nflow.set(\"inscripcion\", {\n    id: id,\n    abierto: true,\n    apartada: true, // hasta que la base confirme el consentimiento y se publique la orden\n    cuenta: cuerpo.cuenta,\n    nombre: null,\n    estado: \"esperando_vision\",\n    motivo: null,\n    poses: POSES.map((pose) => ({ pose: pose, estado: \"pendiente\", motivo: null, miniatura: null })),\n    advertencia: null,\n    inicio_ms: ahora,\n    actualizado_ms: ahora,\n    // Ticks de 15 s sin progreso (reloj monotónico de los temporizadores, ver \"Vencer inscripción\").\n    ticks: 0\n});\nmsg.reserva = id;\nmsg.params = [cuerpo.cuenta];\nmsg.payload = null;\nreturn [msg, null];",
+        "func": "// POST /api/enrolamiento {\"cuenta\":\"320068234\",\"consentimiento\":true}\n// Cuerpo JSON (Content-Type: application/json). Valida la entrada, comprueba que no\n// haya otro registro abierto y aparta el lugar de la inscripción ANTES de tocar la\n// base: esta función corre sin interrupción, así que dos peticiones a la vez (doble\n// clic, segunda pestaña) no pueden pasar las dos, y la segunda no escribe nada.\n// Si la base falla o el alumno no sirve, el lugar se libera (\"Abrir inscripción y\n// ordenar enrolar\" y \"Cerrar y responder 500\").\n// Salida 1: sigue al UPDATE del consentimiento (msg.params, msg.reserva).\n// Salida 2: respuesta de error (400, 409 o 415). El 409 lleva motivo: registro_abierto o prueba_pendiente.\nconst CUENTA = /^[0-9]{9}$/;\nconst POSES = [\"frente\", \"izquierda\", \"derecha\", \"arriba\", \"frente_2\"];\n\nfunction rechazar(codigo, cuerpo) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    return [null, msg];\n}\n\n// Solo application/json: los tipos que un formulario HTML de otro sitio puede enviar\n// sin permiso (text/plain, urlencoded) se rechazan; la segunda capa contra CSRF está\n// en autenticacion-api.js (X-Pase-Lista y el mismo origen).\nconst tipo = String(msg.req.headers[\"content-type\"] || \"\").split(\";\")[0].trim().toLowerCase();\nif (tipo !== \"application/json\") {\n    return rechazar(415, { error: \"El Content-Type debe ser application/json\" });\n}\nconst cuerpo = msg.payload;\nif (cuerpo === null || typeof cuerpo !== \"object\" || Array.isArray(cuerpo)) {\n    return rechazar(400, { error: \"El cuerpo debe ser un objeto JSON con cuenta y consentimiento\" });\n}\nif (typeof cuerpo.cuenta !== \"string\" || !CUENTA.test(cuerpo.cuenta)) {\n    return rechazar(400, { error: \"cuenta debe ser un texto de 9 dígitos\" });\n}\nif (cuerpo.consentimiento !== true) {\n    return rechazar(400, { error: \"Sin consentimiento no se registra el rostro: consentimiento debe ser true\" });\n}\nconst abierta = flow.get(\"inscripcion\");\nif (abierta && abierta.abierto === true) {\n    return rechazar(409, { error: \"Ya hay un registro abierto: termínalo o cancélalo antes de iniciar otro\", motivo: \"registro_abierto\" });\n}\n\n// Una prueba de reconocimiento pendiente (POST /api/enrolamiento/probar, 15 s como máximo) deja a la visión ocupada: un\n// enrolar ahora recibiría \"ocupado\" y el registro se cerraría con error. Misma expresión que esa ruta: un salto\n// del reloj hacia atrás no bloquea.\nconst prueba = flow.get(\"prueba\");\nconst espera = prueba && typeof prueba.solicitado_ms === \"number\" ? Date.now() - prueba.solicitado_ms : null;\nif (prueba && prueba.pendiente === true && espera !== null && espera >= 0 && espera < 15 * 1000) {\n    return rechazar(409, { error: \"Hay una prueba de reconocimiento en curso: espera su resultado antes de iniciar un registro\", motivo: \"prueba_pendiente\" });\n}\n\nconst ahora = Date.now();\nconst id = \"r\" + ahora + \"-\" + Math.random().toString(36).slice(2, 8);\nflow.set(\"inscripcion\", {\n    id: id,\n    abierto: true,\n    apartada: true, // hasta que la base confirme el consentimiento y se publique la orden\n    cuenta: cuerpo.cuenta,\n    nombre: null,\n    estado: \"esperando_vision\",\n    motivo: null,\n    poses: POSES.map((pose) => ({ pose: pose, estado: \"pendiente\", motivo: null, miniatura: null })),\n    advertencia: null,\n    inicio_ms: ahora,\n    actualizado_ms: ahora,\n    // Ticks de 15 s sin progreso (reloj monotónico de los temporizadores, ver \"Vencer inscripción\").\n    ticks: 0\n});\nmsg.reserva = id;\nmsg.params = [cuerpo.cuenta];\nmsg.payload = null;\nreturn [msg, null];",
         "outputs": 2,
         "timeout": 0,
         "noerr": 0,
@@ -1017,7 +1123,8 @@
         "y": 820,
         "wires": [
             [
-                "a1f0c0de00000073"
+                "a1f0c0de00000073",
+                "a1f0c0de0000013a"
             ]
         ]
     },
@@ -2188,8 +2295,8 @@
         "type": "function",
         "z": "a1f0c0de000000b0",
         "name": "Validar resultado de visión",
-        "func": "// Resultado de la visión: aula/vision/resultado (QoS 1, sin retención; contrato MQTT, sección 4).\n//   {\"ts\":\"…\",\"modo\":\"pase\",\"decision\":\"reconocido\",\"cuenta\":\"320068234\",\"conf\":0.78,\"margen\":0.21,\"lat_ms\":{…}}\n// Solo `modo: \"pase\"` llega a la base. `modo: \"prueba\"` (la prueba inmediata del registro) se ignora\n// en esta versión: el reenvío al frontend está pendiente.\n// Salida 1: reconocido, dudoso, desconocido o imagen_insuficiente → la sentencia de Postgres, con\n//           msg.params = [decision, cuenta, conf] ya validados.\n// Salida 2: avisos y descartes (nodo debug de consola). Nunca repiten el contenido del mensaje: la\n//           cuenta y el nombre de un alumno no deben quedar en el log.\n// `sin_rostro` y `error` no llevan retroalimentación (casi siempre fue un disparo del PIR sin nadie\n// enfrente): solo dejan un aviso.\nconst MAX_CARACTERES = 2048; // un resultado real pesa unos 250 bytes\nconst VENTANA_TS_MS = 60 * 1000;\nconst DECISIONES = [\"reconocido\", \"dudoso\", \"desconocido\", \"sin_rostro\", \"imagen_insuficiente\", \"error\"];\nconst CUENTA = /^[0-9]{9}$/;\n// ISO 8601 con zona, como la estampa la visión: \"2026-11-04T09:12:33.120-06:00\" (también \"Z\").\nconst TS = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\n// Un resultado nunca se retiene (contrato MQTT, sección 1): un retenido repetiría en cada conexión un\n// reconocimiento que ya pasó. El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido\n// publicado en vivo llega con retain = false, y solo se ve retain = true en la entrega inicial al\n// (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5; lo que sí cubre\n// siempre es la ventana de `ts` de abajo.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": un resultado no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (un resultado no se retiene)\");\n}\n// Payload vacío: no es un resultado.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\n\nif (datos.modo !== \"pase\" && datos.modo !== \"prueba\") {\n    return descartar(\"modo debe ser pase o prueba\");\n}\nif (typeof datos.decision !== \"string\" || !DECISIONES.includes(datos.decision)) {\n    return descartar(\"decision desconocida\");\n}\n// `cuenta` y `conf` son obligatorios en el contrato, pero llevan null cuando no hubo candidato.\nif (datos.cuenta !== null && (typeof datos.cuenta !== \"string\" || !CUENTA.test(datos.cuenta))) {\n    return descartar(\"cuenta debe ser null o un texto de 9 dígitos\");\n}\n// La similitud coseno de un candidato sin parecido puede ser negativa: el contrato dice 0 a 1, pero\n// aquí se acepta de -1 a 1 para no perder un intento por un decimal de más.\nif (datos.conf !== null && (typeof datos.conf !== \"number\" || !Number.isFinite(datos.conf) || datos.conf < -1 || datos.conf > 1)) {\n    return descartar(\"conf debe ser null o un número de -1 a 1\");\n}\nif (datos.margen !== undefined && datos.margen !== null && (typeof datos.margen !== \"number\" || !Number.isFinite(datos.margen))) {\n    return descartar(\"margen debe ser null o un número\");\n}\nif (datos.lat_ms === null || typeof datos.lat_ms !== \"object\" || Array.isArray(datos.lat_ms)) {\n    return descartar(\"lat_ms debe ser un objeto\");\n}\nif (datos.decision === \"reconocido\" && (datos.cuenta === null || datos.conf === null)) {\n    return descartar(\"un reconocido exige cuenta y conf\");\n}\n\n// Mensaje vencido: `ts` es obligatorio y debe estar a menos de 60 s del reloj de Node-RED, hacia\n// atrás o hacia adelante. Así cae un retenido viejo, una reentrega tardía y el 1970 de reserva que\n// usa la visión cuando no tiene hora (contrato MQTT, sección 4). El reloj de la placa y el de la\n// visión son el mismo (la RTC); un reloj mal puesto descarta los reconocimientos con aviso.\nif (typeof datos.ts !== \"string\" || !TS.test(datos.ts)) {\n    return descartar(\"falta ts o no es ISO 8601 con zona\");\n}\nconst instante = Date.parse(datos.ts);\nif (Number.isNaN(instante)) {\n    return descartar(\"ts no se puede leer\");\n}\nif (Math.abs(Date.now() - instante) > VENTANA_TS_MS) {\n    return descartar(\"ts a más de 60 s del reloj de Node-RED\");\n}\n\nif (datos.modo === \"prueba\") {\n    return descartar(\"modo prueba ignorado (el reenvío al frontend está pendiente)\");\n}\nif (datos.decision === \"sin_rostro\" || datos.decision === \"error\") {\n    return [null, { payload: \"Sin retroalimentación: la visión informó \" + datos.decision }];\n}\nreturn [{ fuente: \"pase\", decision: datos.decision, params: [datos.decision, datos.cuenta, datos.conf], payload: null }, null];",
-        "outputs": 2,
+        "func": "// Resultado de la visión: aula/vision/resultado (QoS 1, sin retención; contrato MQTT, sección 4).\n//   {\"ts\":\"…\",\"modo\":\"pase\",\"decision\":\"reconocido\",\"cuenta\":\"320068234\",\"conf\":0.78,\"margen\":0.21,\"lat_ms\":{…}}\n// Solo `modo: \"pase\"` llega a la base. `modo: \"prueba\"` (la prueba inmediata del registro) no marca asistencia\n// ni manda retroalimentación: sale por la salida 4 hacia la pestaña Registro (GET /api/enrolamiento/prueba).\n// Salida 1: reconocido, dudoso, desconocido o imagen_insuficiente → la sentencia de Postgres, con\n//           msg.params = [decision, cuenta, conf] ya validados.\n// Salida 2: avisos y descartes (nodo debug de consola). Nunca repiten el contenido del mensaje: la\n//           cuenta y el nombre de un alumno no deben quedar en el log.\n// Salida 3: la latencia de inferencia (`lat_ms`) de todo resultado que pasó esta validación, sea cual sea\n//           el modo y la decisión y haya o no sesión abierta: mide la inferencia, no la asistencia. Va\n//           aparte, por su propio límite y su propia inserción, y sale después de la asistencia: no la\n//           cambia ni la retrasa. Copia solo las cuatro etapas, sin la cuenta ni nada más del mensaje.\n// Salida 4: solo el resultado de `modo: \"prueba\"`, ya validado ({decision, cuenta, conf, margen, motivo, lat_ms, ts_ms}, con\n//           `motivo` solo si es un código de minúsculas y guion bajo y `ts_ms` el `ts` en ms), por un enlace hacia\n//           \"Guardar resultado de la prueba\" (pestaña Registro). Es el único camino de la cuenta fuera de esta función\n//           (nunca llega a los avisos ni al log); el aviso de la salida 2 sigue sin cuenta.\n// `sin_rostro` y `error` no llevan retroalimentación (casi siempre fue un disparo del PIR sin nadie\n// enfrente): solo dejan un aviso.\nconst MAX_CARACTERES = 2048; // un resultado real pesa unos 250 bytes\nconst VENTANA_TS_MS = 60 * 1000;\nconst DECISIONES = [\"reconocido\", \"dudoso\", \"desconocido\", \"sin_rostro\", \"imagen_insuficiente\", \"error\"];\nconst CUENTA = /^[0-9]{9}$/;\n// ISO 8601 con zona, como la estampa la visión: \"2026-11-04T09:12:33.120-06:00\" (también \"Z\").\nconst TS = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;\n\nfunction descartar(motivo) {\n    return [null, { payload: \"Descartado, \" + motivo }];\n}\n\n// Un resultado nunca se retiene (contrato MQTT, sección 1): un retenido repetiría en cada conexión un\n// reconocimiento que ya pasó. El broker de Node-RED habla MQTT 3.1.1 (protocolVersion 4): un retenido\n// publicado en vivo llega con retain = false, y solo se ve retain = true en la entrega inicial al\n// (re)conectar. Este descarte aplica solo entonces, mientras no se pase a MQTT 5; lo que sí cubre\n// siempre es la ventana de `ts` de abajo.\nif (msg.retain === true) {\n    node.warn(\"Descartado mensaje retenido en \" + msg.topic + \": un resultado no se retiene\");\n    return descartar(\"mensaje retenido en \" + msg.topic + \" (un resultado no se retiene)\");\n}\n// Payload vacío: no es un resultado.\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload de \" + msg.payload.length + \" caracteres (máximo \" + MAX_CARACTERES + \")\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\n\nif (datos.modo !== \"pase\" && datos.modo !== \"prueba\") {\n    return descartar(\"modo debe ser pase o prueba\");\n}\nif (typeof datos.decision !== \"string\" || !DECISIONES.includes(datos.decision)) {\n    return descartar(\"decision desconocida\");\n}\n// `cuenta` y `conf` son obligatorios en el contrato, pero llevan null cuando no hubo candidato.\nif (datos.cuenta !== null && (typeof datos.cuenta !== \"string\" || !CUENTA.test(datos.cuenta))) {\n    return descartar(\"cuenta debe ser null o un texto de 9 dígitos\");\n}\n// La similitud coseno de un candidato sin parecido puede ser negativa: el contrato dice 0 a 1, pero\n// aquí se acepta de -1 a 1 para no perder un intento por un decimal de más.\nif (datos.conf !== null && (typeof datos.conf !== \"number\" || !Number.isFinite(datos.conf) || datos.conf < -1 || datos.conf > 1)) {\n    return descartar(\"conf debe ser null o un número de -1 a 1\");\n}\nif (datos.margen !== undefined && datos.margen !== null && (typeof datos.margen !== \"number\" || !Number.isFinite(datos.margen))) {\n    return descartar(\"margen debe ser null o un número\");\n}\nif (datos.lat_ms === null || typeof datos.lat_ms !== \"object\" || Array.isArray(datos.lat_ms)) {\n    return descartar(\"lat_ms debe ser un objeto\");\n}\nif (datos.decision === \"reconocido\" && (datos.cuenta === null || datos.conf === null)) {\n    return descartar(\"un reconocido exige cuenta y conf\");\n}\n\n// Mensaje vencido: `ts` es obligatorio y debe estar a menos de 60 s del reloj de Node-RED, hacia\n// atrás o hacia adelante. Así cae un retenido viejo, una reentrega tardía y el 1970 de reserva que\n// usa la visión cuando no tiene hora (contrato MQTT, sección 4). El reloj de la placa y el de la\n// visión son el mismo (la RTC); un reloj mal puesto descarta los reconocimientos con aviso.\nif (typeof datos.ts !== \"string\" || !TS.test(datos.ts)) {\n    return descartar(\"falta ts o no es ISO 8601 con zona\");\n}\nconst instante = Date.parse(datos.ts);\nif (Number.isNaN(instante)) {\n    return descartar(\"ts no se puede leer\");\n}\nif (Math.abs(Date.now() - instante) > VENTANA_TS_MS) {\n    return descartar(\"ts a más de 60 s del reloj de Node-RED\");\n}\n\n// Desde aquí el resultado es válido: su latencia se guarda aunque la asistencia lo ignore. Sus valores se\n// validan en \"Preparar latencia de la NPU\"; uno malo no descarta el resultado ni cambia la asistencia.\nconst latencia = { payload: null, lat_ms: { cap: datos.lat_ms.cap, det: datos.lat_ms.det, emb: datos.lat_ms.emb, total: datos.lat_ms.total } };\n\nif (datos.modo === \"prueba\") {\n    const motivo = (typeof datos.motivo === \"string\" && /^[a-z_]{1,40}$/.test(datos.motivo)) ? datos.motivo : null;\n    const prueba = {\n        payload: {\n            decision: datos.decision,\n            cuenta: datos.cuenta,\n            conf: datos.conf,\n            margen: typeof datos.margen === \"number\" ? datos.margen : null,\n            motivo: motivo,\n            lat_ms: { cap: datos.lat_ms.cap, det: datos.lat_ms.det, emb: datos.lat_ms.emb, total: datos.lat_ms.total },\n            ts_ms: instante\n        }\n    };\n    return [null, { payload: \"Resultado de prueba: no marca asistencia (va a la prueba de reconocimiento)\" }, latencia, prueba];\n}\nif (datos.decision === \"sin_rostro\" || datos.decision === \"error\") {\n    return [null, { payload: \"Sin retroalimentación: la visión informó \" + datos.decision }, latencia];\n}\nreturn [{ fuente: \"pase\", decision: datos.decision, params: [datos.decision, datos.cuenta, datos.conf], payload: null }, null, latencia];",
+        "outputs": 4,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
@@ -2203,6 +2310,12 @@
             ],
             [
                 "a1f0c0de000000b7"
+            ],
+            [
+                "a1f0c0de000000e0"
+            ],
+            [
+                "a1f0c0de0000013f"
             ]
         ]
     },
@@ -2363,6 +2476,108 @@
         "libs": [],
         "x": 430,
         "y": 260,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de000000e0",
+        "type": "delay",
+        "z": "a1f0c0de000000b0",
+        "name": "Límite de latencia (2 por segundo, 500 ms entre mensajes, descarta)",
+        "info": "CWE-770: cada resultado válido es también una fila de `metricas_energia` con `origen = 'npu'`. Límite propio, más estricto que el de la asistencia: 2 por segundo (500 ms entre mensajes), descarta sin encolar. Un resultado legítimo es uno por disparo del PIR, y la latencia es una medición que puede perder alguna muestra (un hueco en la serie de mediciones puede ser un descarte de este límite). Tiene su propio contador: un goteo de resultados no hace que la latencia le quite lugar a la asistencia ni al revés. Acota la tabla a unas 172 800 filas al día aunque alguien con la clave de `vision` o de `nodered` publique sin parar. \"No retrasa la asistencia\" vale mientras la base está sana: la asistencia y la latencia comparten el mismo pool de Postgres (`max` 4), y con la base lenta una inserción de latencia puede ocupar una conexión; por eso el límite es bajo.",
+        "pauseType": "rate",
+        "timeout": "5",
+        "timeoutUnits": "seconds",
+        "rate": "2",
+        "nbRateUnits": "1",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": true,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 560,
+        "y": 300,
+        "wires": [
+            [
+                "a1f0c0de000000e1"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000e1",
+        "type": "function",
+        "z": "a1f0c0de000000b0",
+        "name": "Preparar latencia de la NPU",
+        "func": "// Latencia de inferencia de la NPU: msg.lat_ms = {cap, det, emb, total}, en ms, que \"Validar resultado de\n// visión\" copia de un aula/vision/resultado ya validado (contrato MQTT, sección 4). Una etapa que no corrió\n// va en null y se guarda como null.\n// Salida 1: msg.params = [cap, det, emb, total] para el INSERT en metricas_energia (origen 'npu').\n// Salida 2: aviso de por qué no se guarda un valor malo (nodo debug de consola). Nunca repite el valor\n// recibido. Con las cuatro etapas en null no sale nada: no hay nada que guardar.\n// Un valor malo solo evita esta fila: la asistencia del mismo resultado ya siguió su propia ruta.\nconst MAXIMO_MS = 600000; // 10 min: un ciclo real dura unos 240 ms, y la columna es INT\nconst ETAPAS = [\"cap\", \"det\", \"emb\", \"total\"];\n\nfunction omitir(motivo) {\n    return [null, { payload: \"Latencia no registrada: \" + motivo }];\n}\n\nconst lat = msg.lat_ms;\nif (lat === null || typeof lat !== \"object\" || Array.isArray(lat)) {\n    return omitir(\"lat_ms no es un objeto\");\n}\nconst params = [];\nfor (const etapa of ETAPAS) {\n    const x = lat[etapa];\n    if (x === undefined || x === null) {\n        params.push(null);\n    } else if (typeof x !== \"number\" || !Number.isFinite(x) || x < 0 || x > MAXIMO_MS) {\n        return omitir(etapa + \" debe ser null o un número de 0 a \" + MAXIMO_MS + \" ms\");\n    } else {\n        // La visión manda enteros; un decimal se redondea porque la columna es INT.\n        params.push(Math.round(x));\n    }\n}\nif (params.every((x) => x === null)) {\n    // Ninguna etapa se midió (un error de la visión antes de cualquier etapa): no hay nada que guardar y\n    // tampoco es un aviso, porque no es un dato malo.\n    return null;\n}\nreturn [{ payload: null, params }, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 830,
+        "y": 300,
+        "wires": [
+            [
+                "a1f0c0de000000e2"
+            ],
+            [
+                "a1f0c0de000000b7"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000e2",
+        "type": "postgresql",
+        "z": "a1f0c0de000000b0",
+        "name": "Registrar latencia de la NPU",
+        "info": "$1 = cap, $2 = det, $3 = emb, $4 = total (ms; null si la etapa no corrió). Mismo Postgres y mismo rol que la ingesta de energía. Sin ON CONFLICT: cada resultado es una medición. Si falla, \"Registrar error de latencia\" deja solo el SQLSTATE; no se reintenta y la asistencia no se entera.",
+        "query": "INSERT INTO metricas_energia (origen, lat_cap_ms, lat_det_ms, lat_emb_ms, lat_total_ms) VALUES ('npu', $1, $2, $3, $4)",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 1100,
+        "y": 280,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de000000e3",
+        "type": "catch",
+        "z": "a1f0c0de000000b0",
+        "name": "Errores de la latencia",
+        "scope": [
+            "a1f0c0de000000e1",
+            "a1f0c0de000000e2"
+        ],
+        "uncaught": false,
+        "x": 170,
+        "y": 380,
+        "wires": [
+            [
+                "a1f0c0de000000e4"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000e4",
+        "type": "function",
+        "z": "a1f0c0de000000b0",
+        "name": "Registrar error de latencia",
+        "func": "// Error de ejecución (la base, sobre todo) al guardar la latencia. Se registra solo el código SQLSTATE\n// (cinco caracteres), o un mensaje truncado y sin secuencias de 9 dígitos: nunca msg ni msg.params.\n// No se reintenta ni se toca la asistencia: es una medición, y la siguiente llega con el próximo resultado.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nnode.warn(\"Latencia de la NPU: no se guardó: \" + causa);\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 380,
         "wires": [
             []
         ]
@@ -2708,5 +2923,872 @@
                 "a1f0c0de000000d0"
             ]
         ]
+    },
+    {
+        "id": "a1f0c0de000000f0",
+        "type": "tab",
+        "label": "Sistema",
+        "disabled": false,
+        "info": "Estado del sistema para el frontend (plan, secciones 6.4 y 6.7; contrato MQTT, secciones 3, 4 y 5). (1) Guarda en el contexto del flujo, en memoria, el último estado válido de aula/vision/estado, aula/camara/estado y aula/actuador/estado (retenidos: el retenido es el estado actual, así que aquí no se descarta por retain) con la hora en que Node-RED lo recibió. (2) Cada 10 s lee la temperatura del SoC, la CPU y la RAM de la placa (/proc y /sys, que el contenedor ve del host), publica aula/sistema/metricas (QoS 0, sin retain) y guarda la temperatura en metricas_energia con origen 'sistema'. (3) GET /api/sistema/estado, de solo lectura, devuelve todo eso. La autenticación la hace el httpNodeMiddleware de settings.js."
+    },
+    {
+        "id": "a1f0c0de000000f1",
+        "type": "comment",
+        "z": "a1f0c0de000000f0",
+        "name": "Estados retenidos: visión, XIAO (cámara) y actuadores → contexto del flujo",
+        "info": "Lo último que se supo de cada uno queda en flow.estado_vision, flow.estado_camara y flow.estado_actuadores (memoria; se pierde al reiniciar o desplegar, y el retenido del broker lo repone al reconectar). Se descartan el payload vacío (en silencio), lo que no es JSON y los campos fuera de la tabla del contrato; el descarte nombra el tópico y el campo, nunca el valor. NO se descarta el retain: estos tres tópicos tienen Retain = sí en la tabla de la sección 2 del contrato, y la limpieza de retenidos no los toca.",
+        "x": 300,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000f2",
+        "type": "mqtt in",
+        "z": "a1f0c0de000000f0",
+        "name": "aula/vision/estado",
+        "topic": "aula/vision/estado",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 170,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de000000f5"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000f3",
+        "type": "mqtt in",
+        "z": "a1f0c0de000000f0",
+        "name": "aula/camara/estado",
+        "topic": "aula/camara/estado",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 170,
+        "y": 160,
+        "wires": [
+            [
+                "a1f0c0de000000f5"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000f4",
+        "type": "mqtt in",
+        "z": "a1f0c0de000000f0",
+        "name": "aula/actuador/estado",
+        "topic": "aula/actuador/estado",
+        "qos": "1",
+        "datatype": "utf8",
+        "broker": "a1f0c0de00000002",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 170,
+        "y": 220,
+        "wires": [
+            [
+                "a1f0c0de000000f5"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000f5",
+        "type": "function",
+        "z": "a1f0c0de000000f0",
+        "name": "Guardar estado de un dispositivo",
+        "func": "// Estado de un dispositivo: aula/vision/estado, aula/camara/estado y aula/actuador/estado (QoS 1,\n// retenidos; contrato MQTT, secciones 3 y 4).\n// Son estados, no eventos ni órdenes: su columna Retain es \"sí\", así que el retenido ES el estado\n// actual y el descarte por retain de la sección 1 (solo para los tópicos con Retain = no) no aplica\n// aquí. Tampoco los toca la limpieza de retenidos.\n// Se descartan el payload vacío (en silencio: borrar el retenido del broker no borra el último estado\n// que Node-RED ya tiene), lo que no es JSON, lo que no es un objeto y todo campo que no cumpla la tabla\n// del contrato (tipo o valor). Un campo que el contrato no conoce se ignora y no se guarda (sección 1).\n// Lo válido se guarda en el contexto del flujo (memoria) con la hora a la que lo recibió Node-RED:\n//   flow.estado_vision, flow.estado_camara, flow.estado_actuadores = { datos, recibido_ms }\n// Un estado nuevo reemplaza al anterior; uno descartado lo deja como estaba.\n// Salida única: el descarte (nodo debug de consola). Su texto nombra el tópico y el campo, nunca el valor.\nconst MAX_CARACTERES = 1024; // el estado más grande (la visión) pesa unos 120 bytes\n// ISO 8601 con zona, como la estampa la visión: \"2026-11-04T09:12:33.120-06:00\" (también \"Z\").\nconst TS = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;\n\nconst booleano = (x) => typeof x === \"boolean\";\nconst entero = (min, max) => (x) => typeof x === \"number\" && Number.isInteger(x) && x >= min && x <= max;\nconst numero = (min, max) => (x) => typeof x === \"number\" && Number.isFinite(x) && x >= min && x <= max;\nconst uno = (...valores) => (x) => typeof x === \"string\" && valores.includes(x);\n// Vacío es válido: la visión escribe \"\" cuando no tiene hora (ts) o modelo configurado. Solo ASCII imprimible\n// (el nombre de un modelo lo es): así no pasan caracteres de control ni de formato (bidi, ancho cero) que\n// confundirían lo que el frontend muestra.\nconst texto = (x) => typeof x === \"string\" && /^[\\x20-\\x7e]{0,100}$/.test(x);\nconst fecha = (x) => typeof x === \"string\" && TS.test(x) && !Number.isNaN(Date.parse(x));\n\n// Un campo por renglón: [validador, obligatorio, omitir si es \"\"]. El firmware de la XIAO manda además\n// camara, corte y nvs en aula/camara/estado (xiao.ino, construirLatido); la tabla del contrato no los lista.\nconst ESQUEMAS = {\n    \"aula/vision/estado\": {\n        clave: \"estado_vision\",\n        campos: {\n            en_linea: [booleano, true, false],\n            ts: [(x) => x === \"\" || fecha(x), false, true],\n            modo: [uno(\"inactivo\", \"pase\", \"enrolando\"), false, false],\n            galeria: [entero(0, 100000), false, false],\n            modelo: [texto, false, false]\n        }\n    },\n    \"aula/camara/estado\": {\n        clave: \"estado_camara\",\n        campos: {\n            en_linea: [booleano, true, false],\n            rssi: [entero(-200, 20), false, false],\n            heap: [entero(0, 16777216), false, false],\n            temp: [numero(-40, 150), false, false],\n            camara: [booleano, false, false],\n            corte: [booleano, false, false],\n            nvs: [booleano, false, false]\n        }\n    },\n    \"aula/actuador/estado\": {\n        clave: \"estado_actuadores\",\n        campos: {\n            servo: [uno(\"abierto\", \"cerrado\"), false, false],\n            led: [uno(\"azul\", \"verde\", \"rojo\", \"ambar\", \"apagado\"), false, false],\n            luz: [entero(0, 1), false, false]\n        }\n    }\n};\n\nfunction descartar(motivo) {\n    return [{ payload: \"Descartado, \" + msg.topic + \": \" + motivo }];\n}\n\nconst esquema = Object.prototype.hasOwnProperty.call(ESQUEMAS, msg.topic) ? ESQUEMAS[msg.topic] : null;\nif (esquema === null) {\n    return [{ payload: \"Descartado, tópico que no es de estado\" }];\n}\nif (msg.payload === \"\" || (Buffer.isBuffer(msg.payload) && msg.payload.length === 0)) {\n    return null;\n}\nif (typeof msg.payload !== \"string\") {\n    return descartar(\"el payload no es texto\");\n}\nif (msg.payload.length > MAX_CARACTERES) {\n    return descartar(\"payload demasiado largo\");\n}\nlet datos;\ntry {\n    datos = JSON.parse(msg.payload);\n} catch (e) {\n    return descartar(\"no es JSON\");\n}\nif (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n    return descartar(\"no es un objeto JSON\");\n}\n\nconst estado = {};\nlet conCampos = false;\nfor (const campo of Object.keys(esquema.campos)) {\n    const [valido, obligatorio, omitirVacio] = esquema.campos[campo];\n    const valor = Object.prototype.hasOwnProperty.call(datos, campo) ? datos[campo] : undefined;\n    if (valor === undefined) {\n        if (obligatorio) {\n            return descartar(\"falta \" + campo);\n        }\n        continue;\n    }\n    if (!valido(valor)) {\n        return descartar(campo + \" fuera de la tabla del contrato\");\n    }\n    if (omitirVacio && valor === \"\") {\n        continue;\n    }\n    estado[campo] = valor;\n    conCampos = true;\n}\nif (!conCampos) {\n    return descartar(\"sin ningún campo del contrato\");\n}\nflow.set(esquema.clave, { datos: estado, recibido_ms: Date.now() });\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 160,
+        "wires": [
+            [
+                "a1f0c0de000000f6"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000f6",
+        "type": "debug",
+        "z": "a1f0c0de000000f0",
+        "name": "Avisos y descartes del sistema",
+        "active": true,
+        "tosidebar": true,
+        "console": true,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 780,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000f7",
+        "type": "catch",
+        "z": "a1f0c0de000000f0",
+        "name": "Errores al guardar un estado",
+        "scope": [
+            "a1f0c0de000000f5"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 280,
+        "wires": [
+            [
+                "a1f0c0de000000f8"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000f8",
+        "type": "function",
+        "z": "a1f0c0de000000f0",
+        "name": "Registrar error del estado",
+        "func": "// Error de ejecución al guardar un estado (un fallo de la función, no un descarte). Se registra solo un texto\n// fijo: nunca msg ni el mensaje de error, que podrían traer un trozo del payload recibido.\nnode.warn(\"Estado del sistema: no se guardó por un error de ejecución\");\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 280,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de000000f9",
+        "type": "comment",
+        "z": "a1f0c0de000000f0",
+        "name": "Métricas de la placa cada 10 s → aula/sistema/metricas y metricas_energia (origen 'sistema')",
+        "info": "Un ciclo lee siete archivos con file in, uno por vuelta: /proc/stat, /proc/meminfo y thermal_zone0 a 4 de /sys/class/thermal. Se verificó desde dentro del contenedor que son legibles y que reflejan el host. La métrica sale desde el segundo ciclo (la CPU es una diferencia entre dos lecturas). Se publica con QoS 0 y sin retain (tabla del contrato) y no hay suscriptor en Node-RED: la API lee el valor del contexto. La fila de la base pasa por un límite de 1 mensaje cada 5 s que descarta; con el ciclo de 10 s no descarta nada, es defensa en profundidad (CWE-770). Sin purga (decisión de retención de orangepi/AGENTS.md): unas 8 640 filas al día.",
+        "x": 300,
+        "y": 360,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de000000fa",
+        "type": "inject",
+        "z": "a1f0c0de000000f0",
+        "name": "Cada 10 s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "10",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 2,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 420,
+        "wires": [
+            [
+                "a1f0c0de000000fb"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000fb",
+        "type": "function",
+        "z": "a1f0c0de000000f0",
+        "name": "Siguiente archivo",
+        "func": "// Lee, uno por uno y con el nodo file in, los archivos de /proc y /sys de los que salen la temperatura, la CPU\n// y la RAM de la placa (contrato MQTT, sección 5: aula/sistema/metricas). El contenedor de Node-RED ve\n// /proc/stat y /proc/meminfo del host y puede leer /sys/class/thermal (se verificó desde dentro del\n// contenedor), y una función no puede usar fs (functionExternalModules: false).\n// Entrada: el inject (ciclo nuevo) o, en cada vuelta, la salida del file in (o de su catch, con msg.error).\n// La lista de archivos es fija: ningún nombre viene de MQTT ni de HTTP. La lista se acorta en cada vuelta, así\n// que el ciclo termina siempre; un archivo que no se pudo leer queda en null y no detiene el ciclo.\n// El file in registra su propio error en cada lectura fallida aunque un catch lo recoja, y eso sería una línea de\n// log por zona cada 10 s para siempre. Por eso una zona térmica que falla se deja de pedir (flow.fallos_zonas):\n//   - ENOENT (no existe en este kernel): de forma permanente.\n//   - Cualquier otro error 3 ciclos seguidos: 10 minutos, y entonces se vuelve a probar (una lectura; si falla otra vez,\n//     otros 10 minutos; si sale bien, la zona vuelve a leerse en cada ciclo). Un ENOENT al volver a probar la hace permanente.\n// Cada zona omitida deja un solo aviso (el reintento fallido no repite el aviso, solo deja el error del file in).\n// El contexto del flujo está en memoria pero sobrevive a un despliegue (context.clean solo borra los contextos de\n// flujos que ya no existen): solo reiniciar Node-RED vuelve a probar las zonas omitidas de forma permanente.\n// /proc/stat y /proc/meminfo no se omiten nunca: si fallan, es un fallo real.\n// Salida 1: el siguiente archivo para el file in (msg.filename). Salida 2: el ciclo completo, con\n// msg.leidos = { ruta: texto | null }, para \"Calcular métricas del sistema\".\nconst ARCHIVOS = [\n    \"/proc/stat\",\n    \"/proc/meminfo\",\n    \"/sys/class/thermal/thermal_zone0/temp\",\n    \"/sys/class/thermal/thermal_zone1/temp\",\n    \"/sys/class/thermal/thermal_zone2/temp\",\n    \"/sys/class/thermal/thermal_zone3/temp\",\n    \"/sys/class/thermal/thermal_zone4/temp\"\n];\n\nconst ZONA = /^\\/sys\\/class\\/thermal\\/thermal_zone[0-9]+\\/temp$/;\nconst MAX_FALLOS = 3;\nconst REINTENTO_MS = 10 * 60 * 1000;\nconst ahora = Date.now();\n// { ruta: { n: fallos seguidos, ms: cuándo falló por última vez, permanente: true si fue ENOENT } }\nconst fallos = Object.assign({}, flow.get(\"fallos_zonas\"));\n// Omitida: permanente, o con 3 fallos y dentro de los 10 minutos desde el último. Un salto del reloj hacia atrás no\n// la deja omitida para siempre (Date.now() puede saltar): se vuelve a probar.\nconst omitida = (ruta) => {\n    const e = ZONA.test(ruta) ? fallos[ruta] : undefined;\n    if (!e || e.n < MAX_FALLOS) {\n        return false;\n    }\n    return e.permanente === true || (ahora - e.ms >= 0 && ahora - e.ms < REINTENTO_MS);\n};\n\nif (!Array.isArray(msg.pendientes) || msg.leidos === null || typeof msg.leidos !== \"object\") {\n    msg.pendientes = ARCHIVOS.filter((ruta) => !omitida(ruta));\n    msg.leidos = {};\n} else if (ARCHIVOS.includes(msg.pedido)) {\n    // Vuelta del file in: la clave es el archivo que se pidió, no lo que diga msg.filename.\n    let contenido = null;\n    if (msg.error === undefined) {\n        if (typeof msg.payload === \"string\") {\n            contenido = msg.payload;\n        } else if (Buffer.isBuffer(msg.payload)) {\n            contenido = msg.payload.toString(\"utf8\");\n        }\n    }\n    msg.leidos[msg.pedido] = contenido;\n    if (ZONA.test(msg.pedido)) {\n        const antes = fallos[msg.pedido] ? fallos[msg.pedido].n : 0;\n        if (contenido !== null) {\n            delete fallos[msg.pedido];\n        } else {\n            const error = msg.error !== null && typeof msg.error === \"object\" ? msg.error : {};\n            const ausente = error.code === \"ENOENT\" || /ENOENT/.test(String(error.message));\n            const previa = fallos[msg.pedido];\n            const permanente = ausente || Boolean(previa && previa.permanente);\n            const n = ausente ? MAX_FALLOS : Math.min(antes + 1, MAX_FALLOS);\n            fallos[msg.pedido] = { n: n, ms: ahora, permanente: permanente };\n            if (antes < MAX_FALLOS && n >= MAX_FALLOS) {\n                node.warn(\"Zona térmica omitida: \" + (permanente\n                    ? \"no existe (\" + msg.pedido + \"); no se vuelve a leer hasta reiniciar Node-RED\"\n                    : \"no se puede leer (\" + msg.pedido + \"); se vuelve a probar cada 10 minutos\"));\n            }\n        }\n        flow.set(\"fallos_zonas\", fallos);\n    }\n}\ndelete msg.error;\nmsg.payload = null;\n\nif (msg.pendientes.length === 0) {\n    delete msg.pendientes;\n    delete msg.pedido;\n    delete msg.filename;\n    return [null, msg];\n}\nmsg.pedido = msg.pendientes.shift();\nmsg.filename = msg.pedido;\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 350,
+        "y": 420,
+        "wires": [
+            [
+                "a1f0c0de000000fc"
+            ],
+            [
+                "a1f0c0de000000fe"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000fc",
+        "type": "file in",
+        "z": "a1f0c0de000000f0",
+        "name": "Leer archivo del sistema",
+        "filename": "filename",
+        "filenameType": "msg",
+        "format": "utf8",
+        "chunk": false,
+        "sendError": false,
+        "encoding": "none",
+        "allProps": false,
+        "x": 590,
+        "y": 380,
+        "wires": [
+            [
+                "a1f0c0de000000fb"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000fd",
+        "type": "catch",
+        "z": "a1f0c0de000000f0",
+        "name": "Archivo que no se pudo leer",
+        "scope": [
+            "a1f0c0de000000fc"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 480,
+        "wires": [
+            [
+                "a1f0c0de000000fb"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000fe",
+        "type": "function",
+        "z": "a1f0c0de000000f0",
+        "name": "Calcular métricas del sistema",
+        "func": "// Temperatura, CPU y RAM de la placa a partir de lo que leyó \"Siguiente archivo\" (msg.leidos).\n//   temp: la zona térmica más caliente del SoC (cada thermal_zone*/temp trae milésimas de °C), en °C con un\n//         decimal. Una zona ilegible o fuera de -40 a 150 °C no cuenta.\n//   cpu:  % de uso entre este ciclo y el anterior, con la línea \"cpu\" de /proc/stat (user, nice, system, idle,\n//         iowait, irq, softirq y steal; guest ya va dentro de user). El primer ciclo solo toma la línea base\n//         (sin aviso: es lo esperado al arrancar) y la primera métrica sale 10 s después. Si los contadores no\n//         avanzan (o retroceden por un reinicio) no hay porcentaje: se toma una línea base nueva y queda un aviso.\n//   ram:  % en uso = 1 - MemAvailable / MemTotal, de /proc/meminfo.\n// Con las tres lecturas guarda el último valor en flow.metricas_sistema = { datos, recibido_ms } (lo lee la\n// API) y saca el payload de aula/sistema/metricas {\"ts\",\"temp\",\"cpu\",\"ram\"} (contrato MQTT, sección 5: cpu y\n// ram enteros, temp con un decimal) y la fila para metricas_energia (origen 'sistema', solo temp_soc: cpu y ram\n// no tienen columna).\n// Salida 1: el mqtt out. Salida 2: msg.params = [temp] para el INSERT. Salida 3: aviso de por qué no hay\n// métrica (nodo debug de consola), con texto fijo. El aviso de lo que no se pudo leer sale solo cuando cambia\n// el conjunto de lo que falta (flow.falta_metricas, memoria) y se rearma cuando todo vuelve a leerse: un fallo\n// permanente es una línea, no una cada 10 s. El de los contadores de la CPU que no avanzan sale en cada ciclo.\nfunction leerCpu(texto) {\n    if (typeof texto !== \"string\") {\n        return null;\n    }\n    const m = /^cpu\\s+([0-9]+(?:\\s+[0-9]+){7})(?:\\s|$)/.exec(texto);\n    if (m === null) {\n        return null;\n    }\n    const c = m[1].split(/\\s+/).map(Number);\n    if (!c.every((x) => Number.isSafeInteger(x))) {\n        return null;\n    }\n    return { total: c.reduce((a, b) => a + b, 0), ocioso: c[3] + c[4] };\n}\n\nfunction leerRam(texto) {\n    if (typeof texto !== \"string\") {\n        return null;\n    }\n    const total = /^MemTotal:\\s+([0-9]+)\\s+kB$/m.exec(texto);\n    const disponible = /^MemAvailable:\\s+([0-9]+)\\s+kB$/m.exec(texto);\n    if (total === null || disponible === null || Number(total[1]) <= 0 || Number(disponible[1]) > Number(total[1])) {\n        return null;\n    }\n    return (1 - Number(disponible[1]) / Number(total[1])) * 100;\n}\n\nfunction leerTemp(leidos) {\n    let maxima = null;\n    for (const ruta of Object.keys(leidos)) {\n        const texto = leidos[ruta];\n        if (!/^\\/sys\\/class\\/thermal\\/thermal_zone[0-9]+\\/temp$/.test(ruta) || typeof texto !== \"string\") {\n            continue;\n        }\n        if (!/^\\s*-?[0-9]{1,7}\\s*$/.test(texto)) {\n            continue;\n        }\n        const grados = Number(texto) / 1000;\n        if (grados >= -40 && grados <= 150 && (maxima === null || grados > maxima)) {\n            maxima = grados;\n        }\n    }\n    return maxima;\n}\n\nconst leidos = msg.leidos !== null && typeof msg.leidos === \"object\" ? msg.leidos : {};\nconst cpuActual = leerCpu(leidos[\"/proc/stat\"]);\nconst ram = leerRam(leidos[\"/proc/meminfo\"]);\nconst temp = leerTemp(leidos);\n\nconst falta = [];\nif (temp === null) { falta.push(\"la temperatura\"); }\nif (cpuActual === null) { falta.push(\"la CPU\"); }\nif (ram === null) { falta.push(\"la RAM\"); }\nif (falta.length > 0) {\n    const conjunto = falta.join(\", \");\n    if (flow.get(\"falta_metricas\") === conjunto) {\n        return [null, null, null];\n    }\n    flow.set(\"falta_metricas\", conjunto);\n    return [null, null, { payload: \"Métricas del sistema no publicadas: no se pudo leer \" + conjunto }];\n}\nflow.set(\"falta_metricas\", undefined);\n\nconst previo = flow.get(\"cpu_previo\");\nflow.set(\"cpu_previo\", cpuActual);\nif (previo === undefined || previo === null) {\n    return [null, null, null]; // primer ciclo: solo la línea base, y es lo esperado al arrancar\n}\nif (!(cpuActual.total > previo.total)) {\n    return [null, null, { payload: \"Métricas del sistema no publicadas: los contadores de la CPU no avanzaron (se toma una línea base nueva)\" }];\n}\nconst inactivo = (cpuActual.ocioso - previo.ocioso) / (cpuActual.total - previo.total);\nconst cpu = Math.min(100, Math.max(0, (1 - inactivo) * 100));\n\nconst datos = { ts: new Date().toISOString(), temp: Math.round(temp * 10) / 10, cpu: Math.round(cpu), ram: Math.round(ram) };\nflow.set(\"metricas_sistema\", { datos: datos, recibido_ms: Date.now() });\nreturn [{ payload: JSON.stringify(datos) }, { payload: null, params: [datos.temp] }, null];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 620,
+        "y": 460,
+        "wires": [
+            [
+                "a1f0c0de000000ff"
+            ],
+            [
+                "a1f0c0de00000100"
+            ],
+            [
+                "a1f0c0de000000f6"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de000000ff",
+        "type": "mqtt out",
+        "z": "a1f0c0de000000f0",
+        "name": "Publicar métricas del sistema",
+        "topic": "aula/sistema/metricas",
+        "qos": "0",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 920,
+        "y": 420,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000100",
+        "type": "delay",
+        "z": "a1f0c0de000000f0",
+        "name": "Límite de métricas (1 cada 5 s, descarta)",
+        "info": "CWE-770: cada ciclo es una fila de metricas_energia con origen 'sistema'. El ciclo es de 10 s, así que este límite no descarta nada en uso normal: acota la tabla a 17 280 filas al día aunque otro camino llegue a esta cadena. Deja pasar 1 mensaje cada 5 s y DESCARTA los que lleguen antes (no encola).",
+        "pauseType": "rate",
+        "timeout": "5",
+        "timeoutUnits": "seconds",
+        "rate": "1",
+        "nbRateUnits": "5",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": true,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 940,
+        "y": 480,
+        "wires": [
+            [
+                "a1f0c0de00000101"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000101",
+        "type": "postgresql",
+        "z": "a1f0c0de000000f0",
+        "name": "INSERT temperatura del SoC",
+        "info": "$1 = temp_soc (°C). Mismo Postgres y mismo rol que la ingesta de energía (SELECT e INSERT sobre metricas_energia). cpu y ram no tienen columna: solo viven en vivo. Si falla, \"Registrar error de las métricas\" deja solo el SQLSTATE; no se reintenta.",
+        "query": "INSERT INTO metricas_energia (origen, temp_soc) VALUES ('sistema', $1)",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 1200,
+        "y": 480,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de00000102",
+        "type": "catch",
+        "z": "a1f0c0de000000f0",
+        "name": "Errores de las métricas del sistema",
+        "scope": [
+            "a1f0c0de000000fb",
+            "a1f0c0de000000fe",
+            "a1f0c0de00000100",
+            "a1f0c0de00000101"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 600,
+        "wires": [
+            [
+                "a1f0c0de00000103"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000103",
+        "type": "function",
+        "z": "a1f0c0de000000f0",
+        "name": "Registrar error de las métricas",
+        "func": "// Error de ejecución (la base, sobre todo) en la rama de las métricas. Se registra solo el código SQLSTATE\n// (cinco caracteres), o un mensaje truncado y sin secuencias de 9 dígitos: nunca msg ni msg.params.\n// No se reintenta: es una medición, y la siguiente llega 10 s después.\nconst error = msg.error || {};\nlet causa;\nif (typeof error.code === \"string\" && /^[0-9A-Z]{5}$/.test(error.code)) {\n    causa = \"SQLSTATE \" + error.code;\n} else if (typeof error.message === \"string\" && error.message !== \"\") {\n    causa = error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120);\n} else {\n    causa = \"error desconocido\";\n}\nnode.warn(\"Métricas del sistema: falló: \" + causa);\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 600,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de00000105",
+        "type": "comment",
+        "z": "a1f0c0de000000f0",
+        "name": "API: GET /api/sistema/estado",
+        "info": "Devuelve {vision, camara, actuadores, metricas}, cada uno { recibido, datos }: recibido es la hora ISO (UTC) en que Node-RED recibió ese estado (o midió las métricas) y datos los campos del contrato validados. { recibido: null, datos: null } = nada recibido desde que arrancó Node-RED. Solo lectura: lee el contexto del flujo, no la base ni MQTT.",
+        "x": 300,
+        "y": 680,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000106",
+        "type": "http in",
+        "z": "a1f0c0de000000f0",
+        "name": "",
+        "url": "/api/sistema/estado",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 170,
+        "y": 740,
+        "wires": [
+            [
+                "a1f0c0de00000107"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000107",
+        "type": "function",
+        "z": "a1f0c0de000000f0",
+        "name": "Armar estado del sistema",
+        "func": "// GET /api/sistema/estado: lo último que Node-RED sabe del servicio de visión, de la XIAO (cámara y\n// actuadores) y de la placa, tal como lo guardaron \"Guardar estado de un dispositivo\" y \"Calcular métricas del\n// sistema\" en el contexto del flujo (memoria). Solo lee: no consulta la base, no publica y no escribe contexto.\n// Cada entrada es { recibido, datos }: `recibido` es la hora en que Node-RED recibió ese estado (ISO 8601, UTC;\n// para las métricas, la hora en que las midió) y `datos`, solo los campos del contrato, copiados uno por uno.\n// Si desde que arrancó Node-RED no llegó nada, o el valor guardado no se puede leer, es\n// { recibido: null, datos: null }.\n// El retenido que el broker entrega al conectar cuenta como recibido en ese momento: la hora es la de\n// Node-RED, no la del dispositivo.\nconst CAMPOS = {\n    estado_vision: [\"ts\", \"en_linea\", \"modo\", \"galeria\", \"modelo\"],\n    estado_camara: [\"en_linea\", \"rssi\", \"heap\", \"temp\", \"camara\", \"corte\", \"nvs\"],\n    estado_actuadores: [\"servo\", \"led\", \"luz\"],\n    metricas_sistema: [\"ts\", \"temp\", \"cpu\", \"ram\"]\n};\n\nfunction leer(clave) {\n    const e = flow.get(clave);\n    if (e === undefined || e === null || typeof e !== \"object\" || typeof e.recibido_ms !== \"number\"\n        || !Number.isFinite(e.recibido_ms) || e.datos === null || typeof e.datos !== \"object\") {\n        return { recibido: null, datos: null };\n    }\n    const recibido = new Date(e.recibido_ms);\n    if (Number.isNaN(recibido.getTime())) {\n        return { recibido: null, datos: null };\n    }\n    const datos = {};\n    for (const campo of CAMPOS[clave]) {\n        if (e.datos[campo] !== undefined) {\n            datos[campo] = e.datos[campo];\n        }\n    }\n    return { recibido: recibido.toISOString(), datos: datos };\n}\nmsg.statusCode = 200;\nmsg.payload = {\n    vision: leer(\"estado_vision\"),\n    camara: leer(\"estado_camara\"),\n    actuadores: leer(\"estado_actuadores\"),\n    metricas: leer(\"metricas_sistema\")\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 740,
+        "wires": [
+            [
+                "a1f0c0de00000108"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000108",
+        "type": "http response",
+        "z": "a1f0c0de000000f0",
+        "name": "",
+        "statusCode": "",
+        "headers": {
+            "content-type": "application/json",
+            "cache-control": "no-store"
+        },
+        "x": 700,
+        "y": 780,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000109",
+        "type": "catch",
+        "z": "a1f0c0de000000f0",
+        "name": "Errores de la API del sistema",
+        "scope": [
+            "a1f0c0de00000107"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 840,
+        "wires": [
+            [
+                "a1f0c0de0000010a"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000010a",
+        "type": "function",
+        "z": "a1f0c0de000000f0",
+        "name": "Responder 500 (sistema)",
+        "func": "// Error al armar la respuesta: se registra con texto fijo y se responde 500 sin detalle.\nnode.warn(\"GET /api/sistema/estado falló\");\nmsg.statusCode = 500;\nmsg.payload = { error: \"No se pudo leer el estado del sistema\" };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 840,
+        "wires": [
+            [
+                "a1f0c0de00000108"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000120",
+        "type": "tab",
+        "label": "Actuadores",
+        "disabled": false,
+        "info": "Control manual de la XIAO desde el frontend: POST /api/actuadores (servo, led, buzzer y luz) publica en aula/actuador/cmd (QoS 1, sin retain) con el usuario nodered (contrato MQTT, secciones 3 y 6; plan, sección 6.7). Cuerpo JSON estricto con el vocabulario del firmware, límite de una orden por segundo (429) y respuesta con lo que se publicó. La autenticación, X-Pase-Lista y el mismo origen los aplica el httpNodeMiddleware de settings.js; el estado que se ve en el frontend sale de GET /api/sistema/estado (pestaña Sistema)."
+    },
+    {
+        "id": "a1f0c0de00000121",
+        "type": "comment",
+        "z": "a1f0c0de00000120",
+        "name": "API: POST /api/actuadores → aula/actuador/cmd",
+        "info": "{\"servo\":\"abrir\",\"led\":\"verde\",\"buzzer\":1,\"luz\":0}: al menos un campo y ninguno más. Responde 200 {\"publicado\":{...}} (lo que se entregó al broker, no que la XIAO lo aplicara: eso se ve en aula/actuador/estado), 400, 415 o 429. Un JSON mal formado lo rechaza el propio nodo http in con 500 antes de llegar aquí.",
+        "x": 250,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000122",
+        "type": "http in",
+        "z": "a1f0c0de00000120",
+        "name": "",
+        "url": "/api/actuadores",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 160,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000123"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000123",
+        "type": "function",
+        "z": "a1f0c0de00000120",
+        "name": "Validar y limitar orden a los actuadores",
+        "func": "// POST /api/actuadores {\"servo\":\"abrir\",\"led\":\"verde\",\"buzzer\":1,\"luz\":0}\n// Control manual de la XIAO desde el frontend. Cuerpo JSON (Content-Type: application/json) con al menos uno de\n// estos campos y ninguno más, con el vocabulario que acepta el firmware (firmware/xiao/logica_actuadores.cpp y\n// logica_luz.cpp; una prueba los lee): servo \"abrir\" (no hay \"cerrar\": el servo se cierra solo a los 3 s), led\n// \"azul\", \"verde\", \"rojo\", \"ambar\" o \"apagado\", buzzer 0, 1 o 2 (enteros) y luz 0 o 1 (enteros).\n// Lo que se publica en aula/actuador/cmd se reconstruye campo por campo, en un orden fijo: nunca se reenvía el\n// cuerpo recibido. El mayor payload posible pesa unos 50 bytes y cabe en el búfer de 256 bytes de la XIAO.\n// Límite: una orden por segundo, en cualquier campo. Las demás se descartan con 429 y Retry-After (no se encolan\n// ni renuevan la ventana). Va aquí y no en un nodo delay porque una petición HTTP descartada sin responder\n// se quedaría colgada: así la persona sabe que su orden no salió. Mismo método que el límite de `iniciar` de la\n// pestaña Sesiones: flow.ultimo_cmd_ms (memoria) y Date.now(), que puede saltar, por eso solo se descarta si pasó\n// entre 0 y 1 s (un salto acepta en vez de bloquear). Un cuerpo inválido no gasta la ventana.\n// Salida 1: el mensaje para el mqtt out (solo payload). Salida 2: la respuesta HTTP (200, 400, 415 o 429).\n// Nada de lo que llega se repite en las respuestas ni en el log: solo nombres de campos del contrato.\nconst CAMPOS = [\"servo\", \"led\", \"buzzer\", \"luz\"];\nconst LEDS = [\"azul\", \"verde\", \"rojo\", \"ambar\", \"apagado\"];\nconst VENTANA_MS = 1000;\n\nfunction responder(codigo, cuerpo, cabeceras) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    if (cabeceras !== undefined) {\n        msg.headers = cabeceras;\n    }\n    return [null, msg];\n}\n\n// Solo application/json: los tipos que un formulario HTML de otro sitio puede enviar sin permiso (text/plain,\n// urlencoded) se rechazan; la otra capa contra CSRF está en autenticacion-api.js (X-Pase-Lista y el mismo origen).\nconst tipo = String(msg.req.headers[\"content-type\"] || \"\").split(\";\")[0].trim().toLowerCase();\nif (tipo !== \"application/json\") {\n    return responder(415, { error: \"El Content-Type debe ser application/json\" });\n}\nconst cuerpo = msg.payload;\nif (cuerpo === null || typeof cuerpo !== \"object\" || Array.isArray(cuerpo)) {\n    return responder(400, { error: \"El cuerpo debe ser un objeto JSON con servo, led, buzzer o luz\" });\n}\nconst claves = Object.keys(cuerpo);\nif (claves.length === 0 || claves.some((c) => !CAMPOS.includes(c))) {\n    return responder(400, { error: \"El cuerpo solo admite servo, led, buzzer y luz, y al menos uno\" });\n}\n\nconst VALIDADORES = {\n    servo: [(x) => x === \"abrir\", \"servo solo admite \\\"abrir\\\" (el servo se cierra solo a los 3 s)\"],\n    led: [(x) => typeof x === \"string\" && LEDS.includes(x), \"led debe ser azul, verde, rojo, ambar o apagado\"],\n    buzzer: [(x) => typeof x === \"number\" && Number.isInteger(x) && x >= 0 && x <= 2, \"buzzer debe ser el entero 0, 1 o 2\"],\n    luz: [(x) => typeof x === \"number\" && Number.isInteger(x) && x >= 0 && x <= 1, \"luz debe ser el entero 0 o 1\"]\n};\nconst orden = {};\nfor (const campo of CAMPOS) {\n    if (!Object.prototype.hasOwnProperty.call(cuerpo, campo)) {\n        continue;\n    }\n    const [valido, texto] = VALIDADORES[campo];\n    if (!valido(cuerpo[campo])) {\n        return responder(400, { error: texto });\n    }\n    orden[campo] = cuerpo[campo];\n}\n\nconst ahora = Date.now();\nconst ultima = flow.get(\"ultimo_cmd_ms\");\nif (typeof ultima === \"number\" && ahora - ultima >= 0 && ahora - ultima < VENTANA_MS) {\n    return responder(429, { error: \"Demasiado rápido: espera un segundo entre órdenes a los actuadores\" }, { \"retry-after\": \"1\" });\n}\nflow.set(\"ultimo_cmd_ms\", ahora);\n\nnode.log(\"Orden manual a los actuadores: \" + Object.keys(orden).join(\", \"));\nmsg.statusCode = 200;\nmsg.payload = { publicado: orden };\nreturn [{ payload: JSON.stringify(orden) }, msg];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 100,
+        "wires": [
+            [
+                "a1f0c0de00000124"
+            ],
+            [
+                "a1f0c0de00000125"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000124",
+        "type": "mqtt out",
+        "z": "a1f0c0de00000120",
+        "name": "Publicar orden manual",
+        "topic": "aula/actuador/cmd",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "a1f0c0de00000002",
+        "x": 790,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000125",
+        "type": "http response",
+        "z": "a1f0c0de00000120",
+        "name": "",
+        "statusCode": "",
+        "headers": {
+            "content-type": "application/json"
+        },
+        "x": 790,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000126",
+        "type": "catch",
+        "z": "a1f0c0de00000120",
+        "name": "Errores de la API de actuadores",
+        "scope": [
+            "a1f0c0de00000123"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 220,
+        "wires": [
+            [
+                "a1f0c0de00000127"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000127",
+        "type": "function",
+        "z": "a1f0c0de00000120",
+        "name": "Responder 500 (actuadores)",
+        "func": "// Error de ejecución al validar o responder: se registra con texto fijo (nunca msg ni el cuerpo) y se responde\n// 500 sin detalle.\nnode.warn(\"POST /api/actuadores falló\");\ndelete msg.error;\nmsg.statusCode = 500;\nmsg.payload = { error: \"No se pudo procesar la orden a los actuadores\" };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 460,
+        "y": 220,
+        "wires": [
+            [
+                "a1f0c0de00000125"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000130",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: POST /api/enrolamiento/probar",
+        "info": "Sin cuerpo. Prueba de reconocimiento inmediata: publica aula/vision/cmd {\"accion\":\"probar\"} y deja la prueba pendiente en flow.prueba. 409 con un registro abierto o con una prueba pendiente (se da por perdida a los 15 s), 429 si pasaron menos de 3 s desde la solicitud anterior. No marca asistencia ni necesita sesión.",
+        "x": 190,
+        "y": 1500,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000131",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/enrolamiento/probar",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 190,
+        "y": 1560,
+        "wires": [
+            [
+                "a1f0c0de00000132"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000132",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Pedir prueba de reconocimiento",
+        "func": "// POST /api/enrolamiento/probar\n// \"Probar reconocimiento\" del frontend: pide a la visión un reconocimiento inmediato de quien esté frente a\n// la cámara, sin marcar asistencia y sin necesitar una sesión abierta. Sin cuerpo (como \"Cancelar inscripción\", el\n// cuerpo no se lee: nada de lo que llegue viaja a la visión; la orden no lleva cuenta).\n// Publica aula/vision/cmd {\"accion\":\"probar\"} y deja en flow.prueba que hay una prueba pendiente. La respuesta\n// del resultado no sale de aquí: la guarda \"Guardar resultado de la prueba\" y la lee GET /api/enrolamiento/prueba.\n// Rechazos, en este orden:\n//   - 409 registro_abierto: con un registro abierto la visión está ocupada con él y contestaría \"ocupado\".\n//   - 409 prueba_pendiente: ya hay una prueba esperando resultado. Espera como máximo 15 s: la visión enciende la\n//     luz, espera 0,3 s, toma una ráfaga de 4 fotos (con 2 s de plazo HTTP por foto a la XIAO y, si acaba de\n//     disparar otra, hasta 3 s de pausa entre ráfagas) y corre la NPU; pasado ese plazo se da por perdida\n//     para que un resultado que nunca llegó no bloquee la prueba para siempre.\n//   - 429: otra solicitud a menos de 3 s de la anterior (la pausa mínima entre ráfagas de la visión). Va aquí y no\n//     en un nodo delay porque una petición HTTP descartada sin responder se quedaría colgada. Mismo método que\n//     el límite de la pestaña Actuadores: flow.prueba.solicitado_ms y Date.now(), que puede saltar, por eso solo cuenta\n//     si pasaron entre 0 y el plazo (un salto acepta en vez de bloquear). Un rechazo no renueva la ventana.\n// Una solicitud aceptada borra el resultado anterior: el que llegue será el de esta prueba.\n// Salida 1: orden a aula/vision/cmd. Salida 2: respuesta HTTP (202, 409 o 429).\nconst ESPERA_MAX_MS = 15 * 1000;\nconst VENTANA_MS = 3 * 1000;\n\nfunction responder(codigo, cuerpo, cabeceras) {\n    msg.statusCode = codigo;\n    msg.payload = cuerpo;\n    if (cabeceras !== undefined) {\n        msg.headers = cabeceras;\n    }\n    return [null, msg];\n}\n\nconst insc = flow.get(\"inscripcion\");\nif (insc && insc.abierto === true) {\n    return responder(409, {\n        error: \"Hay un registro abierto y la visión está ocupada con él: termínalo o cancélalo antes de probar el reconocimiento\",\n        motivo: \"registro_abierto\"\n    });\n}\nconst ahora = Date.now();\nconst previa = flow.get(\"prueba\");\nconst solicitada = previa && typeof previa.solicitado_ms === \"number\" ? previa.solicitado_ms : null;\nconst transcurrido = solicitada === null ? null : ahora - solicitada;\nif (previa && previa.pendiente === true && transcurrido !== null && transcurrido >= 0 && transcurrido < ESPERA_MAX_MS) {\n    return responder(409, {\n        error: \"Ya hay una prueba en curso: espera su resultado\",\n        motivo: \"prueba_pendiente\",\n        solicitado: new Date(solicitada).toISOString()\n    });\n}\nif (transcurrido !== null && transcurrido >= 0 && transcurrido < VENTANA_MS) {\n    return responder(429, { error: \"Demasiado rápido: espera unos segundos entre pruebas\" }, { \"retry-after\": String(Math.ceil((VENTANA_MS - transcurrido) / 1000)) });\n}\n\nflow.set(\"prueba\", { solicitado_ms: ahora, pendiente: true, resultado: null });\nnode.log(\"Prueba de reconocimiento solicitada\");\nconst orden = {\n    topic: \"aula/vision/cmd\",\n    payload: JSON.stringify({ accion: \"probar\" }),\n    qos: 1,\n    retain: false\n};\nmsg.statusCode = 202;\nmsg.payload = { pendiente: true, solicitado: new Date(ahora).toISOString() };\nreturn [orden, msg];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 1560,
+        "wires": [
+            [
+                "a1f0c0de00000081"
+            ],
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000133",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "API: GET /api/enrolamiento/prueba",
+        "info": "Solo lectura: {pendiente, solicitado, resultado|null} de la última prueba de reconocimiento. El nombre sale de un SELECT a alumnos, solo para un reconocido o dudoso.",
+        "x": 190,
+        "y": 1640,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000134",
+        "type": "http in",
+        "z": "a1f0c0de00000060",
+        "name": "",
+        "url": "/api/enrolamiento/prueba",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 190,
+        "y": 1700,
+        "wires": [
+            [
+                "a1f0c0de00000135"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000135",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Estado de la prueba",
+        "func": "// GET /api/enrolamiento/prueba: solo lectura. Devuelve lo último que se sabe de la prueba de reconocimiento:\n// {pendiente, solicitado, resultado: {decision, cuenta, nombre, conf, margen, motivo, lat_ms, recibido} | null}\n//   - pendiente: se pidió una prueba hace menos de 15 s y aún no hay resultado (pasado el plazo, false).\n//   - solicitado: ISO 8601 UTC de la última solicitud, o null si no hubo ninguna desde que arrancó Node-RED.\n//     Con pendiente false, solicitado distinto de null y resultado null, la visión no contestó a tiempo.\n//   - resultado: el de la última prueba (un rechazo \"ocupado\" llega como decision \"error\", motivo \"ocupado\" y\n//     lat_ms null); recibido es la hora en que Node-RED lo recibió. `cuenta` solo sale con reconocido o dudoso\n//     (con desconocido, la visión manda su mejor candidato para auditoría y aquí no se muestra).\n// El nombre sale de la tabla de alumnos, solo para esa cuenta: con reconocido o dudoso el cuerpo espera al SELECT\n// (salida 1) y \"Completar la prueba con el nombre\" lo termina; con cualquier otra cosa responde aquí (salida 2).\n// Cada campo se copia por su nombre: nunca sale de aquí un embedding.\n// Salida 1: SELECT del nombre (msg.params = [cuenta], msg.cuerpo). Salida 2: respuesta HTTP.\nconst ESPERA_MAX_MS = 15 * 1000;\nconst CON_CUENTA = [\"reconocido\", \"dudoso\"];\nconst iso = (ms) => new Date(ms).toISOString();\n\nfunction responder(cuerpo) {\n    msg.statusCode = 200;\n    msg.payload = cuerpo;\n    return [null, msg];\n}\n\nconst prueba = flow.get(\"prueba\");\nif (!prueba || typeof prueba.solicitado_ms !== \"number\") {\n    return responder({ pendiente: false, solicitado: null, resultado: null });\n}\nconst transcurrido = Date.now() - prueba.solicitado_ms;\nconst pendiente = prueba.pendiente === true && transcurrido >= 0 && transcurrido < ESPERA_MAX_MS;\nconst r = prueba.resultado;\nlet resultado = null;\nif (r && typeof r === \"object\") {\n    const lat = r.lat_ms && typeof r.lat_ms === \"object\" ? r.lat_ms : null;\n    resultado = {\n        decision: r.decision,\n        cuenta: CON_CUENTA.includes(r.decision) && typeof r.cuenta === \"string\" ? r.cuenta : null,\n        nombre: null,\n        conf: r.conf ?? null,\n        margen: r.margen ?? null,\n        motivo: r.motivo ?? null,\n        lat_ms: lat === null ? null : { cap: lat.cap ?? null, det: lat.det ?? null, emb: lat.emb ?? null, total: lat.total ?? null },\n        recibido: iso(r.recibido_ms)\n    };\n}\nconst cuerpo = { pendiente: pendiente, solicitado: iso(prueba.solicitado_ms), resultado: resultado };\nif (resultado !== null && resultado.cuenta !== null) {\n    msg.params = [resultado.cuenta];\n    msg.cuerpo = cuerpo;\n    return [msg, null];\n}\nreturn responder(cuerpo);",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 1700,
+        "wires": [
+            [
+                "a1f0c0de00000136"
+            ],
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000136",
+        "type": "postgresql",
+        "z": "a1f0c0de00000060",
+        "name": "SELECT nombre de la prueba",
+        "query": "SELECT nombre FROM alumnos WHERE no_cuenta = $1",
+        "postgreSQLConfig": "a1f0c0de00000003",
+        "split": false,
+        "rowsPerMsg": 1,
+        "outputs": 1,
+        "x": 700,
+        "y": 1700,
+        "wires": [
+            [
+                "a1f0c0de00000137"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000137",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Completar la prueba con el nombre",
+        "func": "// Respuesta del SELECT del nombre (una fila {nombre}, o ninguna si la cuenta ya no está en la lista): lo pone\n// en el cuerpo de GET /api/enrolamiento/prueba y responde 200. Sin fila, nombre null. La consulta solo lee el\n// nombre: nunca el embedding.\nconst cuerpo = msg.cuerpo;\nif (!cuerpo || !cuerpo.resultado) {\n    throw new Error(\"falta el cuerpo de la prueba\");\n}\nconst fila = Array.isArray(msg.payload) ? msg.payload[0] : undefined;\ncuerpo.resultado.nombre = fila && typeof fila.nombre === \"string\" ? fila.nombre : null;\nmsg.statusCode = 200;\nmsg.payload = cuerpo;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 960,
+        "y": 1700,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de00000138",
+        "type": "comment",
+        "z": "a1f0c0de00000060",
+        "name": "Resultado de la prueba (enlace desde Pase de lista y rechazo de aula/vision/enrolamiento)",
+        "info": "El resultado de modo prueba llega por el enlace desde la 4.ª salida de \"Validar resultado de visión\" (pestaña Pase de lista); el rechazo \"ocupado\" de la visión, del mismo mqtt in que alimenta el progreso del registro. Solo se guarda en flow.prueba (memoria): nunca en la base ni en los actuadores.",
+        "x": 290,
+        "y": 1780,
+        "wires": []
+    },
+    {
+        "id": "a1f0c0de00000139",
+        "type": "link in",
+        "z": "a1f0c0de00000060",
+        "name": "Resultado de prueba (de Pase de lista)",
+        "links": [
+            "a1f0c0de0000013f"
+        ],
+        "x": 190,
+        "y": 1840,
+        "wires": [
+            [
+                "a1f0c0de0000013a"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000013a",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Guardar resultado de la prueba",
+        "func": "// Guarda el resultado de la prueba de reconocimiento en flow.prueba (memoria), con la hora en que se recibió.\n// Llega por dos caminos y en ambos solo cuenta si hay una prueba pendiente (POST /api/enrolamiento/probar, hace\n// menos de 15 s y sin resultado todavía):\n//   1. El resultado de modo \"prueba\" (aula/vision/resultado), que reenvía la 4.ª salida de \"Validar resultado de visión\"\n//      (pestaña Pase de lista) por un enlace: ya viene validado (decision, cuenta, conf, margen, motivo, lat_ms y ts_ms,\n//      su `ts` en ms). Un resultado cuyo ts es anterior a la solicitud (con 2 s de margen) es de otra prueba y se\n//      descarta: así uno rezagado de una prueba vencida no contesta a la siguiente.\n//   2. El rechazo de la visión cuando está ocupada (aula/vision/enrolamiento, el mismo mqtt in que alimenta el progreso\n//      del registro): estado \"error\", motivo \"ocupado\", paso 0 y cuenta vacía (la orden no lleva cuenta; la visión no la\n//      repite si no es válida). Se guarda como decision \"error\" con motivo \"ocupado\". El \"ocupado\" de un enrolar lleva\n//      cuenta y no entra. El resto del tráfico de ese tópico es el progreso del registro: se ignora en silencio.\n// Esta función no escribe en la base, no publica y no toca asistencias, intentos ni los actuadores. `cuenta` solo se conserva\n// con reconocido o dudoso (con desconocido es el mejor candidato para auditoría). Un descarte o un registro nunca repite\n// la cuenta.\n// Salida 1: avisos de descarte (nodo debug de consola, sin contenido del mensaje).\nconst ESPERA_MAX_MS = 15 * 1000;\nconst MARGEN_TS_MS = 2000;\nconst MAX_CARACTERES = 32768;\nconst DECISIONES = [\"reconocido\", \"dudoso\", \"desconocido\", \"sin_rostro\", \"imagen_insuficiente\", \"error\"];\nconst CON_CUENTA = [\"reconocido\", \"dudoso\"];\nconst CUENTA = /^[0-9]{9}$/;\nconst MOTIVO = /^[a-z_]{1,40}$/;\n\nconst ahora = Date.now();\nconst prueba = flow.get(\"prueba\");\nconst transcurrido = prueba && typeof prueba.solicitado_ms === \"number\" ? ahora - prueba.solicitado_ms : null;\nconst vigente = Boolean(prueba) && prueba.pendiente === true && transcurrido !== null && transcurrido >= 0 && transcurrido < ESPERA_MAX_MS;\n\nfunction cerrar(resultado) {\n    flow.set(\"prueba\", { solicitado_ms: prueba.solicitado_ms, pendiente: false, resultado: { ...resultado, recibido_ms: ahora } });\n    node.log(\"Prueba de reconocimiento: \" + resultado.decision);\n    return null;\n}\n\nif (msg.topic === \"aula/vision/enrolamiento\") {\n    if (!vigente || msg.retain === true || typeof msg.payload !== \"string\" || msg.payload.length > MAX_CARACTERES) {\n        return null;\n    }\n    let datos;\n    try {\n        datos = JSON.parse(msg.payload);\n    } catch (e) {\n        return null;\n    }\n    if (datos === null || typeof datos !== \"object\" || Array.isArray(datos)) {\n        return null;\n    }\n    if (datos.cuenta !== \"\" || datos.estado !== \"error\" || datos.motivo !== \"ocupado\" || datos.paso !== 0) {\n        return null;\n    }\n    const instante = typeof datos.ts === \"string\" ? Date.parse(datos.ts) : Number.NaN;\n    if (Number.isNaN(instante) || instante < prueba.solicitado_ms - MARGEN_TS_MS) {\n        return null;\n    }\n    return cerrar({ decision: \"error\", cuenta: null, conf: null, margen: null, motivo: \"ocupado\", lat_ms: null });\n}\n\nfunction descartar(motivo) {\n    return { payload: \"Descartado, \" + motivo };\n}\nconst d = msg.payload;\nif (d === null || typeof d !== \"object\" || !DECISIONES.includes(d.decision) || typeof d.ts_ms !== \"number\") {\n    return descartar(\"el resultado de prueba no tiene la forma esperada\");\n}\nif (!vigente) {\n    return descartar(\"llegó un resultado de prueba sin una prueba pendiente\");\n}\nif (d.ts_ms < prueba.solicitado_ms - MARGEN_TS_MS) {\n    return descartar(\"el resultado de prueba es anterior a la solicitud\");\n}\nconst finito = (x) => typeof x === \"number\" && Number.isFinite(x);\nconst etapa = (x) => (finito(x) && x >= 0 && x <= 600000 ? x : null);\nconst lat = d.lat_ms !== null && typeof d.lat_ms === \"object\" ? d.lat_ms : null;\nreturn cerrar({\n    decision: d.decision,\n    cuenta: CON_CUENTA.includes(d.decision) && typeof d.cuenta === \"string\" && CUENTA.test(d.cuenta) ? d.cuenta : null,\n    conf: finito(d.conf) && d.conf >= -1 && d.conf <= 1 ? d.conf : null,\n    margen: finito(d.margen) ? d.margen : null,\n    motivo: typeof d.motivo === \"string\" && MOTIVO.test(d.motivo) ? d.motivo : null,\n    lat_ms: lat === null ? null : { cap: etapa(lat.cap), det: etapa(lat.det), emb: etapa(lat.emb), total: etapa(lat.total) }\n});",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 1840,
+        "wires": [
+            [
+                "a1f0c0de00000087"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000013b",
+        "type": "catch",
+        "z": "a1f0c0de00000060",
+        "name": "Errores de la prueba",
+        "scope": [
+            "a1f0c0de00000132",
+            "a1f0c0de00000135",
+            "a1f0c0de00000136",
+            "a1f0c0de00000137"
+        ],
+        "uncaught": false,
+        "x": 190,
+        "y": 1920,
+        "wires": [
+            [
+                "a1f0c0de0000013c"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000013c",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Responder 500 de la prueba",
+        "func": "// Error en la prueba de reconocimiento (solicitud o estado): se registra el mensaje truncado, sin secuencias\n// de 9 dígitos (números de cuenta), y se responde 500. No se repite ni el cuerpo ni el payload.\nconst error = msg.error || {};\nconst causa = (typeof error.message === \"string\" && error.message !== \"\")\n    ? error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120)\n    : \"error desconocido\";\nnode.warn(\"Prueba de reconocimiento falló: \" + causa);\nmsg.statusCode = 500;\nmsg.payload = { error: \"No se pudo completar la prueba de reconocimiento\" };\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 1920,
+        "wires": [
+            [
+                "a1f0c0de00000082"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000013d",
+        "type": "catch",
+        "z": "a1f0c0de00000060",
+        "name": "Errores al guardar la prueba",
+        "scope": [
+            "a1f0c0de0000013a"
+        ],
+        "uncaught": false,
+        "x": 200,
+        "y": 1980,
+        "wires": [
+            [
+                "a1f0c0de0000013e"
+            ]
+        ]
+    },
+    {
+        "id": "a1f0c0de0000013e",
+        "type": "function",
+        "z": "a1f0c0de00000060",
+        "name": "Registrar error de la prueba",
+        "func": "// Error al guardar el resultado de la prueba: solo se registra el mensaje truncado, sin secuencias de 9 dígitos.\n// Nada responde aquí (el mensaje no viene de una petición HTTP) y el mensaje original, que lleva la cuenta, no sigue.\nconst error = msg.error || {};\nconst causa = (typeof error.message === \"string\" && error.message !== \"\")\n    ? error.message.replace(/[0-9]{9}/g, \"*********\").slice(0, 120)\n    : \"error desconocido\";\nnode.warn(\"Guardar el resultado de la prueba falló: \" + causa);\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 1980,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1f0c0de0000013f",
+        "type": "link out",
+        "z": "a1f0c0de000000b0",
+        "name": "Resultado de prueba → Registro",
+        "mode": "link",
+        "links": [
+            "a1f0c0de00000139"
+        ],
+        "x": 760,
+        "y": 260,
+        "wires": []
     }
 ]

@@ -13,11 +13,14 @@ import { EsqueletoTabla } from '../componentes/EsqueletoTabla'
 import { EstadoVacio } from '../componentes/EstadoVacio'
 import { MarcaAsistencia } from '../componentes/MarcaAsistencia'
 import { Pagina } from '../componentes/Pagina'
+import { PruebaReconocimiento } from '../componentes/PruebaReconocimiento'
 import { ProgresoRegistro } from '../componentes/ProgresoRegistro'
 import { SeleccionAlumno } from '../componentes/SeleccionAlumno'
+import { UltimaFoto } from '../componentes/UltimaFoto'
 import { formatearHora } from '../formato'
 import { useAlumnos } from '../useAlumnos'
 import { useRegistro } from '../useRegistro'
+import { useUltimaCaptura } from '../useUltimaCaptura'
 
 // La lista de alumnos de esta vista se consulta como en Alumnos (10 s): el rostro cambia
 // cuando termina un registro, un evento raro.
@@ -271,6 +274,8 @@ export function Registro() {
                 </a>
               </div>
             )}
+
+            {vista.fase !== 'abierto' && <PruebaReconocimiento bloqueada={registro.ocupado !== null} />}
           </section>
         )}
       </div>
@@ -367,8 +372,9 @@ interface PropsProgreso {
   alumnos: Alumno[] | null
 }
 
-/** El resumen del registro, la advertencia de parecido y las cinco poses. */
+/** El resumen del registro, la advertencia de parecido, las cinco poses y, con el registro abierto, el recuadro de la última foto debajo de ellas. */
 function SeccionProgreso({ registro, transcurridoMs, alumnos }: PropsProgreso) {
+  const captura = useUltimaCaptura(registro)
   const resumen = resumirRegistro(registro)
   const tiempo = textoTiempo(registro, transcurridoMs)
   const parecido = registro.advertencia === null ? null : registro.advertencia.parecidoA
@@ -415,6 +421,12 @@ function SeccionProgreso({ registro, transcurridoMs, alumnos }: PropsProgreso) {
       <div className="hoja__desplazable">
         <ProgresoRegistro poses={registro.poses} idTitulo="titulo-poses" />
       </div>
+
+      {registro.abierto && (
+        <div className="hoja__cuerpo">
+          <UltimaFoto captura={captura} />
+        </div>
+      )}
     </>
   )
 }

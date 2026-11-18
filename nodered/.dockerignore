@@ -4,4 +4,5 @@
 !package.json
 !package-lock.json
 !autenticacion-api.js
+!registro-log.js
 !reporte_csv.py

@@ -320,6 +320,75 @@ test("registro: GET /api/enrolamiento/estado exige Basic y no el token de la gal
     assert.equal(conToken.res.statusCode, 401);
 });
 
+// Prueba de reconocimiento (POST /api/enrolamiento/probar y GET /api/enrolamiento/prueba, pestaña "Registro"
+// de flows.json). El POST publica una orden a la visión, así que hereda Basic, X-Pase-Lista y el mismo origen
+// sin cambios en el middleware; el GET es de solo lectura (get-solo-lectura.test.js) y solo acepta Basic.
+test("prueba de reconocimiento: POST sin cuerpo, autenticado, con X-Pase-Lista y del mismo origen pasa", () => {
+    assert.equal(post(JSON_PROPIO, { ruta: "/api/enrolamiento/probar" }).siguio, true);
+});
+
+test("prueba de reconocimiento: POST sin X-Pase-Lista o de otro origen: 403; sin credenciales o con el token de la galería: 401", () => {
+    for (const cabeceras of [
+        { Host: HOST },
+        { ...JSON_PROPIO, Origin: "https://sitio-malo.example" },
+        { ...JSON_PROPIO, "Sec-Fetch-Site": "cross-site" }
+    ]) {
+        const { siguio, res } = post(cabeceras, { ruta: "/api/enrolamiento/probar" });
+        assert.equal(siguio, false);
+        assert.equal(res.statusCode, 403);
+    }
+    const sin = ejecutar({}, { metodo: "POST", ruta: "/api/enrolamiento/probar" });
+    assert.equal(sin.siguio, false);
+    assert.equal(sin.res.statusCode, 401);
+    const conToken = ejecutar({}, { metodo: "POST", ruta: "/api/enrolamiento/probar", cabeceras: { "X-Galeria-Token": TOKEN } });
+    assert.equal(conToken.siguio, false);
+    assert.equal(conToken.res.statusCode, 401);
+});
+
+test("prueba de reconocimiento: GET /api/enrolamiento/prueba exige Basic y no el token de la galería", () => {
+    assert.equal(ejecutar({}, { ruta: "/api/enrolamiento/prueba", cabeceras: { Authorization: basic(USUARIO, CLAVE) } }).siguio, true);
+    const conToken = ejecutar({}, { ruta: "/api/enrolamiento/prueba", cabeceras: { "X-Galeria-Token": TOKEN } });
+    assert.equal(conToken.siguio, false);
+    assert.equal(conToken.res.statusCode, 401);
+});
+
+// Control manual de los actuadores (POST /api/actuadores, pestaña "Actuadores" de flows.json). Cambia el
+// estado de la XIAO, así que la ruta tiene que quedar detrás de Basic, X-Pase-Lista y el mismo origen sin
+// cambios en el middleware; el 415, el 400 y el 429 son del flujo (flujo-actuadores.test.js).
+test("actuadores: POST autenticado, con X-Pase-Lista y del mismo origen pasa", () => {
+    const { siguio } = post({ ...JSON_PROPIO, "Content-Type": "application/json", "Content-Length": "13" }, { ruta: "/api/actuadores" });
+    assert.equal(siguio, true);
+});
+
+test("actuadores: sin X-Pase-Lista, de otro origen o de otro sitio: 403 y la orden no llega al flujo", () => {
+    for (const cabeceras of [
+        { Host: HOST, "Content-Type": "application/json" },
+        { ...JSON_PROPIO, Origin: "https://sitio-malo.example" },
+        { ...JSON_PROPIO, "Sec-Fetch-Site": "cross-site" },
+        { ...JSON_PROPIO, "X-Pase-Lista": "0" }
+    ]) {
+        const { siguio, res } = post(cabeceras, { ruta: "/api/actuadores" });
+        assert.equal(siguio, false);
+        assert.equal(res.statusCode, 403);
+    }
+});
+
+test("actuadores: sin credenciales, o solo con el token de la galería: 401", () => {
+    const sin = ejecutar({}, { metodo: "POST", ruta: "/api/actuadores", cabeceras: { "Content-Type": "application/json" } });
+    assert.equal(sin.siguio, false);
+    assert.equal(sin.res.statusCode, 401);
+    const conToken = ejecutar({}, { metodo: "POST", ruta: "/api/actuadores", cabeceras: { "X-Galeria-Token": TOKEN } });
+    assert.equal(conToken.siguio, false);
+    assert.equal(conToken.res.statusCode, 401);
+});
+
+test("actuadores: el tope de cuerpo y Transfer-Encoding también la cubren", () => {
+    const grande = post({ ...JSON_PROPIO, "Content-Length": String(LIMITE_CUERPO_BYTES + 1) }, { ruta: "/api/actuadores" });
+    assert.equal(grande.res.statusCode, 413);
+    const chunked = post({ ...JSON_PROPIO, "Transfer-Encoding": "chunked" }, { ruta: "/api/actuadores" });
+    assert.equal(chunked.res.statusCode, 411);
+});
+
 // ---------------------------------------------------------------- secretos
 
 const BUENOS = {
