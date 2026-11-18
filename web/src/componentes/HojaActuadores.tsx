@@ -27,7 +27,7 @@ const GRUPOS: readonly Grupo[] = [
     grupo: 'led',
     titulo: 'LED de estado',
     campo: 'led',
-    nota: 'Con una sesión activa el LED azul manda sobre el color elegido; al terminar la sesión vuelve al último color pedido.',
+    nota: 'Con una sesión activa, verde, rojo y ámbar se ven 3 s y vuelve el azul; azul y apagado no cambian el azul. Al terminar la sesión el LED se apaga.',
   },
   { grupo: 'buzzer', titulo: 'Buzzer', campo: null, nota: 'El buzzer no informa su estado: se oye.' },
   { grupo: 'luz', titulo: 'Luz de la tira de 12 V', campo: 'luz', nota: null },
