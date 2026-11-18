@@ -254,6 +254,91 @@ export function textoTiempo(registro: Registro, transcurridoMs: number | null): 
   return registro.estado === 'en_curso' || registro.estado === 'guardando' ? `Tiempo transcurrido: ${formatearTranscurrido(transcurridoMs)}` : null
 }
 
+/** La última foto tomada: aceptada o rechazada (con su motivo). La miniatura puede faltar. */
+export interface Captura {
+  pose: NombrePose
+  estado: 'aceptada' | 'rechazada'
+  motivo: string | null
+  miniatura: string | null
+  /** Cuántas fotos de esa pose ha visto este navegador en este registro (la 2.ª es un reintento). Puede quedarse corto si una consulta se perdió o si se recargó la página. */
+  intento: number
+}
+
+export interface SeguimientoCaptura {
+  /** Cuenta e inicio del registro que se sigue; al cambiar, se empieza de cero. */
+  clave: string | null
+  /** Firma (estado y motivo) de cada pose en la consulta anterior; null antes de la primera. */
+  vistas: string[] | null
+  /** `actualizado` de la consulta anterior. */
+  actualizado: number | null
+  /** Fotos contadas por pose, en el orden de POSES. */
+  intentos: number[]
+  captura: Captura | null
+}
+
+export const SEGUIMIENTO_INICIAL: SeguimientoCaptura = { clave: null, vistas: null, actualizado: null, intentos: [0, 0, 0, 0, 0], captura: null }
+
+function esFoto(estado: EstadoPose): estado is 'aceptada' | 'rechazada' {
+  return estado === 'aceptada' || estado === 'rechazada'
+}
+
+/**
+ * Actualiza cuál es la última captura con lo que trae una consulta. El contrato no da la hora
+ * de cada foto, así que "la última" es la que cambió desde la consulta anterior (la pose más
+ * avanzada si cambiaron varias). La primera consulta (al retomar la página) toma la pose más
+ * avanzada con foto. Si no hay foto nueva, la anterior se queda aunque la pose ya esté en
+ * `capturando` del reintento: el flujo borra su miniatura ahí y la grande debe seguir, con su
+ * motivo, hasta que llegue la nueva. Devuelve el mismo objeto si nada cambió.
+ */
+export function seguirCaptura(seguimiento: SeguimientoCaptura, registro: Registro): SeguimientoCaptura {
+  const clave = `${registro.cuenta}|${registro.inicio}`
+  const base = seguimiento.clave === clave ? seguimiento : { ...SEGUIMIENTO_INICIAL, clave }
+  // Sin la miniatura: al cerrarse el registro el flujo las borra todas y eso no es una foto nueva.
+  const vistas = registro.poses.map((p) => `${p.estado}|${p.motivo ?? ''}`)
+  const previas = base.vistas
+  // Mientras está abierto, una pose que sigue rechazada con otro `actualizado` es un reintento
+  // rechazado igual (mismo motivo, sin que la consulta viera capturando): otra foto.
+  const otroMensaje = registro.abierto && registro.actualizado !== base.actualizado
+  let elegida = -1
+  registro.poses.forEach((p, i) => {
+    if (esFoto(p.estado) && (previas === null || vistas[i] !== previas[i] || (otroMensaje && p.estado === 'rechazada'))) {
+      elegida = i
+    }
+  })
+  const pose = elegida === -1 ? null : registro.poses[elegida]!
+  let captura = base.captura
+  let intentos = base.intentos
+  if (pose !== null && esFoto(pose.estado)) {
+    intentos = intentos.map((n, i) => (i === elegida ? n + 1 : n))
+    captura = { pose: pose.pose, estado: pose.estado, motivo: pose.estado === 'rechazada' ? pose.motivo : null, miniatura: pose.miniatura, intento: intentos[elegida]! }
+  }
+  if (base === seguimiento && captura === seguimiento.captura && previas !== null && registro.actualizado === base.actualizado && vistas.every((v, i) => v === previas[i])) {
+    return seguimiento
+  }
+  return { clave, vistas, actualizado: registro.actualizado, intentos, captura }
+}
+
+/**
+ * La captura que se enseña: la última mientras el registro está abierto. Cerrado no queda
+ * nada, ni siquiera el último rechazo: Node-RED borra las miniaturas al cerrar y la imagen
+ * es efímera; el motivo del cierre ya lo da el resumen del registro.
+ */
+export function capturaVisible(registro: Registro, captura: Captura | null): Captura | null {
+  return registro.abierto ? captura : null
+}
+
+/**
+ * Los textos del recuadro de la última foto: la leyenda "Pose · Estado", el motivo del rechazo
+ * traducido (si lo hay) y el texto alternativo de la imagen. Nombra la pose como la lista.
+ */
+export function textoCaptura(captura: Captura): { leyenda: string; detalle: string | null; alt: string } {
+  const estado = captura.estado === 'aceptada' ? 'Aceptada' : 'Rechazada'
+  const detalle = captura.estado === 'rechazada' && captura.motivo !== null ? traducirMotivo(captura.motivo) : null
+  const pose = ETIQUETA_POSE[captura.pose]
+  const alt = `Última foto: ${pose.toLowerCase()}, ${estado.toLowerCase()}${detalle === null ? '' : `. ${detalle}`}`
+  return { leyenda: `${pose} · ${estado}`, detalle, alt }
+}
+
 export type Tono = 'neutro' | 'advertencia' | 'error' | 'exito'
 
 export interface ResumenRegistro {
@@ -346,6 +431,8 @@ export type ResultadoInicio =
   | { tipo: 'tiene-rostro' }
   /** Ya hay otro registro abierto. */
   | { tipo: 'ocupado' }
+  /** Hay una prueba de reconocimiento en curso: la visión está ocupada con ella. */
+  | { tipo: 'prueba-en-curso' }
   /** El lugar se cerró mientras se escribía el consentimiento. */
   | { tipo: 'interrumpido' }
   | { tipo: 'fallo'; status: number | null; mensaje: string }
@@ -365,6 +452,9 @@ export function interpretarInicio(status: number, cuerpo: unknown): ResultadoIni
     }
     if (motivo === 'registro_abierto') {
       return { tipo: 'ocupado' }
+    }
+    if (motivo === 'prueba_pendiente') {
+      return { tipo: 'prueba-en-curso' }
     }
     if (motivo === 'interrumpido') {
       return { tipo: 'interrumpido' }
@@ -433,6 +523,12 @@ export function avisoDeInicio(resultado: ResultadoInicio): AvisoRegistro | null 
       return { tono: 'error', titulo: 'El alumno ya tiene rostro registrado', texto: 'Para volver a registrarlo, retira primero su rostro en Alumnos. Después hace falta un consentimiento nuevo.' }
     case 'ocupado':
       return { tono: 'advertencia', titulo: 'Ya había un registro abierto', texto: 'Se retomó el registro que estaba abierto. Termínalo o cancélalo antes de iniciar otro.' }
+    case 'prueba-en-curso':
+      return {
+        tono: 'advertencia',
+        titulo: 'Hay una prueba de reconocimiento en curso',
+        texto: 'La visión está ocupada con la prueba. Espera unos segundos a que termine y vuelve a iniciar el registro.',
+      }
     case 'interrumpido':
       return { tono: 'advertencia', titulo: 'El registro se interrumpió antes de empezar', texto: 'Se canceló mientras se guardaba el consentimiento. Vuelve a iniciarlo.' }
     case 'fallo':

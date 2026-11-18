@@ -4,7 +4,9 @@ import { IndicadorEstado } from './componentes/IndicadorEstado'
 import { SelectorTema } from './componentes/SelectorTema'
 import { PlacaProveedor } from './estadoPlaca'
 import { LecturasContexto } from './lecturasContexto'
+import { SistemaContexto } from './sistemaContexto'
 import { useLecturas } from './useLecturas'
+import { useSistema } from './useSistema'
 import { Alumnos } from './vistas/Alumnos'
 import { Metricas } from './vistas/Metricas'
 import { Registro } from './vistas/Registro'
@@ -110,6 +112,7 @@ function useIndicador(lista: React.RefObject<HTMLUListElement | null>, ruta: str
 
 export function App() {
   const lecturas = useLecturas(LECTURAS_A_PEDIR, CONSULTA_CADA_MS)
+  const sistema = useSistema(CONSULTA_CADA_MS)
   // `destino` es la pestaña elegida (cambia al instante); `ruta`, la vista que se
   // ve (cambia tras la salida de la anterior, o al instante con movimiento reducido).
   const [destino, setDestino] = useState(rutaActual)
@@ -167,58 +170,60 @@ export function App() {
 
   return (
     <LecturasContexto.Provider value={lecturas}>
-      <PlacaProveedor>
-        {/* Sin ancla de destino: un hash distinto de #/ruta cambiaría la vista. */}
-        <a
-          className="salto"
-          href="#/"
-          onClick={(e) => {
-            e.preventDefault()
-            enfocarTitulo()
-          }}
-        >
-          Saltar al contenido
-        </a>
-        <header className="encabezado">
-          <div className="contenedor encabezado__interior">
-            {/* Wordmark tipográfico, sin símbolo ni logotipo: la palabra en la serif de documento. */}
-            <span className="marca">AutoList</span>
-            <nav aria-label="Vistas" className="navegacion-contenedor">
-              <ul className="navegacion" ref={lista}>
-                {VISTAS.map((v) => (
-                  <li key={v.ruta}>
-                    <a
-                      className="navegacion__enlace"
-                      href={`#/${v.ruta}`}
-                      aria-current={v.ruta === destino ? 'page' : undefined}
-                    >
-                      {v.nombre}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-              {caja !== null && (
-                <span
-                  className={`navegacion__indicador${animado ? ' navegacion__indicador--animado' : ''}`}
-                  style={{
-                    transform: `translate3d(${caja.x}px, ${caja.y + caja.alto - 3}px, 0) scaleX(${caja.ancho})`,
-                  }}
-                  aria-hidden="true"
-                />
-              )}
-            </nav>
-            <IndicadorEstado />
-            <SelectorTema />
-          </div>
-        </header>
-        <main ref={principal} className="principal">
-          {/* key: al cambiar de vista se remonta y sus bloques entran escalonados. */}
-          <div key={ruta} className={saliendo ? 'vista vista--sale' : 'vista'}>
-            <Contenido />
-          </div>
-        </main>
-        <Avisos />
-      </PlacaProveedor>
+      <SistemaContexto.Provider value={sistema}>
+        <PlacaProveedor>
+          {/* Sin ancla de destino: un hash distinto de #/ruta cambiaría la vista. */}
+          <a
+            className="salto"
+            href="#/"
+            onClick={(e) => {
+              e.preventDefault()
+              enfocarTitulo()
+            }}
+          >
+            Saltar al contenido
+          </a>
+          <header className="encabezado">
+            <div className="contenedor encabezado__interior">
+              {/* Wordmark tipográfico, sin símbolo ni logotipo: la palabra en la serif de documento. */}
+              <span className="marca">AutoList</span>
+              <nav aria-label="Vistas" className="navegacion-contenedor">
+                <ul className="navegacion" ref={lista}>
+                  {VISTAS.map((v) => (
+                    <li key={v.ruta}>
+                      <a
+                        className="navegacion__enlace"
+                        href={`#/${v.ruta}`}
+                        aria-current={v.ruta === destino ? 'page' : undefined}
+                      >
+                        {v.nombre}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+                {caja !== null && (
+                  <span
+                    className={`navegacion__indicador${animado ? ' navegacion__indicador--animado' : ''}`}
+                    style={{
+                      transform: `translate3d(${caja.x}px, ${caja.y + caja.alto - 3}px, 0) scaleX(${caja.ancho})`,
+                    }}
+                    aria-hidden="true"
+                  />
+                )}
+              </nav>
+              <IndicadorEstado />
+              <SelectorTema />
+            </div>
+          </header>
+          <main ref={principal} className="principal">
+            {/* key: al cambiar de vista se remonta y sus bloques entran escalonados. */}
+            <div key={ruta} className={saliendo ? 'vista vista--sale' : 'vista'}>
+              <Contenido />
+            </div>
+          </main>
+          <Avisos />
+        </PlacaProveedor>
+      </SistemaContexto.Provider>
     </LecturasContexto.Provider>
   )
 }

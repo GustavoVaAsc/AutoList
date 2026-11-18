@@ -32,7 +32,7 @@ function horaDeRespuesta(respuesta: Response): number {
   return Number.isNaN(fecha) ? Date.now() : fecha
 }
 
-async function pedirJson(
+export async function pedirJson(
   url: string,
   senal: AbortSignal,
   tiempoMaximoMs: number,

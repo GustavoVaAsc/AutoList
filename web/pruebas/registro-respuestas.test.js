@@ -13,6 +13,7 @@ import {
   POSES,
   avisoDeCancelacion,
   avisoDeInicio,
+  capturaVisible,
   filtrarAlumnos,
   formatearTranscurrido,
   interpretarCancelacion,
@@ -23,7 +24,10 @@ import {
   normalizarBusqueda,
   ordenarParaRegistro,
   poseEnCurso,
+  SEGUIMIENTO_INICIAL,
+  seguirCaptura,
   resumirRegistro,
+  textoCaptura,
   textoTiempo,
   siguienteVista,
   textoPose,
@@ -270,6 +274,7 @@ test('interpretarInicio: 202 inicia; 404, 409 y los demás tienen su resultado',
   assert.deepEqual(interpretarInicio(409, { error: 'x', motivo: 'tiene_rostro' }), { tipo: 'tiene-rostro' })
   assert.deepEqual(interpretarInicio(409, { error: 'x', motivo: 'registro_abierto' }), { tipo: 'ocupado' })
   assert.deepEqual(interpretarInicio(409, { error: 'x', motivo: 'interrumpido' }), { tipo: 'interrumpido' })
+  assert.deepEqual(interpretarInicio(409, { error: 'x', motivo: 'prueba_pendiente' }), { tipo: 'prueba-en-curso' })
 })
 
 test('interpretarInicio: 409 sin motivo conocido, y 400, 401, 403, 415, 500 son fallos con texto en español', () => {
@@ -312,6 +317,7 @@ test('avisoDeInicio: iniciado no avisa; cada resultado de error tiene título y 
     { tipo: 'tiene-rostro' },
     { tipo: 'ocupado' },
     { tipo: 'interrumpido' },
+    { tipo: 'prueba-en-curso' },
     { tipo: 'fallo', status: 500, mensaje: 'La API respondió con el error 500.' },
   ]
   for (const r of resultados) {
@@ -323,6 +329,9 @@ test('avisoDeInicio: iniciado no avisa; cada resultado de error tiene título y 
   }
   assert.match(avisoDeInicio({ tipo: 'tiene-rostro' }).texto, /retira primero su rostro en Alumnos/)
   assert.equal(avisoDeInicio({ tipo: 'ocupado' }).tono, 'advertencia')
+  assert.equal(avisoDeInicio({ tipo: 'prueba-en-curso' }).tono, 'advertencia')
+  assert.match(avisoDeInicio({ tipo: 'prueba-en-curso' }).texto, /prueba/)
+  assert.match(avisoDeInicio({ tipo: 'prueba-en-curso' }).texto, /vuelve a iniciar el registro/)
   assert.equal(avisoDeInicio({ tipo: 'fallo', status: null, mensaje: 'sin red' }).texto, 'sin red')
 })
 
@@ -465,4 +474,133 @@ test('siguienteVista: un registro abierto que aparece estando libre (iniciado en
 test('siguienteVista: no modifica el estado de entrada', () => {
   const entrada = Object.freeze({ fase: 'libre', registro: null })
   assert.doesNotThrow(() => siguienteVista(entrada, { tipo: 'inicio-enviado' }))
+})
+
+function poses(estados) {
+  return POSES.map((pose, i) => ({ pose, estado: estados[i] ?? 'pendiente', motivo: null }))
+}
+
+// ------------------------------------------------------------ seguirCaptura
+
+function conFotos(estados, minis, motivos = []) {
+  return registro({ poses: POSES.map((pose, i) => ({ pose, estado: estados[i] ?? 'pendiente', motivo: motivos[i] ?? null, miniatura: minis[i] ?? null })) })
+}
+
+test('seguirCaptura: sin fotos no hay captura', () => {
+  const s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['esperando_pose'], []))
+  assert.equal(s.captura, null)
+})
+
+test('seguirCaptura: la foto nueva (aceptada) es la última captura', () => {
+  let s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['esperando_pose'], []))
+  s = seguirCaptura(s, conFotos(['aceptada', 'esperando_pose'], ['AAA']))
+  assert.deepEqual(s.captura, { pose: 'frente', estado: 'aceptada', motivo: null, miniatura: 'AAA', intento: 1 })
+  s = seguirCaptura(s, conFotos(['aceptada', 'aceptada'], ['AAA', 'BBB']))
+  assert.equal(s.captura.pose, 'izquierda')
+  assert.equal(s.captura.miniatura, 'BBB')
+})
+
+test('seguirCaptura: al retomar la página, la última es la pose más avanzada con foto', () => {
+  const s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['aceptada', 'aceptada', 'rechazada'], ['AAA', 'BBB', 'CCC'], [null, null, 'borrosa']))
+  assert.deepEqual(s.captura, { pose: 'derecha', estado: 'rechazada', motivo: 'borrosa', miniatura: 'CCC', intento: 1 })
+})
+
+test('seguirCaptura: tras un rechazo la visión pasa a capturando (no a esperando_pose); la foto rechazada se conserva y el reintento la reemplaza', () => {
+  let s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['esperando_pose'], []))
+  s = seguirCaptura(s, conFotos(['rechazada'], ['AAA'], ['rostro_chico']))
+  assert.equal(s.captura.estado, 'rechazada')
+  // El flujo borra la miniatura de la pose al pasar a capturando: la grande sigue.
+  const toma = seguirCaptura(s, conFotos(['capturando'], []))
+  assert.equal(toma.captura, s.captura)
+  const reintento = seguirCaptura(toma, conFotos(['aceptada'], ['ZZZ']))
+  assert.deepEqual(reintento.captura, { pose: 'frente', estado: 'aceptada', motivo: null, miniatura: 'ZZZ', intento: 2 })
+})
+
+test('seguirCaptura: rechazada, capturando y otra vez rechazada reemplaza la captura', () => {
+  let s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['rechazada'], ['AAA'], ['borrosa']))
+  s = seguirCaptura(s, conFotos(['capturando'], []))
+  const otra = seguirCaptura(s, conFotos(['rechazada'], ['BBB'], ['rostro_chico']))
+  assert.deepEqual(otra.captura, { pose: 'frente', estado: 'rechazada', motivo: 'rostro_chico', miniatura: 'BBB', intento: 2 })
+})
+
+test('seguirCaptura: un rechazo idéntico y sin miniatura, con otro `actualizado`, cuenta como captura nueva', () => {
+  const rech = (actualizado) => registro({ actualizado, poses: [{ pose: 'frente', estado: 'rechazada', motivo: 'sin_rostro' }] })
+  const primera = seguirCaptura(SEGUIMIENTO_INICIAL, rech('2026-11-04T15:00:07.000Z'))
+  // Misma consulta repetida: nada nuevo.
+  assert.equal(seguirCaptura(primera, rech('2026-11-04T15:00:07.000Z')), primera)
+  // El reintento (sin que la consulta viera capturando) se rechazó igual: es otra captura.
+  const segunda = seguirCaptura(primera, rech('2026-11-04T15:00:11.000Z'))
+  assert.notEqual(segunda, primera)
+  assert.equal(primera.captura.intento, 1)
+  assert.equal(segunda.captura.intento, 2)
+})
+
+test('seguirCaptura: con varias fotos nuevas a la vez gana la pose de mayor índice', () => {
+  let s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['esperando_pose'], []))
+  s = seguirCaptura(s, conFotos(['aceptada', 'aceptada', 'aceptada'], ['A', 'B', 'C']))
+  assert.equal(s.captura.pose, 'derecha')
+})
+
+test('seguirCaptura: al retomar con una pose rechazada sin miniatura, esa es la última', () => {
+  const s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['aceptada', 'rechazada'], ['AAA'], [null, 'sin_rostro']))
+  assert.deepEqual(s.captura, { pose: 'izquierda', estado: 'rechazada', motivo: 'sin_rostro', miniatura: null, intento: 1 })
+})
+
+function cerrado(motivo, estados, motivos = []) {
+  return registro({
+    abierto: false,
+    estado: 'error',
+    motivo,
+    poses: POSES.map((pose, i) => ({ pose, estado: estados[i] ?? 'pendiente', motivo: motivos[i] ?? null })),
+  })
+}
+
+test('seguirCaptura: borrar las miniaturas al cerrar el registro no es una foto nueva', () => {
+  const s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['aceptada', 'aceptada'], ['AAA', 'BBB']))
+  const despues = seguirCaptura(s, cerrado('vencido', ['aceptada', 'aceptada']))
+  assert.equal(despues.captura, s.captura)
+})
+
+test('capturaVisible: con el registro abierto es la última captura; sin captura, null (estado vacío honesto)', () => {
+  const s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['aceptada'], ['AAA']))
+  assert.equal(capturaVisible(conFotos(['aceptada'], ['AAA']), s.captura), s.captura)
+  assert.equal(capturaVisible(conFotos(['esperando_pose'], []), null), null)
+})
+
+test('capturaVisible: cerrado no queda nada, ni el rechazo final (npu) ni una foto aceptada', () => {
+  const rechazada = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['rechazada'], ['AAA'], ['borrosa']))
+  assert.equal(capturaVisible(cerrado('npu', ['rechazada'], ['borrosa']), rechazada.captura), null)
+  const aceptada = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['aceptada'], ['AAA']))
+  assert.equal(capturaVisible(registro({ abierto: false, estado: 'completado', poses: poses(['aceptada']) }), aceptada.captura), null)
+})
+
+test('textoCaptura: "Pose · Estado" y, si se rechazó, el motivo traducido', () => {
+  const ok = textoCaptura({ pose: 'izquierda', estado: 'aceptada', motivo: null, miniatura: 'AAA', intento: 1 })
+  assert.deepEqual(ok, { leyenda: 'Un poco a la izquierda · Aceptada', detalle: null, alt: 'Última foto: un poco a la izquierda, aceptada' })
+  const mala = textoCaptura({ pose: 'frente_2', estado: 'rechazada', motivo: 'borrosa', miniatura: 'AAA', intento: 2 })
+  assert.equal(mala.leyenda, 'De frente otra vez · Rechazada')
+  assert.equal(mala.detalle, traducirMotivo('borrosa'))
+  assert.equal(mala.alt, `Última foto: de frente otra vez, rechazada. ${traducirMotivo('borrosa')}`)
+})
+
+test('seguirCaptura: el intento cuenta las fotos de la misma pose (anuncio distinto en cada rechazo seguido)', () => {
+  let s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['rechazada'], ['AAA'], ['borrosa']))
+  s = seguirCaptura(s, conFotos(['capturando'], []))
+  s = seguirCaptura(s, conFotos(['rechazada'], ['BBB'], ['borrosa']))
+  assert.equal(s.captura.intento, 2)
+  s = seguirCaptura(s, conFotos(['aceptada', 'rechazada'], ['BBB', 'CCC'], [null, 'borrosa']))
+  assert.equal(s.captura.pose, 'izquierda')
+  assert.equal(s.captura.intento, 1)
+})
+
+test('seguirCaptura: una consulta sin cambios devuelve el mismo objeto', () => {
+  const r = conFotos(['aceptada', 'esperando_pose'], ['AAA'])
+  const s = seguirCaptura(SEGUIMIENTO_INICIAL, r)
+  assert.equal(seguirCaptura(s, conFotos(['aceptada', 'esperando_pose'], ['AAA'])), s)
+})
+
+test('seguirCaptura: otro registro (otra cuenta o inicio) empieza de cero', () => {
+  const s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['aceptada'], ['AAA']))
+  const otro = seguirCaptura(s, registro({ cuenta: '320068235', poses: poses(['esperando_pose']) }))
+  assert.equal(otro.captura, null)
 })

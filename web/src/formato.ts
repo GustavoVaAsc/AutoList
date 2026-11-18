@@ -38,6 +38,7 @@ const claveDia = new Intl.DateTimeFormat('en-CA', { timeZone: ZONA }) // AAAA-MM
 const decimales = (cifras: number) =>
   new Intl.NumberFormat(LOCAL, { minimumFractionDigits: cifras, maximumFractionDigits: cifras })
 
+const unDecimal = decimales(1)
 const dosDecimales = decimales(2)
 const tresDecimales = decimales(3)
 
@@ -60,6 +61,12 @@ export const formatearVoltaje = (v: number) => dosDecimales.format(v)
 export const formatearCorriente = (i: number) => tresDecimales.format(i)
 export const formatearPotencia = (p: number) => dosDecimales.format(p)
 export const formatearConfianza = (c: number) => dosDecimales.format(c)
+/** Milisegundos como entero: "240". */
+export const formatearMilisegundos = (ms: number) => String(Math.round(ms))
+/** Temperatura con un decimal: "48,6". */
+export const formatearTemperatura = (t: number) => unDecimal.format(t)
+/** Porcentaje como entero: "34". */
+export const formatearPorcentaje = (p: number) => String(Math.round(p))
 
 /** "2 min", "45 s": antigüedad aproximada para avisos. */
 export function formatearAntiguedad(ms: number): string {

@@ -1,9 +1,13 @@
 import { useMemo } from 'react'
+import { elegirError } from '../api/errorVista'
 import { AvisoObsoleta } from '../componentes/AvisoObsoleta'
 import { Cifra } from '../componentes/Cifra'
 import { EstadoVacio } from '../componentes/EstadoVacio'
 import { GraficaPotencia } from '../componentes/GraficaPotencia'
 import { HojaAsistencia } from '../componentes/HojaAsistencia'
+import { HojaLatencia } from '../componentes/HojaLatencia'
+import { HojaActuadores } from '../componentes/HojaActuadores'
+import { HojaSistema } from '../componentes/HojaSistema'
 import { MarcaAsistencia } from '../componentes/MarcaAsistencia'
 import { Pagina } from '../componentes/Pagina'
 import { TablaLecturas } from '../componentes/TablaLecturas'
@@ -16,16 +20,23 @@ import {
 } from '../formato'
 import { useEstadoLecturas } from '../lecturasContexto'
 import { construirSerie, VENTANA_MS } from '../serie'
+import { useEstadoSistema } from '../sistemaContexto'
 import { useAsistencia } from '../useAsistencia'
+import { useLatencia } from '../useLatencia'
 
 const CONSULTA_CADA_S = 5
 const CONSULTA_CADA_MS = CONSULTA_CADA_S * 1000
+/** Mediciones de latencia que se piden: las más recientes (la API admite hasta 1000). */
+const LIMITE_LATENCIAS = 100
 
 const entero = (n: number) => String(Math.round(n))
 
 export function Metricas() {
   const asistencia = useAsistencia(CONSULTA_CADA_MS)
   const energia = useEstadoLecturas()
+  const latencia = useLatencia(LIMITE_LATENCIAS, CONSULTA_CADA_MS)
+  // El sondeo del sistema vive en App (la cabecera también lo usa); aquí solo se lee.
+  const sistema = useEstadoSistema()
 
   const ultima =
     energia.lecturas && energia.lecturas.length > 0
@@ -38,20 +49,26 @@ export function Metricas() {
   const minutosVentana = VENTANA_MS / 60_000
   const potencias = serie !== null ? serie.visibles.map((l) => l.p) : []
 
-  const errorMostrado = asistencia.error ?? energia.error
-  const sinSesion = asistencia.sinSesion || energia.sinSesion
-  const horaUltimaRespuesta = asistencia.horaServidor ?? energia.horaServidor
-  const sinDatosPrevios = asistencia.sesiones === null && energia.lecturas === null
+  const { error: errorMostrado, sinSesion } = elegirError([sistema, asistencia, energia, latencia])
+  const horaUltimaRespuesta =
+    asistencia.horaServidor ?? energia.horaServidor ?? latencia.horaServidor ?? sistema.horaServidor
+  const sinDatosPrevios =
+    asistencia.sesiones === null &&
+    energia.lecturas === null &&
+    latencia.mediciones === null &&
+    sistema.sistema === null
 
   function reintentarTodo() {
+    sistema.reintentar()
     asistencia.reintentar()
     energia.reintentar()
+    latencia.reintentar()
   }
 
   return (
     <Pagina
       titulo="Métricas y asistencia"
-      descripcion={`Asistencia por sesión, intentos de reconocimiento y energía de la placa, actualizados cada ${CONSULTA_CADA_S} s.`}
+      descripcion={`Estado del sistema, control de los actuadores, asistencia por sesión, intentos de reconocimiento, energía de la placa y latencia de inferencia, actualizados cada ${CONSULTA_CADA_S} s.`}
     >
       {errorMostrado !== null && (
         <div className="aviso aviso--error">
@@ -74,6 +91,22 @@ export function Metricas() {
           )}
         </div>
       )}
+
+      {sistema.sistema === null && sistema.error === null && (
+        <div className="hoja estado" aria-busy="true">
+          <MarcaAsistencia tipo="pendiente" />
+          <div className="estado__cuerpo">
+            <h2 className="estado__titulo">Cargando el estado del sistema</h2>
+            <p className="estado__texto">Preguntando a Node-RED por el servicio de visión, la XIAO y la placa.</p>
+          </div>
+        </div>
+      )}
+
+      {sistema.sistema !== null && sistema.horaServidor !== null && sistema.recibidoEn !== null && (
+        <HojaSistema sistema={sistema.sistema} horaServidor={sistema.horaServidor} recibidoEn={sistema.recibidoEn} />
+      )}
+
+      <HojaActuadores sistema={sistema.sistema} errorEstado={sistema.error !== null} reconsultar={sistema.reintentar} />
 
       {asistencia.sesiones === null && asistencia.error === null && (
         <div className="hoja estado" aria-busy="true">
@@ -196,10 +229,27 @@ export function Metricas() {
         </>
       )}
 
-      <EstadoVacio titulo="Todavía no hay lecturas de latencia">
-        La latencia de inferencia de la NPU aún no se almacena en la base de datos de la placa.
-        Cuando se incorpore su ingesta, las mediciones reales se mostrarán aquí.
-      </EstadoVacio>
+      {latencia.mediciones === null && latencia.error === null && (
+        <div className="hoja estado" aria-busy="true">
+          <MarcaAsistencia tipo="pendiente" />
+          <div className="estado__cuerpo">
+            <h2 className="estado__titulo">Cargando las mediciones de latencia</h2>
+            <p className="estado__texto">Consultando la latencia de inferencia guardada en la placa.</p>
+          </div>
+        </div>
+      )}
+
+      {latencia.mediciones !== null && latencia.mediciones.length === 0 && (
+        <EstadoVacio titulo="Todavía no hay mediciones de latencia">
+          Cada resultado que el servicio de visión publica en <code>aula/vision/resultado</code> deja
+          aquí su latencia. Revisa que el servicio esté en marcha y que la hora de la placa sea la
+          correcta; la primera medición aparece sin recargar la página.
+        </EstadoVacio>
+      )}
+
+      {latencia.mediciones !== null && latencia.mediciones.length > 0 && (
+        <HojaLatencia mediciones={latencia.mediciones} />
+      )}
     </Pagina>
   )
 }

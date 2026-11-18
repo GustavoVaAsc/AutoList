@@ -1968,6 +1968,82 @@ code {
   border-radius: var(--r-papel);
 }
 
+/* El recuadro de la última foto, debajo de las poses: la miniatura de la cámara (JPEG de
+   hasta 160x120) en grande, con la pose y su estado en palabras debajo. */
+.ultima-foto {
+  min-width: 0;
+  padding: var(--e-4);
+  border: 1.5px solid var(--regla);
+  border-radius: var(--r-papel);
+  background: var(--papel2);
+}
+
+.ultima-foto__titulo {
+  margin-bottom: var(--e-2);
+}
+
+.ultima-foto__figura {
+  margin: 0;
+  animation: ultima-foto-entra var(--d-entrada) var(--ease-entrada) backwards;
+}
+
+/* Proporción fija 4:3, la de la miniatura: el recuadro no salta de alto al llegar la foto.
+   Tope de 320 px (el doble de 160): más grande solo estiraría los píxeles. `pixelated` en
+   lugar del suavizado por defecto: la ampliación se ve nítida y deja ver que son 160x120,
+   sin inventar un detalle que la cámara no mandó. */
+.ultima-foto__imagen,
+.ultima-foto__sin-imagen,
+.ultima-foto__vacio {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 4 / 3;
+  margin-inline: auto;
+  border-radius: var(--r-papel);
+}
+
+.ultima-foto__imagen {
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: var(--hoja);
+  border: 1px solid var(--regla);
+}
+
+.ultima-foto__figura--rechazada .ultima-foto__imagen {
+  border-color: var(--error);
+}
+
+.ultima-foto__sin-imagen,
+.ultima-foto__vacio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--e-4);
+  border: 1.5px dashed var(--regla);
+  color: var(--suave);
+  font-size: var(--t-ui);
+  text-align: center;
+}
+
+.ultima-foto__figura--rechazada .ultima-foto__sin-imagen {
+  border-color: var(--error);
+}
+
+.ultima-foto__leyenda {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--e-1);
+  margin-top: var(--e-2);
+  text-align: center;
+}
+
+@keyframes ultima-foto-entra {
+  from {
+    opacity: 0;
+  }
+}
+
 /* Con .rostro delante: la regla base de .rostro (más abajo) tiene la misma especificidad. */
 .rostro.rostro--pose-capturando,
 .rostro.rostro--pose-esperando_pose {
@@ -2435,4 +2511,9 @@ code {
   .selector:active {
     transform: none !important;
   }
+}
+
+/* Registro: dos cajas seguidas en el margen (la acción que sigue y la prueba de reconocimiento) no se tocan. */
+.margen > .caja-margen + .caja-margen {
+  margin-top: var(--e-4);
 }
