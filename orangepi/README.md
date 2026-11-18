@@ -537,7 +537,7 @@ Los nombres de servicio son `mosquitto`, `postgres`, `nodered` y `portainer`.
 
 Usar `--build` después de cambiar `nodered/settings.js`, `nodered/Dockerfile`, `nodered/package.json`, `nodered/package-lock.json`, `nodered/reporte_csv.py` o cualquier archivo de `web/`. Estos archivos se copian a la imagen (los de `web/` se compilan en ella), así que sin reconstruirla el cambio no tiene efecto.
 
-La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-22`). Al reconstruir por un cambio, subir el sufijo (`-21`, `-22`...), como indica el comentario del archivo.
+La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-23`). Al reconstruir por un cambio, subir el sufijo (`-21`, `-22`...), como indica el comentario del archivo.
 
 Para aplicar solo un cambio de Node-RED o del frontend, sin tocar los demás servicios, desde `orangepi/`:
 
@@ -638,7 +638,7 @@ Problemas conocidos que no tienen decisión tomada. A diferencia de la tabla ant
 
 | Riesgo | Detalle |
 |---|---|
-| Residual del gate de `/api` (a partir de la imagen `5.0.9-23`) | El error de stderr de Express por JSON mal formado ya no sale sin enmascarar: el gate de `/api` rechaza antes de parsear el cuerpo (401, 403, 411 o 413), y `instalarEnmascaradoDeConsola()` (`nodered/registro-log.js`) enmascara lo que sale por `console.error` y `console.warn`. Quedan, como elemento menor: las rutas que no son `/api` (el editor, `/auth/token`) leen hasta 1 MB antes de `adminAuth`, inherente a Node-RED; el gate supone que `httpAdminRoot` y `httpNodeRoot` siguen en `/` (una prueba lo comprueba); y las excepciones no capturadas y los errores de arranque de `settings.js` los imprime Node sin enmascarar. Ver [nodered/AGENTS.md](../nodered/AGENTS.md#settings-e-imagen). |
+| Residual del gate de `/api` (a partir de la imagen `5.0.9-23`) | El error de stderr de Express por JSON mal formado ya no sale sin enmascarar: el gate de `/api` rechaza antes de parsear el cuerpo (400 si `Content-Length` no es numérico, 401, 403, 411 o 413), y `instalarEnmascaradoDeConsola()` (`nodered/registro-log.js`) enmascara lo que sale por `console.error` y `console.warn`. Quedan, como elemento menor: las rutas que no son `/api` (el editor, `/auth/token`) leen hasta 1 MB antes de `adminAuth`, inherente a Node-RED; el gate supone que `httpAdminRoot` y `httpNodeRoot` siguen en `/` (una prueba lo comprueba); y las excepciones no capturadas y los errores de arranque de `settings.js` los imprime Node sin enmascarar. Ver [nodered/AGENTS.md](../nodered/AGENTS.md#settings-e-imagen). |
 | `metricas_energia` crece sin purga | No hay purga (decisión de retención). Origen `npu`: hasta 2 filas por segundo (unas 172 800 al día en el peor caso). Origen `sistema`: una fila cada 10 s (unas 8 640 al día). Origen `ina219`: sin límite de ritmo en la ingesta. Sin decidir: purga, límite o ambos. |
 | Una prueba de reconocimiento durante una sesión abierta | Permitida por decisión del equipo. Un check-in real que coincida con una prueba puede necesitar repetirse. |
 | El último resultado de la prueba vive en memoria | `GET /api/enrolamiento/prueba` lo devuelve hasta la siguiente prueba o el reinicio de Node-RED. Cuenta y nombre solo salen con `reconocido` o `dudoso`. |
