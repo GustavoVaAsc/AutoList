@@ -6,8 +6,12 @@
 const fs = require("fs");
 const { execFileSync } = require("child_process");
 const bcrypt = require("bcryptjs");
-const { crearMiddlewareApi, validarSecretosApi } = require("./autenticacion-api");
-const { crearManejadorLog } = require("./registro-log");
+const { crearMiddlewareApi, soloRutasApi, validarSecretosApi } = require("./autenticacion-api");
+const { crearManejadorLog, instalarEnmascaradoDeConsola } = require("./registro-log");
+
+// Lo que Express escribe con console.error (un cuerpo JSON mal formado en un POST, que rechaza el body-parser del editor
+// antes de los flujos) no pasa por el registro de Node-RED: se enmascaran las cuentas también ahí (registro-log.js).
+instalarEnmascaradoDeConsola();
 
 const usuario = process.env.NODERED_ADMIN_USER;
 const clave = process.env.NODERED_ADMIN_PASSWORD;
@@ -169,7 +173,21 @@ module.exports = {
     // Editor: solo nosniff y no poder incrustarse en marcos. Sin CSP, que rompería
     // el editor. Node-RED monta el editor en / antes que lo demás, así que
     // httpAdminMiddleware alcanza también las demás rutas. Sin HSTS.
-    httpAdminMiddleware: cabecerasBasicas,
+    // Además, solo para las rutas /api, corre aquí la autenticación de la API
+    // (soloRutasApi(autenticarApi)): httpAdminMiddleware va antes de los parsers de JSON
+    // y de formularios que el editor monta en "/" (@node-red/editor-api, index.js:
+    // adminApp.use(settings.httpAdminMiddleware) y luego bodyParser.json y urlencoded) y
+    // esos parsers leen el cuerpo de cualquier ruta, la API incluida, antes de que un
+    // http in llame a httpNodeMiddleware. Sin este paso, un cliente anónimo hacía leer y
+    // parsear hasta apiMaxLength antes del 401. El editor, /auth, /app/ y las rutas de
+    // administración no se tocan. Después, httpNodeMiddleware vuelve a correr en cada
+    // http in: es inocuo (solo lee cabeceras).
+    httpAdminMiddleware: [cabecerasBasicas, soloRutasApi(autenticarApi)],
+
+    // Tope del cuerpo que leen los parsers de JSON y de formularios, el del editor y el de los http in
+    // (el valor por defecto es 5mb). 1mb deja holgura al despliegue desde el editor (flows.json compacto pesa
+    // unos 220 KB) y a la API, que ya limita su cuerpo a 256 KiB por Content-Length (autenticacion-api.js).
+    apiMaxLength: "1mb",
 
     // API (las rutas http in de flows.json): las mismas cabeceras, sin caché, más
     // la autenticación de autenticacion-api.js. No se usa httpNodeAuth porque es

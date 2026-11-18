@@ -311,6 +311,17 @@ Sin credenciales o con credenciales erróneas responde 401. Un error de validaci
 
 `-k` acepta el certificado autofirmado sin verificarlo. Con el certificado instalado, se puede quitar.
 
+### Otros orígenes en `metricas_energia`
+
+Además de `ina219` (la XIAO o el simulador), la misma tabla guarda dos orígenes que escribe Node-RED:
+
+| `origen` | Qué guarda | Frecuencia |
+|---|---|---|
+| `npu` | `cap`, `det`, `emb` y `total` de cada resultado válido de la visión (en ms, `null` si una etapa no corrió) | Hasta 2 por segundo |
+| `sistema` | `temp_soc`, la temperatura de la placa | Cada 10 s |
+
+Las filas `npu` salen de la pestaña `Pase de lista`, y las `sistema` de la pestaña `Sistema`. Sin purga: ver [Riesgos abiertos](#riesgos-abiertos).
+
 ## API de alumnos y galería
 
 Los tres endpoints están en el flujo `Alumnos` de `nodered/flows/flows.json`. El formato de cada uno está en el [plan, sección 6.7](../docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript); aquí, cómo operarlos y probarlos.
@@ -330,7 +341,7 @@ Las comparaciones son en tiempo constante.
 
 **Contra CSRF** (el navegador reenvía el Basic guardado aunque la petición la dispare otro sitio), en cualquier método que no sea `GET` ni `HEAD`, ya autenticado, el middleware responde **403** si llega `Sec-Fetch-Site` y no es `same-origin`, si llega `Origin` y no es `https://` + `Host`, o si falta la cabecera propia **`X-Pase-Lista: 1`**. Un sitio ajeno no puede añadir esa cabecera sin un preflight CORS, que esta API no concede. Por eso **todo `POST`, `PUT`, `PATCH` o `DELETE` debe mandar `X-Pase-Lista: 1`**, también los futuros: el frontend actual solo hace `GET` y no la necesita todavía, pero cada `fetch` que cambie datos debe incluirla. La visión solo hace `GET`. Esto descansa en una regla: **ningún `http in` con método `GET` o `HEAD` cambia datos ni publica en MQTT**, porque esos métodos no exigen `X-Pase-Lista`. `nodered/pruebas/get-solo-lectura.test.js` la comprueba sobre `flows.json` (también para los flujos futuros): desde cada `http in` GET sigue los cables y falla si llega a un nodo `postgresql` con `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` o `ALTER`, o sin consulta fija, o a un `mqtt out`. Además, la importación del CSV exige `Content-Type: text/csv` (otro tipo, 415).
 
-Todas las peticiones de la API pasan por un tope de cuerpo de 256 KiB: 413 si `Content-Length` lo supera y 411 si la petición no trae `Content-Length` (por ejemplo, `Transfer-Encoding: chunked`). Las respuestas llevan `Cache-Control: no-store`.
+Todas las peticiones de la API pasan por un tope de cuerpo de 256 KiB: 413 si `Content-Length` lo supera y 411 si la petición no trae `Content-Length` (por ejemplo, `Transfer-Encoding: chunked`). Desde la imagen `5.0.9-23`, esa comprobación corre antes de que los parsers del editor lean el cuerpo, y las peticiones a `/api/*` sin credenciales se rechazan antes de parsearlo (ver [nodered/AGENTS.md](../nodered/AGENTS.md#settings-e-imagen)). Las respuestas llevan `Cache-Control: no-store`.
 
 **Falla cerrado.** Si falta `NODERED_PROFESOR_USER`, `NODERED_PROFESOR_PASSWORD` o `GALERIA_TOKEN` (o el usuario lleva `:`), o si los secretos son de ejemplo, repetidos o cortos (ver [Crear el archivo de credenciales](#crear-el-archivo-de-credenciales)), `settings.js` lanza una excepción y Node-RED no arranca: el contenedor se reinicia en bucle y `docker compose logs --tail=50 nodered` muestra "Faltan NODERED_PROFESOR_USER, ..." o "autenticacion-api: ... tiene el valor de ejemplo". No hay modo de servir la API sin autenticar. Compose tampoco procesa el proyecto si falta alguna de las tres en `.env`: añadirlas antes de usarlo.
 
@@ -397,6 +408,19 @@ curl -sk -u profesor -H 'X-Pase-Lista: 1' -H 'Content-Type: text/csv; charset=ut
 ```
 
 `--data-binary` envía el archivo tal cual (`-d` le quitaría los saltos de línea). Para probar con datos de verdad hay que usar un grupo de prueba: la importación inserta filas reales en `alumnos` y no hay endpoint para borrarlas (el rol de Node-RED no tiene DELETE).
+
+### Métricas, sistema y prueba de reconocimiento
+
+Lecturas de solo lectura (GET). Sin credenciales, responden 401; con `-u profesor`, curl pide la contraseña.
+
+```bash
+# Latencia de la NPU: filas de metricas_energia con origen 'npu' (limite y desde son opcionales)
+curl -k -u profesor "https://127.0.0.1:1880/api/metricas/latencia?limite=5"
+# Estado del sistema: lo último de la visión, la XIAO (cámara y actuadores) y la placa
+curl -k -u profesor "https://127.0.0.1:1880/api/sistema/estado"
+# Resultado de la última prueba de reconocimiento (pendiente, solicitado y resultado)
+curl -k -u profesor "https://127.0.0.1:1880/api/enrolamiento/prueba"
+```
 
 ### Registro del rostro y retiro del consentimiento
 
@@ -513,7 +537,7 @@ Los nombres de servicio son `mosquitto`, `postgres`, `nodered` y `portainer`.
 
 Usar `--build` después de cambiar `nodered/settings.js`, `nodered/Dockerfile`, `nodered/package.json`, `nodered/package-lock.json`, `nodered/reporte_csv.py` o cualquier archivo de `web/`. Estos archivos se copian a la imagen (los de `web/` se compilan en ella), así que sin reconstruirla el cambio no tiene efecto.
 
-La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-20`). Al reconstruir por un cambio, subir el sufijo (`-21`, `-22`...), como indica el comentario del archivo.
+La etiqueta de la imagen está fijada en `docker-compose.yml` (`image: pase-lista/nodered:5.0.9-23`). Al reconstruir por un cambio, subir el sufijo (`-21`, `-22`...), como indica el comentario del archivo.
 
 Para aplicar solo un cambio de Node-RED o del frontend, sin tocar los demás servicios, desde `orangepi/`:
 
@@ -600,13 +624,24 @@ Las tablas `alumnos`, `sesiones`, `asistencias` e `intentos` también vienen de 
 | Inyección de fórmulas en el reporte CSV | La lista maestra se importa tal cual: un nombre que empiece con `=`, `+`, `-` o `@` queda guardado así. El peligro aparece al abrir en Excel un CSV exportado. El reporte CSV lo neutraliza al exportar (`nodered/reporte_csv.py`): antepone `'` a un valor, o a un segmento tras `;` o `,`, que empiece con `=`, `+`, `-`, `@`, tabulador, retorno de carro, sus formas de ancho completo o el signo menos U+2212. No se implementa en la importación. |
 | MQTT sin TLS | El listener 1883 va en texto plano: usuario y contraseña viajan sin cifrar. |
 | Una contraseña MQTT filtrada | La de `xiao` es la más expuesta: viaja en claro por la LAN. Con la contraseña de un rol, alguien conectado a la LAN puede conectarse con ese usuario y, por `use_username_as_clientid`, expulsar al cliente legítimo; al caer su conexión se dispara su Will (por ejemplo `{"en_linea": false}` en `aula/camara/estado`, retenido), y el atacante puede dejar retenido un estado falso en los tópicos que ese rol puede escribir. La ACL limita qué tópicos toca cada rol, pero no evita esto. **Con la clave de `vision` o de `nodered` se puede publicar un `reconocido` falso:** marca la asistencia de una cuenta del grupo de la sesión abierta (acotado a cuentas con consentimiento y rostro vigentes) y abre el servo. Es un riesgo aceptado, porque la decisión de reconocer es de la visión y Node-RED no puede comprobarla. Cómo detectarlo: una ráfaga de asistencias en pocos segundos en la columna `hora` del reporte CSV (o de `asistencias`). Mitigaciones pendientes, la primera es la prioritaria: restringir el puerto 1883 en la cadena `DOCKER-USER` del host, porque solo la XIAO lo necesita desde la LAN (cambio del host: lo coordina Yordi con el equipo, y aún no se hizo); descartar en Node-RED los estados vencidos por `ts` (flujos del 11 nov, Yordi); TLS en MQTT (sin decidir, ver Pendiente). |
-| Mensajes retenidos falsos | La ACL de Mosquitto 2 (`acl_file`) no puede impedir el retain por tópico. La defensa es que los consumidores de todo tópico con Retain = no ignoren lo retenido y lo vacío, en cualquier tópico (contrato MQTT, sección 1: la XIAO, el servicio de visión, incluidos `aula/camara/pir` y `aula/vision/cmd`, y Node-RED). Node-RED borra los retenidos de `*/cmd`, `aula/camara/pir`, `aula/camara/energia` y `aula/vision/resultado` en cada conexión al broker (flujo "Limpieza de retenidos"), lo que provoca un mensaje vacío en vivo en cada uno de esos tópicos, y su ingesta descarta `aula/camara/energia` con retain (con aviso) y vacío (en silencio). `aula/vision/resultado`, `aula/vision/embedding` y `aula/vision/enrolamiento` ya se descartan con retain en su flujo; para los demás tópicos con Retain = no (`aula/vision/galeria/alta`, `aula/vision/galeria/baja`, `aula/pantalla/reinicio` y `aula/sistema/metricas`), el flujo que los consuma debe descartar retain, o se amplía la lista de la limpieza. Un plugin de autorización de broker que sí lo impidiera queda fuera: es una decisión humana, y no se instala sin ella. |
+| Mensajes retenidos falsos | La ACL de Mosquitto 2 (`acl_file`) no puede impedir el retain por tópico. La defensa es que los consumidores de todo tópico con Retain = no ignoren lo retenido y lo vacío, en cualquier tópico (contrato MQTT, sección 1: la XIAO, el servicio de visión, incluidos `aula/camara/pir` y `aula/vision/cmd`, y Node-RED). Node-RED borra los retenidos de `*/cmd`, `aula/camara/pir`, `aula/camara/energia` y `aula/vision/resultado` en cada conexión al broker (flujo "Limpieza de retenidos"), lo que provoca un mensaje vacío en vivo en cada uno de esos tópicos, y su ingesta descarta `aula/camara/energia` con retain (con aviso) y vacío (en silencio). `aula/vision/resultado`, `aula/vision/embedding` y `aula/vision/enrolamiento` ya se descartan con retain en su flujo; para los demás tópicos con Retain = no (`aula/vision/galeria/alta`, `aula/vision/galeria/baja` y `aula/pantalla/reinicio`), el flujo que los consuma debe descartar retain, o se amplía la lista de la limpieza. Un plugin de autorización de broker que sí lo impidiera queda fuera: es una decisión humana, y no se instala sin ella. |
 | Node-RED puede ejecutar código | El nodo `exec` del reporte CSV ejecuta comandos en el contenedor. Por eso el editor exige `adminAuth` (`nodered/settings.js`, línea 13); `settings.js` y `reporte_csv.py` no son escribibles desde el contenedor (`nodered/Dockerfile`); el comando es fijo, sin shell, y solo recibe el id entero de la sesión; los reportes pasan por una cola de 1 cada 2 s, un `iniciar` a menos de 5 s del anterior se descarta y el servicio tiene `pids_limit: 256` (`docker-compose.yml`). |
 | La microSD se llena: sin purga de reportes ni de sesiones | Cada sesión deja un CSV en `/data/reportes` y una fila en `sesiones`, y nada los borra (decisión de retención: no hay purga). Limpieza manual en [Reportes CSV](#reportes-csv). |
 | El panel de la pantalla no tiene autorización local | Quien esté frente a la pantalla táctil (ILI9341) puede abrir la puerta, probar la luz e iniciar o terminar la sesión: el panel no pide PIN ni pulsación larga, y el usuario MQTT `pantalla` puede publicar `aula/sesion/cmd` y `aula/actuador/cmd`. Mitigaciones actuales: iniciar y terminar piden un segundo toque, y "Abrir puerta" y encender la luz de prueba tienen un enfriamiento de 2 s (apagarla nunca se bloquea). Un PIN o una pulsación larga quedan para que el equipo lo decida. |
 | La Guía de registro se puede mantener abierta con mensajes repetidos | Un `aula/vision/enrolamiento` con `estado` `esperando_pose` y `paso` ≤ 1 se toma como el inicio de un registro nuevo: reabre la Guía aunque el profesor la haya cerrado con "Salir", reemplaza una Guía de otra cuenta y reinicia el techo `GUIA_MAX_S`. Así, quien tenga las credenciales de `vision` o de `nodered` (los dos pueden escribir ese tópico según la ACL) puede mantener la pantalla en la Guía, sin los botones de puerta, luz y sesión, publicando ese mensaje cada pocos segundos. También la reabre un reintento de la primera pose tras una `rechazada`. Se acepta porque los dos roles son de confianza y la regla evita que un mensaje final perdido (QoS 0) oculte el registro siguiente. Para cerrarlo a bajo costo: tratarlo como inicio solo si la Guía actual lleva más de unos 30 s sin progreso, o una sola vez por cuenta dentro de `GUIA_VENCE_S`. |
 | La luz de prueba puede apagar una luz que la visión encendió | "Probar luz LED" publica `luz:1` y, 3 s después, `luz:0` de forma automática. Si en ese lapso el servicio de visión encendió la tira para una captura, el `luz:0` de la pantalla la apaga. El contrato no define prioridad entre quienes publican `luz` (pantalla, Node-RED y visión). El firmware de la XIAO prevé apagar la tira sola a los 360 s del último `luz:1`, lo que acota el daño si un `luz:0` se pierde, pero no resuelve la prioridad. |
 | Portainer controla el host | Portainer monta el socket de Docker (`/var/run/docker.sock`). Por eso su puerto solo escucha en la placa. |
+
+### Riesgos abiertos
+
+Problemas conocidos que no tienen decisión tomada. A diferencia de la tabla anterior, no son riesgos aceptados.
+
+| Riesgo | Detalle |
+|---|---|
+| Residual del gate de `/api` (a partir de la imagen `5.0.9-23`) | El error de stderr de Express por JSON mal formado ya no sale sin enmascarar: el gate de `/api` rechaza antes de parsear el cuerpo (400 si `Content-Length` no es numérico, 401, 403, 411 o 413), y `instalarEnmascaradoDeConsola()` (`nodered/registro-log.js`) enmascara lo que sale por `console.error` y `console.warn`. Quedan, como elemento menor: las rutas que no son `/api` (el editor, `/auth/token`) leen hasta 1 MB antes de `adminAuth`, inherente a Node-RED; el gate supone que `httpAdminRoot` y `httpNodeRoot` siguen en `/` (una prueba lo comprueba); y las excepciones no capturadas y los errores de arranque de `settings.js` los imprime Node sin enmascarar. Ver [nodered/AGENTS.md](../nodered/AGENTS.md#settings-e-imagen). |
+| `metricas_energia` crece sin purga | No hay purga (decisión de retención). Origen `npu`: hasta 2 filas por segundo (unas 172 800 al día en el peor caso). Origen `sistema`: una fila cada 10 s (unas 8 640 al día). Origen `ina219`: sin límite de ritmo en la ingesta. Sin decidir: purga, límite o ambos. |
+| Una prueba de reconocimiento durante una sesión abierta | Permitida por decisión del equipo. Un check-in real que coincida con una prueba puede necesitar repetirse. |
+| El último resultado de la prueba vive en memoria | `GET /api/enrolamiento/prueba` lo devuelve hasta la siguiente prueba o el reinicio de Node-RED. Cuenta y nombre solo salen con `reconocido` o `dudoso`. |
 
 ### Pendiente
 
