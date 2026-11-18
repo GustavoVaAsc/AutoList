@@ -31,19 +31,25 @@ FROM nodered/node-red:5.0.9@sha256:2ccd38b4066648bd5e17430c50a2f8102c566a82fd4f2
 COPY package.json package-lock.json /usr/src/node-red/
 RUN npm ci --omit=dev --ignore-scripts --no-update-notifier --no-fund
 
+# Producción: con NODE_ENV sin definir, Express responde a un cuerpo JSON mal formado (el bodyParser de la app del
+# editor, que no pasa por la autenticación de la API) con la pila del error, y se la entrega a un cliente sin
+# credenciales. Node-RED solo mira NODE_ENV para "development" (editor-api, theme.js). Va después de npm ci (que ya
+# pasa --omit=dev) y solo en esta etapa: la del frontend instala devDependencies (Vite) y no debe tenerlo.
+ENV NODE_ENV=production
+
 # Los ajustes van en /etc/nodered, un directorio de root (755) con el archivo
 # en 644. En /usr/src/node-red el usuario node-red puede borrar y reemplazar
 # archivos aunque sean de root, porque el directorio es suyo; aquí no. Así el
 # contenedor no puede quitar adminAuth, la autenticación de la API
-# (autenticacion-api.js, que settings.js carga desde el mismo directorio), el HTTPS
-# ni el bloqueo de módulos.
+# (autenticacion-api.js, que settings.js carga desde el mismo directorio), el enmascarado de cuentas del
+# registro (registro-log.js, igual), el HTTPS ni el bloqueo de módulos.
 # settings.js encuentra bcryptjs por el NODE_PATH de la imagen base.
 # reporte_csv.py es el programa de Python que ejecuta el nodo exec de la pestaña Sesiones (CSV de
 # asistencia, plan sección 6.4). Va aquí por el mismo motivo: lo que ejecuta exec no debe poder
 # reescribirlo el contenedor. Usa solo la biblioteca estándar y el /usr/bin/python3 de la imagen base:
 # se verificó en la placa el 5 de noviembre de 2026 (es Python 3.14.10, enlace a python3.14), y el
 # paso 27 de orangepi/AGENTS.md lo vuelve a comprobar. No hace falta instalar nada (sin apk add).
-COPY settings.js autenticacion-api.js reporte_csv.py /etc/nodered/
+COPY settings.js autenticacion-api.js registro-log.js reporte_csv.py /etc/nodered/
 
 # El frontend compilado va en /usr/share/nodered-web, también de root y sin
 # escritura para el usuario node-red (mismo criterio que settings.js): si el
