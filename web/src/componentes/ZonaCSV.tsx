@@ -28,7 +28,7 @@ function traeArchivos(e: { dataTransfer: DataTransfer | null }): boolean {
  * Zona para soltar el CSV, con un botón que abre el selector de archivos: el
  * botón es la alternativa por teclado y para quien no arrastra, y es lo que
  * lee un lector de pantalla. Movimiento (estilos.css, `.zona`): al arrastrar
- * encima la zona se agranda un 1 % y aparece su anillo; al soltar hace un
+ * encima la zona se agranda un 1,5 % y aparece su anillo; al soltar hace un
  * rebote corto; al rechazar el archivo se sacude. El texto de la revisión
  * sale en AvisoImportacion, así que el movimiento solo refuerza.
  */

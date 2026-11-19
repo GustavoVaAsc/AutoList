@@ -225,7 +225,7 @@ Estado (6 nov): el menú base con las tres vistas, el táctil XPT2046 calibrado 
 ### 6.6 Almacenamiento y gráficas (en la Orange Pi)
 - Postgres con la imagen `pgvector/pgvector`: alumnos, sesiones, asistencias e intentos, más la tabla `metricas_energia` con las lecturas del INA219, las latencias y la temperatura del SoC.
 - Los promedios del reporte salen de consultas SQL sobre esa tabla.
-- **Las gráficas están en el frontend**, en la tercera pestaña, "Métricas y Asistencia", que consume la API de Node-RED:
+- **Las gráficas están en el frontend**, en las pestañas "Asistencia" (la tercera) y "Métricas" (la cuarta), que consumen la API de Node-RED:
   - asistencia por sesión;
   - latencia de inferencia;
   - potencia;
@@ -240,8 +240,9 @@ Estado (6 nov): el menú base con las tres vistas, el táctil XPT2046 calibrado 
 | Vista | Contenido |
 |---|---|
 | Alumnos | Lista por grupo con estado (pendiente o registrado), búsqueda por nombre o cuenta, ir a Registro con el alumno elegido y retirar el rostro (con confirmación); importación del CSV de la lista maestra. Volver a registrar a quien tiene rostro exige retirarlo antes |
-| Registro | Elegir al alumno, consentimiento, iniciar o cancelar, las 5 poses con su estado, motivo y miniatura, advertencia de parecido y resultado; el progreso se retoma al recargar la página. Con la vista libre, "Probar reconocimiento" (margen) pide un reconocimiento de prueba sin asistencia y muestra decisión, alumno, similitud, margen y latencia. Bajo las poses, "Última foto" muestra la última captura mientras el registro está abierto (efímera). El control manual de los actuadores está en Métricas |
-| Métricas y Asistencia | En este orden: hoja Sistema (visión, cámara y actuadores en línea; temperatura, CPU y RAM), hoja Actuadores (abrir la puerta con confirmación, LED, buzzer y luz), asistencia por sesión, energía y hoja de latencia de inferencia de la NPU, con los datos de la API de Node-RED |
+| Registro | Elegir al alumno, consentimiento, iniciar o cancelar, las 5 poses con su estado, motivo y miniatura, advertencia de parecido y resultado; el progreso se retoma al recargar la página. Bajo las poses, "Última foto" muestra la última captura mientras el registro está abierto (efímera). El control manual de los actuadores está en Métricas |
+| Asistencia | Vista inicial: asistencia por sesión, con su selector, búsqueda, tabla nominal, confianza de la sesión e intentos rechazados, y descarga del CSV al cerrar la sesión; con los datos de la API de Node-RED |
+| Métricas | En este orden: hoja Sistema (visión, cámara y actuadores en línea; temperatura, CPU y RAM), "Probar reconocimiento" (con su resultado), hoja Actuadores (abrir la puerta con confirmación, LED, buzzer y luz), energía y hoja de latencia de inferencia de la NPU, con los datos de la API de Node-RED |
 
 La importación del CSV de la lista maestra se hace desde la vista de Alumnos, con un `<input type="file" accept=".csv">` que sube el archivo a `POST /api/alumnos/importar` como cuerpo crudo (`Content-Type: text/csv; charset=utf-8`). El profesor la ejecuta una vez por grupo.
 
