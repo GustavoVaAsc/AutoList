@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { enviarOrden } from './api/actuadores'
-import { ENFRIAMIENTO_MS, type Orden } from './api/actuadoresRespuestas'
+import { ENFRIAMIENTO_MS, avisoOrdenEnviada, type Orden } from './api/actuadoresRespuestas'
 
-const AVISO_DEMASIADO_RAPIDO = { titulo: 'Demasiado rápido', descripcion: 'La orden no salió. Espera un segundo entre órdenes.' }
+const AVISO_DEMASIADO_RAPIDO = { titulo: 'Demasiado rápido', descripcion: 'La orden no salió. Espera un segundo.' }
 
 /** Lo que tarda la XIAO en publicar su estado nuevo y Node-RED en guardarlo, antes de volver a consultarlo. */
 const ESPERA_ESTADO_MS = 600
@@ -53,7 +53,7 @@ export function useActuadores(reconsultar: () => void): ControlActuadores {
       setEnviando(null)
       switch (resultado.tipo) {
         case 'enviada':
-          toast.success('Orden enviada', { description: orden.hecho })
+          toast.success(avisoOrdenEnviada(orden))
           temporizadores.current.push(window.setTimeout(() => reconsultarActual.current(), ESPERA_ESTADO_MS))
           break
         case 'demasiado-rapido':

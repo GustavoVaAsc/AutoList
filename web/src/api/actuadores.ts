@@ -34,6 +34,9 @@ export async function enviarOrden(cuerpo: CuerpoOrden): Promise<ResultadoOrden> 
     } catch {
       json = undefined
     }
+    if (respuesta.status >= 400) {
+      console.warn('POST', RUTA, 'respondió', respuesta.status, json)
+    }
     return interpretarOrden(respuesta.status, json)
   } finally {
     clearTimeout(temporizador)

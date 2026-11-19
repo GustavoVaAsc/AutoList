@@ -52,8 +52,7 @@ export function DialogoRetiro({ alumno, retirando, alConfirmar, alCancelar }: Pr
             Retirar el rostro de <bdi>{mostrado.nombre}</bdi>
           </h2>
           <p id="descripcion-retiro">
-            Se borran el rostro guardado (el vector con que se reconoce al alumno) y su consentimiento. El alumno sigue en la lista. Para volver a
-            registrarlo hará falta un consentimiento nuevo y repetir las cinco fotos. Esta acción no se puede deshacer.
+            Se borran su rostro y su consentimiento. El alumno sigue en la lista. No se puede deshacer.
           </p>
           <p className="etiqueta-tecnica">
             Cuenta {mostrado.cuenta} · Grupo <bdi>{mostrado.grupo}</bdi>
@@ -68,7 +67,7 @@ export function DialogoRetiro({ alumno, retirando, alConfirmar, alCancelar }: Pr
           </div>
           {retirando && (
             <p role="status" className="etiqueta-tecnica">
-              Retirando el rostro
+              Retirando el rostro…
             </p>
           )}
         </div>

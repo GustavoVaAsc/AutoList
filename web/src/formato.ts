@@ -68,6 +68,10 @@ export const formatearTemperatura = (t: number) => unDecimal.format(t)
 /** Porcentaje como entero: "34". */
 export const formatearPorcentaje = (p: number) => String(Math.round(p))
 
+/** La hora de `t` y, si cae en otro día que `referencia` (por ejemplo, la hora de la placa), también la fecha. */
+export const formatearHoraODia = (t: number, referencia: number) =>
+  diaDe(t) === diaDe(referencia) ? formatearHora(t) : formatearFechaYHora(t)
+
 /** "2 min", "45 s": antigüedad aproximada para avisos. */
 export function formatearAntiguedad(ms: number): string {
   const segundos = Math.max(0, Math.round(ms / 1000))

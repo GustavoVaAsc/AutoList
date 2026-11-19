@@ -14,8 +14,7 @@ export function AvisoObsoleta() {
     <div className="aviso aviso--advertencia">
       <p className="aviso__titulo">Sin lecturas recientes</p>
       <p>
-        La última lectura llegó hace {formatearAntiguedad(edadMs)}. Revisa que la XIAO esté encendida y conectada a la
-        red del aula.
+        La última llegó hace {formatearAntiguedad(edadMs)}. Revisa que el nodo del aula esté encendido.
       </p>
     </div>
   )

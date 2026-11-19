@@ -27,7 +27,8 @@ export async function pedirLatencias(
   const { cuerpo, horaServidor } = await pedirJson(`${RUTA}?limite=${limite}`, senal, tiempoMaximoMs, false)
   const leido = leerLatencias(cuerpo)
   if (!leido.ok) {
-    throw new ErrorApi(`La API devolvió mediciones de latencia inválidas (${leido.motivo}). Avisa al responsable del borde.`)
+    console.warn(leido.motivo)
+    throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
   }
   return { mediciones: leido.mediciones, horaServidor }
 }

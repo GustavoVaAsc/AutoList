@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ErrorApi, ErrorSinSesion, TIEMPO_INICIAL_MS } from './api/energia'
+import { ErrorSinSesion, TIEMPO_INICIAL_MS, mensajeDeError } from './api/energia'
 import { pedirLatencias } from './api/latencia'
 import type { MedicionLatencia } from './api/latenciaRespuestas'
 
@@ -60,8 +60,7 @@ export function useLatencia(limite: number, cadaMs: number): EstadoLatencia {
           return
         }
         sinSesion = error instanceof ErrorSinSesion
-        const mensaje =
-          error instanceof ErrorApi ? error.message : 'Ocurrió un error inesperado al consultar la latencia.'
+        const mensaje = mensajeDeError(error)
         setEstado((anterior) => ({ ...anterior, error: mensaje, sinSesion }))
       } finally {
         enCurso = false

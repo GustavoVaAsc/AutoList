@@ -1,4 +1,4 @@
-// Lógica pura de la prueba de reconocimiento (botón "Probar reconocimiento" de Registro): validar la respuesta de
+// Lógica pura de la prueba de reconocimiento (botón "Probar reconocimiento" de Métricas): validar la respuesta de
 // GET /api/enrolamiento/prueba, traducir las de POST /api/enrolamiento/probar (pestaña Registro de
 // nodered/flows/flows.json) y poner en palabras lo que decidió la visión.
 // La prueba no marca asistencia ni necesita una sesión abierta; la respuesta no trae imagen.
@@ -147,7 +147,7 @@ export type ResultadoSolicitud =
 
 /** Cuando no hubo respuesta (sin red o plazo agotado): puede que la API sí publicara la orden. */
 export const SIN_RESPUESTA =
-  'No hubo respuesta de la API (sin conexión o tardó demasiado). No se sabe si la prueba salió: revisa el resultado antes de reintentar.'
+  'La placa no respondió. No se sabe si la prueba salió: revisa el resultado antes de reintentar.'
 
 function fallo(status: number, mensaje: string): ResultadoSolicitud {
   return { tipo: 'fallo', status, mensaje }
@@ -157,7 +157,7 @@ function fallo(status: number, mensaje: string): ResultadoSolicitud {
 export function interpretarSolicitud(status: number, cuerpo: unknown): ResultadoSolicitud {
   const o = objeto(cuerpo)
   if (status === 202) {
-    return o !== null && o.pendiente === true ? { tipo: 'solicitada' } : fallo(status, 'La API respondió algo que la vista no reconoce. Revisa el resultado antes de reintentar.')
+    return o !== null && o.pendiente === true ? { tipo: 'solicitada' } : fallo(status, 'La placa respondió algo inesperado. Revisa el resultado antes de reintentar.')
   }
   if (status === 409) {
     if (o?.motivo === 'registro_abierto') {
@@ -166,21 +166,18 @@ export function interpretarSolicitud(status: number, cuerpo: unknown): Resultado
     if (o?.motivo === 'prueba_pendiente') {
       return { tipo: 'en-curso' }
     }
-    return fallo(status, 'La API respondió con un conflicto que la vista no reconoce. Revisa el estado del registro.')
+    return fallo(status, 'No se pudo pedir la prueba: hubo un conflicto. Intenta de nuevo.')
   }
   if (status === 429) {
     return { tipo: 'demasiado-rapido' }
   }
   if (status === 401) {
-    return fallo(status, 'La API pide usuario y contraseña del profesor y no se completó el inicio de sesión.')
+    return fallo(status, 'Falta iniciar sesión.')
   }
   if (status === 403) {
-    return fallo(status, 'La API rechazó la petición por venir de otro sitio. Recarga la página e inténtalo de nuevo.')
+    return fallo(status, 'La placa rechazó la petición. Recarga la página e intenta de nuevo.')
   }
-  if (status === 500) {
-    return fallo(status, 'Node-RED no pudo procesar la prueba. Revisa su registro si sigue pasando.')
-  }
-  return fallo(status, `La API respondió con el error ${status}. Espera unos segundos; si sigue igual, avisa al responsable del borde.`)
+  return fallo(status, 'La placa no pudo atender la prueba. Intenta de nuevo en unos segundos.')
 }
 
 // ---- Qué decir ---------------------------------------------------------------------------------------------------
@@ -195,32 +192,32 @@ export const TITULO_DECISION: Record<DecisionPrueba, string> = {
 }
 
 const DETALLE_DECISION: Record<DecisionPrueba, string> = {
-  reconocido: 'La visión reconoce a la persona que está frente a la cámara.',
-  dudoso: 'La similitud quedó en la zona gris: la visión no está segura de quién es.',
-  desconocido: 'La visión no encontró a esta persona entre los rostros registrados.',
+  reconocido: 'Reconoce a quien está frente a la cámara.',
+  dudoso: 'La similitud quedó en la zona gris: no está seguro de quién es.',
+  desconocido: 'No encontró a esta persona entre los rostros registrados.',
   sin_rostro: 'La cámara no vio ningún rostro.',
   imagen_insuficiente: 'La foto no sirvió para decidir.',
-  error: 'El servicio de visión no pudo terminar la prueba.',
+  error: 'No se pudo terminar la prueba.',
 }
 
 // Los códigos de `motivo` de aula/vision/resultado (contrato MQTT, sección 4).
 const MOTIVOS: Record<string, string> = {
-  captura_fallida: 'La cámara no pudo tomar la foto.',
-  imagen_insuficiente: 'La foto no tiene la nitidez suficiente para decidir.',
+  captura_fallida: 'No se pudo tomar la foto.',
+  imagen_insuficiente: 'La foto no tiene la nitidez suficiente.',
   sin_rostro: 'No se vio ningún rostro.',
   desconocido: 'Ningún rostro registrado se parece lo bastante.',
-  galeria_vacia: 'Todavía no hay rostros registrados con los que comparar.',
-  error_interno: 'El servicio de visión tuvo un error interno.',
-  ocupado: 'El servicio de visión está ocupado con otra tarea: un registro o un pase de lista en curso.',
-  cuenta_invalida: 'La cuenta que recibió el servicio de visión no es válida.',
+  galeria_vacia: 'Todavía no hay rostros registrados.',
+  error_interno: 'El reconocimiento tuvo un error. Intenta de nuevo.',
+  ocupado: 'El reconocimiento está ocupado con un registro o un pase de lista.',
+  cuenta_invalida: 'La cuenta no es válida.',
 }
 
-/** Traduce el código de un motivo; sin motivo, texto vacío. Un código nuevo se nombra tal cual. */
+/** Traduce el código de un motivo; sin motivo, texto vacío. Un código nuevo dice lo mismo que `error_interno`. */
 export function traducirMotivoPrueba(motivo: string | null): string {
   if (motivo === null) {
     return ''
   }
-  return MOTIVOS[motivo] ?? `Motivo sin traducir (código ${motivo}).`
+  return MOTIVOS[motivo] ?? MOTIVOS.error_interno!
 }
 
 export type TonoPrueba = 'exito' | 'neutro' | 'error'
@@ -254,12 +251,18 @@ export function faseDePrueba(prueba: Prueba | null): FasePrueba {
   return prueba.resultado === null ? 'sin-respuesta' : 'resultado'
 }
 
+/** Lo que dice el aviso cuando la prueba no sale porque hay un registro abierto. */
+export const AVISO_REGISTRO_ABIERTO = {
+  titulo: 'Hay un registro abierto',
+  descripcion: 'Termínalo o cancélalo en Registro antes de probar.',
+}
+
 export const TEXTO_PENDIENTE = {
   titulo: 'Tomando la foto…',
-  detalle: 'La visión enciende la luz, toma varias fotos y decide. Suele tardar unos segundos.',
+  detalle: 'Suele tardar unos segundos.',
 }
 
 export const TEXTO_SIN_RESPUESTA = {
-  titulo: 'La visión no contestó',
-  detalle: 'No llegó ningún resultado a tiempo. Revisa que el servicio de visión esté corriendo en la placa y vuelve a probar.',
+  titulo: 'Sin resultado',
+  detalle: 'No llegó ningún resultado a tiempo. Vuelve a probar.',
 }

@@ -24,6 +24,18 @@ export class ErrorApi extends Error {}
  */
 export class ErrorSinSesion extends ErrorApi {}
 
+/**
+ * El mensaje que ve la persona para un fallo de una consulta: el de un ErrorApi ya
+ * viene redactado; cualquier otro error se deja en la consola y se dice algo corto.
+ */
+export function mensajeDeError(error: unknown): string {
+  if (error instanceof ErrorApi) {
+    return error.message
+  }
+  console.error(error)
+  return 'La placa respondió algo inesperado. Intenta de nuevo.'
+}
+
 const RUTA = '/api/metricas/energia'
 const TIEMPO_MAXIMO_MS = 8000
 /**
@@ -42,14 +54,16 @@ function esNumero(valor: unknown): valor is number {
 /** Convierte el JSON de la API en lecturas, de la más vieja a la más nueva. */
 export function leerLecturas(cuerpo: unknown): Lectura[] {
   if (!Array.isArray(cuerpo)) {
-    throw new ErrorApi('La API devolvió datos que la vista no reconoce (se esperaba una lista de lecturas). Avisa al responsable del borde.')
+    console.warn('La respuesta de lecturas no es una lista')
+    throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
   }
   const lecturas = cuerpo.map((elemento: unknown, posicion): Lectura => {
     const fila = (typeof elemento === 'object' && elemento !== null ? elemento : {}) as Record<string, unknown>
     const t = typeof fila.hora === 'string' ? Date.parse(fila.hora) : NaN
     const { v, i, p } = fila
     if (Number.isNaN(t) || !esNumero(v) || !esNumero(i) || !esNumero(p)) {
-      throw new ErrorApi(`La lectura ${posicion + 1} de la respuesta no tiene hora, voltaje, corriente y potencia válidos. Avisa al responsable del borde.`)
+      console.warn(`La lectura ${posicion + 1} no tiene hora, voltaje, corriente y potencia válidos`)
+      throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
     }
     return { t, v, i, p }
   })
@@ -82,7 +96,7 @@ export async function pedirLecturas(
   const alCancelar = () => controlador.abort()
   senal.addEventListener('abort', alCancelar)
   const temporizador = setTimeout(() => controlador.abort(), tiempoMaximoMs)
-  const tiempoAgotado = () => new ErrorApi('La API tardó demasiado en responder. Revisa la conexión con la placa.')
+  const tiempoAgotado = () => new ErrorApi('La placa tardó en responder.')
   try {
     let respuesta: Response
     try {
@@ -96,13 +110,14 @@ export async function pedirLecturas(
       }
       throw controlador.signal.aborted
         ? tiempoAgotado()
-        : new ErrorApi('No se pudo conectar con la API. Revisa que la placa esté encendida y conectada a la red del aula.')
+        : new ErrorApi('No hay conexión con la placa.')
     }
     if (respuesta.status === 401) {
-      throw new ErrorSinSesion('La API pide usuario y contraseña del profesor y no se completó el inicio de sesión.')
+      throw new ErrorSinSesion('Falta iniciar sesión.')
     }
     if (!respuesta.ok) {
-      throw new ErrorApi(`La API respondió con el error ${respuesta.status}. Espera unos segundos; si sigue igual, avisa al responsable del borde.`)
+      console.warn('La placa respondió', respuesta.status, respuesta.url)
+      throw new ErrorApi('La placa no pudo atender la petición. Intenta de nuevo en unos segundos.')
     }
     let cuerpo: unknown
     try {
@@ -111,7 +126,10 @@ export async function pedirLecturas(
       if (senal.aborted) {
         throw error
       }
-      throw controlador.signal.aborted ? tiempoAgotado() : new ErrorApi('La API respondió algo que no es JSON válido. Avisa al responsable del borde.')
+      if (!controlador.signal.aborted) {
+        console.warn('La respuesta de', respuesta.url, 'no es JSON válido')
+      }
+      throw controlador.signal.aborted ? tiempoAgotado() : new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
     }
     const fechaServidor = Date.parse(respuesta.headers.get('Date') ?? '')
     return {

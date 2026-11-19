@@ -98,7 +98,7 @@ function fechaONula(valor: unknown): number | null | undefined {
   return Number.isNaN(ms) ? undefined : ms
 }
 
-const NO_RECONOCIDO = 'La API devolvió un estado del registro que la vista no reconoce. Avisa al responsable del borde.'
+const NO_RECONOCIDO = 'el estado del registro no tiene la forma esperada'
 
 /**
  * Valida GET /api/enrolamiento/estado. Se copian solo los campos conocidos:
@@ -186,26 +186,26 @@ export const ETIQUETA_POSE: Record<NombrePose, string> = {
 const MOTIVOS: Record<string, string> = {
   sin_rostro: 'No se vio ningún rostro.',
   varios_rostros: 'Se vio más de un rostro.',
-  rostro_chico: 'El rostro se ve muy pequeño: el alumno debe acercarse a la cámara.',
+  rostro_chico: 'El rostro se ve muy pequeño: que se acerque a la cámara.',
   borrosa: 'La foto salió borrosa.',
   giro_excesivo: 'La cabeza está demasiado girada.',
-  fallo_captura: 'La cámara no pudo tomar la foto.',
-  ocupado: 'El servicio de visión está ocupado con otra tarea.',
-  inconsistente: 'Las fotos no se parecen entre sí.',
-  npu: 'El servicio de visión no pudo procesar las fotos (falló la NPU o se rechazaron demasiadas veces las poses).',
-  cuenta_invalida: 'La cuenta que recibió el servicio de visión no es válida.',
-  vencido: 'Pasaron 5 minutos sin noticias del servicio de visión.',
-  no_guardado: 'La base de datos no guardó el rostro.',
-  embedding_invalido: 'El servicio de visión mandó un resultado que no se pudo usar.',
-  desconocido: 'El servicio de visión terminó con un error sin motivo conocido.',
+  fallo_captura: 'No se pudo tomar la foto. Intenta de nuevo.',
+  ocupado: 'El reconocimiento está ocupado. Espera unos segundos y repite el registro.',
+  inconsistente: 'Las fotos no se parecen entre sí. Repite el registro.',
+  npu: 'No se pudieron procesar las fotos. Repite el registro.',
+  cuenta_invalida: 'La cuenta no es válida. Elige al alumno otra vez.',
+  vencido: 'El registro tardó demasiado y se canceló. Repítelo.',
+  no_guardado: 'No se pudo guardar el rostro. Repite el registro.',
+  embedding_invalido: 'No se pudo usar el resultado. Repite el registro.',
+  desconocido: 'El registro terminó con un error. Repítelo.',
 }
 
-/** Traduce el código de un motivo; sin motivo, texto vacío. Un código nuevo se nombra tal cual. */
+/** Traduce el código de un motivo; sin motivo, texto vacío. Un código nuevo dice lo mismo que `desconocido`. */
 export function traducirMotivo(motivo: string | null): string {
   if (motivo === null) {
     return ''
   }
-  return MOTIVOS[motivo] ?? `Motivo sin traducir (código ${motivo}).`
+  return MOTIVOS[motivo] ?? MOTIVOS.desconocido!
 }
 
 const ESTADO_POSE: Record<EstadoPose, string> = {
@@ -356,8 +356,8 @@ export function resumirRegistro(registro: Registro): ResumenRegistro {
   switch (registro.estado) {
     case 'esperando_vision':
       return {
-        titulo: 'Esperando al servicio de visión',
-        detalle: 'Si el servicio de visión no está corriendo en la placa, el registro no avanza y se cancela solo a los 5 minutos.',
+        titulo: 'Esperando al reconocimiento',
+        detalle: 'Si no responde, el registro se cancela solo a los 5 minutos.',
         tono: 'advertencia',
       }
     case 'en_curso': {
@@ -371,7 +371,7 @@ export function resumirRegistro(registro: Registro): ResumenRegistro {
     case 'guardando':
       return {
         titulo: 'Guardando el rostro',
-        detalle: 'Las cinco poses están aceptadas. Falta recibir el resultado y guardarlo en la base de datos.',
+        detalle: 'Las cinco poses están aceptadas. Falta guardar el rostro.',
         tono: 'neutro',
       }
     case 'completado':
@@ -408,19 +408,19 @@ function motivoDe(cuerpo: unknown): string | null {
 function falloGenerico(status: number, accion: string): { tipo: 'fallo'; status: number; mensaje: string } {
   switch (status) {
     case 400:
-      return { tipo: 'fallo', status, mensaje: `La API rechazó los datos enviados. ${accion}` }
+      return { tipo: 'fallo', status, mensaje: `La placa rechazó los datos enviados. ${accion}` }
     case 401:
-      return { tipo: 'fallo', status, mensaje: `La API pide usuario y contraseña del profesor y no se completó el inicio de sesión. ${accion}` }
+      return { tipo: 'fallo', status, mensaje: `Falta iniciar sesión. ${accion}` }
     case 403:
       return {
         tipo: 'fallo',
         status,
-        mensaje: `La API rechazó la petición por su origen o su cabecera de seguridad. Abre la página desde la dirección de la placa (https://<ip-de-la-placa>:1880/app/). ${accion}`,
+        mensaje: `La placa rechazó la petición. Recarga la página e intenta de nuevo. ${accion}`,
       }
     case 415:
-      return { tipo: 'fallo', status, mensaje: `La API rechazó el tipo de contenido enviado. ${accion}` }
+      return { tipo: 'fallo', status, mensaje: `La placa rechazó la petición. ${accion}` }
     default:
-      return { tipo: 'fallo', status, mensaje: `La API respondió con el error ${status}. ${accion} Si sigue igual, avisa al responsable del borde.` }
+      return { tipo: 'fallo', status, mensaje: `La placa no pudo atender la petición. ${accion}` }
   }
 }
 
@@ -459,7 +459,7 @@ export function interpretarInicio(status: number, cuerpo: unknown): ResultadoIni
     if (motivo === 'interrumpido') {
       return { tipo: 'interrumpido' }
     }
-    return fallo(status, 'La API rechazó el registro porque hay un conflicto con el estado actual. No se inició.')
+    return fallo(status, 'No se inició el registro: hubo un conflicto. Intenta de nuevo.')
   }
   return falloGenerico(status, 'No se inició el registro.')
 }
@@ -475,7 +475,7 @@ export function interpretarCancelacion(status: number, cuerpo: unknown): Resulta
     const o = objeto(cuerpo)
     return typeof o?.cancelado === 'boolean'
       ? { tipo: 'cancelado', habia: o.cancelado }
-      : fallo(status, 'La API respondió algo que la vista no reconoce. Revisa el estado del registro.')
+      : fallo(status, 'La placa respondió algo inesperado. Revisa el estado del registro.')
   }
   return falloGenerico(status, 'No se pudo confirmar la cancelación: revisa el estado del registro.')
 }
@@ -494,7 +494,7 @@ export function interpretarRetiro(status: number, cuerpo: unknown): ResultadoRet
     const o = objeto(cuerpo)
     return typeof o?.retirado === 'boolean'
       ? { tipo: 'retirado', habiaRostro: o.retirado }
-      : fallo(status, 'La API respondió algo que la vista no reconoce. Revisa la lista antes de reintentar.')
+      : fallo(status, 'La placa respondió algo inesperado. Revisa la lista antes de reintentar.')
   }
   if (status === 404) {
     return { tipo: 'no-existe' }
@@ -518,30 +518,29 @@ export function avisoDeInicio(resultado: ResultadoInicio): AvisoRegistro | null 
     case 'iniciado':
       return null
     case 'no-existe':
-      return { tono: 'error', titulo: 'El alumno ya no está en la lista', texto: 'La cuenta no existe en la lista de alumnos. Revisa la lista en Alumnos y vuelve a elegir.' }
+      return { tono: 'error', titulo: 'El alumno ya no está en la lista', texto: 'Revisa la lista en Alumnos y vuelve a elegir.' }
     case 'tiene-rostro':
-      return { tono: 'error', titulo: 'El alumno ya tiene rostro registrado', texto: 'Para volver a registrarlo, retira primero su rostro en Alumnos. Después hace falta un consentimiento nuevo.' }
+      return { tono: 'error', titulo: 'El alumno ya tiene rostro registrado', texto: 'Para volver a registrarlo, retira antes su rostro en Alumnos. Hará falta un consentimiento nuevo.' }
     case 'ocupado':
-      return { tono: 'advertencia', titulo: 'Ya había un registro abierto', texto: 'Se retomó el registro que estaba abierto. Termínalo o cancélalo antes de iniciar otro.' }
+      return { tono: 'advertencia', titulo: 'Ya había un registro abierto', texto: 'Se retomó ese registro. Termínalo o cancélalo antes de iniciar otro.' }
     case 'prueba-en-curso':
       return {
         tono: 'advertencia',
         titulo: 'Hay una prueba de reconocimiento en curso',
-        texto: 'La visión está ocupada con la prueba. Espera unos segundos a que termine y vuelve a iniciar el registro.',
+        texto: 'Espera unos segundos y vuelve a iniciar el registro.',
       }
     case 'interrumpido':
-      return { tono: 'advertencia', titulo: 'El registro se interrumpió antes de empezar', texto: 'Se canceló mientras se guardaba el consentimiento. Vuelve a iniciarlo.' }
+      return { tono: 'advertencia', titulo: 'El registro se interrumpió', texto: 'Se canceló antes de empezar. Vuelve a iniciarlo.' }
     case 'fallo':
       return { tono: 'error', titulo: 'No se pudo iniciar el registro', texto: resultado.mensaje }
   }
 }
 
-/** Lo que dice la vista cuando el registro abierto desaparece de Node-RED (reinicio o despliegue de los flujos). */
+/** Lo que dice la vista cuando el registro abierto desaparece de la placa (por ejemplo, tras un reinicio). */
 export const AVISO_REGISTRO_PERDIDO: AvisoRegistro = {
   tono: 'advertencia',
   titulo: 'El registro ya no está abierto',
-  texto:
-    'Node-RED no tiene ningún registro abierto: se reinició o se desplegaron los flujos. Revisa en Alumnos si el rostro quedó registrado y, si no, vuelve a iniciarlo.',
+  texto: 'Revisa en Alumnos si el rostro quedó registrado y, si no, vuelve a iniciarlo.',
 }
 
 /** Qué dice la vista cuando cancelar no se pudo confirmar (null si se confirmó). */

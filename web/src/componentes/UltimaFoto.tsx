@@ -9,8 +9,8 @@ interface Props {
 /**
  * El recuadro de la última foto, debajo de las cinco poses: la miniatura que mandó la cámara
  * (JPEG de hasta 160x120) en grande, con la pose y su estado en palabras debajo, y el motivo si
- * se rechazó. Las miniaturas de cada pose siguen en su renglón. Sin ninguna foto dice que
- * todavía no llega ninguna: no pinta una imagen ni un avance de mentira. Es efímera como las
+ * se rechazó. Las miniaturas de cada pose siguen en su renglón. Sin ninguna foto lo dice:
+ * no pinta una imagen ni un avance de mentira. Es efímera como las
  * miniaturas: vive en la memoria de la página mientras el registro está abierto.
  */
 export function UltimaFoto({ captura }: Props) {
@@ -25,14 +25,14 @@ export function UltimaFoto({ captura }: Props) {
         {captura === null || texto === null ? '' : `${texto.leyenda}${captura.intento > 1 ? `, intento ${captura.intento}` : ''}. ${texto.detalle ?? ''}`.trim()}
       </p>
       {captura === null || texto === null ? (
-        <p className="ultima-foto__vacio">Todavía no llega ninguna foto. Aquí aparecerá la última que tome la cámara.</p>
+        <p className="ultima-foto__vacio">Aún no hay fotos.</p>
       ) : (
         <figure className={`ultima-foto__figura ultima-foto__figura--${captura.estado}`} key={`${captura.pose}|${captura.estado}|${captura.motivo ?? ''}|${captura.miniatura ?? ''}`}>
           {captura.miniatura !== null ? (
             <img className="ultima-foto__imagen" src={`data:image/jpeg;base64,${captura.miniatura}`} alt={texto.alt} />
           ) : (
             <p className="ultima-foto__sin-imagen" role="img" aria-label={texto.alt}>
-              La visión no mandó la imagen de esta foto.
+              Sin imagen de esta foto.
             </p>
           )}
           <figcaption className="ultima-foto__leyenda">

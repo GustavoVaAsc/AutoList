@@ -24,7 +24,8 @@ export async function pedirSistema(
   const { cuerpo, horaServidor } = await pedirJson(RUTA, senal, tiempoMaximoMs, false)
   const leido = leerSistema(cuerpo)
   if (!leido.ok) {
-    throw new ErrorApi(`La API devolvió un estado del sistema inválido (${leido.motivo}). Avisa al responsable del borde.`)
+    console.warn(leido.motivo)
+    throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
   }
   return { sistema: leido.sistema, horaServidor }
 }

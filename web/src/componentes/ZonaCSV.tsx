@@ -135,8 +135,8 @@ export function ZonaCSV({ enviando, archivo, alElegir }: Props) {
       onDragOver={alPasarEncima}
       onDrop={alSoltar}
     >
-      <h2 id="titulo-importar" className="zona__titulo">Importar la lista maestra</h2>
-      <p>Suelta aquí el archivo CSV de un grupo o elígelo desde tu equipo.</p>
+      <h2 id="titulo-importar" className="zona__titulo">Importar lista de alumnos</h2>
+      <p>Suelta aquí el CSV o elígelo en tu equipo.</p>
       {/* aria-disabled y no disabled: el botón conserva el foco mientras se importa. */}
       <button
         type="button"
@@ -149,7 +149,7 @@ export function ZonaCSV({ enviando, archivo, alElegir }: Props) {
           }
         }}
       >
-        {enviando ? 'Importando' : 'Elegir archivo CSV'}
+        {enviando ? 'Importando…' : 'Elegir archivo CSV'}
       </button>
       <input
         ref={entrada}
@@ -166,7 +166,7 @@ export function ZonaCSV({ enviando, archivo, alElegir }: Props) {
         }}
       />
       <p id="ayuda-csv" className="etiqueta-tecnica zona__ayuda">
-        Columnas <code>no_cuenta,nombre,grupo</code>, hasta 500 filas y 256 KiB. Desde Excel, guárdalo como CSV UTF-8 (delimitado por comas).
+        Columnas <code>no_cuenta,nombre,grupo</code>. Hasta 500 filas y 256 KiB.
       </p>
       {enviando && archivo !== null && (
         <p role="status" className="etiqueta-tecnica zona__archivo">

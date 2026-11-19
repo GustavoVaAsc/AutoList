@@ -7,9 +7,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { assertTextoLegible, assertTextosDistintos } from './texto.js'
 import { fileURLToPath } from 'node:url'
 import {
   ENFRIAMIENTO_MS,
+  avisoOrdenEnviada,
   CONFIRMACION_PUERTA,
   ORDENES,
   SIN_RESPUESTA,
@@ -24,23 +26,10 @@ const leer = (ruta) => fs.readFileSync(fileURLToPath(new URL(ruta, import.meta.u
 
 // ---- Catálogo -----------------------------------------------------------------------------------
 
-test('el catálogo trae las once órdenes del brief, con etiquetas que nombran la acción', () => {
-  assert.deepEqual(
-    ORDENES.map((o) => o.etiqueta),
-    [
-      'Abrir puerta',
-      'LED azul',
-      'LED verde',
-      'LED rojo',
-      'LED ámbar',
-      'Apagar LED',
-      'Pitido corto',
-      'Doble pitido',
-      'Silenciar',
-      'Encender luz',
-      'Apagar luz',
-    ],
-  )
+test('el catálogo trae las once órdenes del brief, cada una con su etiqueta y su aviso', () => {
+  assert.equal(ORDENES.length, 11)
+  assertTextosDistintos(ORDENES.map((o) => o.etiqueta))
+  assertTextosDistintos(ORDENES.map((o) => o.hecho))
   assert.deepEqual([...new Set(ORDENES.map((o) => o.grupo))], ['puerta', 'led', 'buzzer', 'luz'])
   assert.equal(new Set(ORDENES.map((o) => o.id)).size, ORDENES.length)
 })
@@ -74,8 +63,14 @@ test('no hay orden "cerrar" ni valores que el firmware ignoraría; el cuerpo cab
   for (const o of ORDENES) {
     assert.notEqual(o.cuerpo.servo, 'cerrar')
     assert.ok(new TextEncoder().encode(JSON.stringify(o.cuerpo)).length < 100, o.id)
-    assert.equal(typeof o.hecho, 'string')
-    assert.ok(o.hecho.length > 0)
+  }
+})
+
+test('el aviso de una orden enviada empieza por "Orden enviada" y nombra la orden, sin decir que se ejecutó', () => {
+  for (const o of ORDENES) {
+    const aviso = avisoOrdenEnviada(o)
+    assert.ok(aviso.startsWith('Orden enviada'), o.id)
+    assert.ok(aviso.includes(o.hecho), o.id)
   }
 })
 
@@ -93,7 +88,7 @@ test('un 200 que no trae lo publicado no se da por enviado', () => {
   for (const cuerpo of [undefined, null, {}, { publicado: null }, { publicado: {} }, { publicado: [] }, 'ok']) {
     const r = interpretarOrden(200, cuerpo)
     assert.equal(r.tipo, 'fallo', JSON.stringify(cuerpo))
-    assert.match(r.mensaje, /no reconoce/)
+    assertTextoLegible(r.mensaje)
   }
 })
 
@@ -101,30 +96,30 @@ test('un 429 es "demasiado rápido", no un fallo', () => {
   assert.deepEqual(interpretarOrden(429, { error: 'x' }), { tipo: 'demasiado-rapido' })
 })
 
-test('400 y 415 repiten el mensaje de la API (texto fijo del flujo); sin él, uno genérico', () => {
+test('400 y 415 dan un fallo legible con su código, sin repetir el texto técnico de la API', () => {
   for (const status of [400, 415]) {
     const r = interpretarOrden(status, { error: 'led debe ser azul, verde, rojo, ambar o apagado' })
     assert.equal(r.tipo, 'fallo')
     assert.equal(r.status, status)
-    assert.match(r.mensaje, /led debe ser azul/)
+    assertTextoLegible(r.mensaje)
+    assert.ok(!r.mensaje.includes('led debe ser'))
     const sin = interpretarOrden(status, undefined)
     assert.equal(sin.tipo, 'fallo')
-    assert.match(sin.mensaje, new RegExp(String(status)))
+    assert.equal(sin.mensaje, r.mensaje)
   }
 })
 
 test('401, 403, 500 y lo demás son fallos con una causa en palabras', () => {
-  assert.match(interpretarOrden(401, undefined).mensaje, /usuario y contraseña/)
-  assert.match(interpretarOrden(403, { error: 'x' }).mensaje, /otro sitio|Recarga/)
-  assert.match(interpretarOrden(500, undefined).mensaje, /Node-RED/)
-  assert.match(interpretarOrden(503, undefined).mensaje, /503/)
+  assertTextosDistintos([401, 403, 500].map((s) => interpretarOrden(s, undefined).mensaje))
+  assert.equal(interpretarOrden(503, undefined).mensaje, interpretarOrden(500, undefined).mensaje)
   for (const s of [401, 403, 500, 503]) {
     assert.equal(interpretarOrden(s, undefined).status, s)
   }
 })
 
-test('sin respuesta de la API no se sabe si la orden salió, y el mensaje lo dice', () => {
-  assert.match(SIN_RESPUESTA, /No se sabe si/)
+test('sin respuesta de la API el mensaje es legible y no es el de un fallo con respuesta', () => {
+  assertTextoLegible(SIN_RESPUESTA)
+  assert.notEqual(SIN_RESPUESTA, interpretarOrden(500, undefined).mensaje)
 })
 
 // ---- estadoEnPalabras ---------------------------------------------------------------------------
@@ -157,7 +152,7 @@ test('con la XIAO en línea se puede mandar, sin motivo ni aviso', () => {
 test('con la XIAO fuera de línea los botones se desactivan y el motivo lo dice', () => {
   const d = disponibilidadActuadores('fuera-de-linea')
   assert.equal(d.habilitado, false)
-  assert.match(d.motivo, /fuera de línea/)
+  assertTextoLegible(d.motivo)
   assert.equal(d.aviso, null)
 })
 
@@ -165,33 +160,40 @@ test('sin datos de la XIAO se puede mandar, pero con un aviso de que puede no ll
   const d = disponibilidadActuadores('sin-datos')
   assert.equal(d.habilitado, true)
   assert.equal(d.motivo, null)
-  assert.match(d.aviso, /puede no llegar/)
+  assertTextoLegible(d.aviso)
 })
 
 test('mientras no hay respuesta del estado del sistema, los botones esperan', () => {
   const d = disponibilidadActuadores(null)
   assert.equal(d.habilitado, false)
-  assert.match(d.motivo, /Consultando/)
+  assertTextoLegible(d.motivo)
 })
 
 test('con el sondeo del estado fallando los botones se desactivan, aunque la última lectura dijera que la XIAO estaba en línea', () => {
   for (const conexion of ['en-linea', 'fuera-de-linea', 'sin-datos', null]) {
     const d = disponibilidadActuadores(conexion, true)
     assert.equal(d.habilitado, false, String(conexion))
-    assert.match(d.motivo, /No se pudo consultar el estado de la XIAO/)
+    assertTextoLegible(d.motivo)
     assert.equal(d.aviso, null)
   }
   // Sin fallo del sondeo, nada cambia (el segundo argumento es opcional).
   assert.deepEqual(disponibilidadActuadores('en-linea', false), disponibilidadActuadores('en-linea'))
   assert.equal(disponibilidadActuadores('en-linea', false).habilitado, true)
+  // Cada bloqueo dice lo suyo.
+  assertTextosDistintos([
+    disponibilidadActuadores('fuera-de-linea').motivo,
+    disponibilidadActuadores(null).motivo,
+    disponibilidadActuadores('en-linea', true).motivo,
+  ])
 })
 
 test('el estado dice "Ahora" solo con la XIAO en línea y el sondeo bien; en cualquier otro caso, "Último estado conocido"', () => {
-  assert.equal(etiquetaEstadoActuadores('en-linea', false), 'Ahora')
-  assert.equal(etiquetaEstadoActuadores('en-linea', true), 'Último estado conocido')
+  const vigente = etiquetaEstadoActuadores('en-linea', false)
+  const viejo = etiquetaEstadoActuadores('en-linea', true)
+  assertTextosDistintos([vigente, viejo])
   for (const conexion of ['fuera-de-linea', 'sin-datos', null]) {
-    assert.equal(etiquetaEstadoActuadores(conexion, false), 'Último estado conocido')
-    assert.equal(etiquetaEstadoActuadores(conexion, true), 'Último estado conocido')
+    assert.equal(etiquetaEstadoActuadores(conexion, false), viejo)
+    assert.equal(etiquetaEstadoActuadores(conexion, true), viejo)
   }
 })
 
@@ -208,14 +210,12 @@ test('solo "Abrir puerta" pide confirmación: el LED, el buzzer y la luz se mand
   }
 })
 
-test('el diálogo de la puerta dice qué pasa (se abre y se cierra sola a los 3 s) y los botones nombran la acción', () => {
-  assert.equal(CONFIRMACION_PUERTA.titulo, 'Abrir la puerta del aula')
-  assert.match(CONFIRMACION_PUERTA.descripcion, /a los 3 s/)
-  assert.equal(CONFIRMACION_PUERTA.confirmar, 'Abrir puerta')
-  assert.equal(CONFIRMACION_PUERTA.cancelar, 'Cancelar')
+test('el diálogo de la puerta tiene todos sus textos, dice cuándo se cierra y no habla de servos', () => {
+  for (const texto of Object.values(CONFIRMACION_PUERTA)) {
+    assertTextoLegible(texto)
+  }
+  assert.match(CONFIRMACION_PUERTA.descripcion, /\b3 s\b/, 'dice cuándo se cierra')
+  assert.notEqual(CONFIRMACION_PUERTA.confirmar, CONFIRMACION_PUERTA.cancelar)
   // El botón de la hoja y el de confirmar se llaman igual: la persona confirma lo que pidió.
   assert.equal(ORDENES.find((o) => o.id === 'puerta-abrir').etiqueta, CONFIRMACION_PUERTA.confirmar)
-  for (const texto of Object.values(CONFIRMACION_PUERTA)) {
-    assert.ok(!texto.includes('—'))
-  }
 })

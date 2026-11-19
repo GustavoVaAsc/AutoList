@@ -18,36 +18,41 @@ export interface Orden {
   /** El texto del botón: nombra la acción. */
   etiqueta: string
   cuerpo: CuerpoOrden
-  /** Lo que dice el aviso cuando la orden salió. */
+  /** La orden en pocas palabras; el aviso dice "Orden enviada: {hecho}". Enviada no es ejecutada: la XIAO puede no confirmarla. */
   hecho: string
 }
 
 export const ORDENES: readonly Orden[] = [
-  { id: 'puerta-abrir', grupo: 'puerta', etiqueta: 'Abrir puerta', cuerpo: { servo: 'abrir' }, hecho: 'Se pidió abrir la puerta. Se cierra sola a los 3 s.' },
-  { id: 'led-azul', grupo: 'led', etiqueta: 'LED azul', cuerpo: { led: 'azul' }, hecho: 'Se pidió el LED azul.' },
-  { id: 'led-verde', grupo: 'led', etiqueta: 'LED verde', cuerpo: { led: 'verde' }, hecho: 'Se pidió el LED verde.' },
-  { id: 'led-rojo', grupo: 'led', etiqueta: 'LED rojo', cuerpo: { led: 'rojo' }, hecho: 'Se pidió el LED rojo.' },
-  { id: 'led-ambar', grupo: 'led', etiqueta: 'LED ámbar', cuerpo: { led: 'ambar' }, hecho: 'Se pidió el LED ámbar.' },
-  { id: 'led-apagado', grupo: 'led', etiqueta: 'Apagar LED', cuerpo: { led: 'apagado' }, hecho: 'Se pidió apagar el LED.' },
-  { id: 'buzzer-corto', grupo: 'buzzer', etiqueta: 'Pitido corto', cuerpo: { buzzer: 1 }, hecho: 'Se pidió un pitido corto.' },
-  { id: 'buzzer-doble', grupo: 'buzzer', etiqueta: 'Doble pitido', cuerpo: { buzzer: 2 }, hecho: 'Se pidió un doble pitido.' },
-  { id: 'buzzer-silencio', grupo: 'buzzer', etiqueta: 'Silenciar', cuerpo: { buzzer: 0 }, hecho: 'Se pidió silenciar el buzzer.' },
-  { id: 'luz-encender', grupo: 'luz', etiqueta: 'Encender luz', cuerpo: { luz: 1 }, hecho: 'Se pidió encender la luz. Se apaga sola a los 6 min.' },
-  { id: 'luz-apagar', grupo: 'luz', etiqueta: 'Apagar luz', cuerpo: { luz: 0 }, hecho: 'Se pidió apagar la luz.' },
+  { id: 'puerta-abrir', grupo: 'puerta', etiqueta: 'Abrir puerta', cuerpo: { servo: 'abrir' }, hecho: 'abrir puerta' },
+  { id: 'led-azul', grupo: 'led', etiqueta: 'LED azul', cuerpo: { led: 'azul' }, hecho: 'LED azul' },
+  { id: 'led-verde', grupo: 'led', etiqueta: 'LED verde', cuerpo: { led: 'verde' }, hecho: 'LED verde' },
+  { id: 'led-rojo', grupo: 'led', etiqueta: 'LED rojo', cuerpo: { led: 'rojo' }, hecho: 'LED rojo' },
+  { id: 'led-ambar', grupo: 'led', etiqueta: 'LED ámbar', cuerpo: { led: 'ambar' }, hecho: 'LED ámbar' },
+  { id: 'led-apagado', grupo: 'led', etiqueta: 'Apagar LED', cuerpo: { led: 'apagado' }, hecho: 'apagar LED' },
+  { id: 'buzzer-corto', grupo: 'buzzer', etiqueta: 'Pitido corto', cuerpo: { buzzer: 1 }, hecho: 'pitido corto' },
+  { id: 'buzzer-doble', grupo: 'buzzer', etiqueta: 'Doble pitido', cuerpo: { buzzer: 2 }, hecho: 'doble pitido' },
+  { id: 'buzzer-silencio', grupo: 'buzzer', etiqueta: 'Silenciar', cuerpo: { buzzer: 0 }, hecho: 'silenciar el buzzer' },
+  { id: 'luz-encender', grupo: 'luz', etiqueta: 'Encender luz', cuerpo: { luz: 1 }, hecho: 'encender luz' },
+  { id: 'luz-apagar', grupo: 'luz', etiqueta: 'Apagar luz', cuerpo: { luz: 0 }, hecho: 'apagar luz' },
 ]
+
+/** El aviso de una orden que salió: dice que se envió, no que la XIAO la aplicó. */
+export function avisoOrdenEnviada(orden: Orden): string {
+  return `Orden enviada: ${orden.hecho}`
+}
 
 /** Solo la puerta pide confirmación: abrirla da paso al aula. El LED, el buzzer y la luz se mandan con un clic. */
 export function pideConfirmacion(orden: Orden): boolean {
   return orden.grupo === 'puerta'
 }
 
-/** El texto del diálogo de confirmación de la puerta (el servo solo abre y se cierra solo a los 3 s). */
+/** El texto del diálogo de confirmación de la puerta (solo abre y se cierra sola a los 3 s). */
 export const CONFIRMACION_PUERTA = {
-  titulo: 'Abrir la puerta del aula',
-  descripcion: 'El servo abre la puerta ahora y la cierra solo a los 3 s. No hay una orden para cerrarla antes.',
+  titulo: 'Abrir la puerta',
+  descripcion: 'Se cierra sola a los 3 s.',
   cancelar: 'Cancelar',
   confirmar: 'Abrir puerta',
-  enviando: 'Enviando la orden',
+  enviando: 'Enviando la orden…',
 } as const
 
 /**
@@ -66,7 +71,7 @@ export type ResultadoOrden =
 
 /** Cuando no hubo respuesta (sin red o plazo agotado): puede que la API sí publicara. */
 export const SIN_RESPUESTA =
-  'No hubo respuesta de la API (sin conexión o tardó demasiado). No se sabe si la orden salió: revisa el estado de los actuadores antes de reintentar.'
+  'La placa no respondió. No se sabe si la orden salió: revisa el estado de los actuadores antes de reintentar.'
 
 function objeto(x: unknown): Record<string, unknown> | null {
   return typeof x === 'object' && x !== null && !Array.isArray(x) ? (x as Record<string, unknown>) : null
@@ -77,8 +82,8 @@ function fallo(status: number, mensaje: string): ResultadoOrden {
 }
 
 /**
- * Traduce la respuesta de POST /api/actuadores. El 400 y el 415 traen un texto fijo del flujo (nunca algo que
- * vino del cuerpo enviado), y se repite tal cual.
+ * Traduce la respuesta de POST /api/actuadores. El texto técnico que traigan el 400 y el 415 no se muestra: el
+ * cliente lo deja en la consola.
  */
 export function interpretarOrden(status: number, cuerpo: unknown): ResultadoOrden {
   const o = objeto(cuerpo)
@@ -86,24 +91,21 @@ export function interpretarOrden(status: number, cuerpo: unknown): ResultadoOrde
     const publicado = objeto(o?.publicado)
     return publicado !== null && Object.keys(publicado).length > 0
       ? { tipo: 'enviada', publicado }
-      : fallo(status, 'La API respondió algo que la vista no reconoce. Revisa el estado de los actuadores antes de reintentar.')
+      : fallo(status, 'La placa respondió algo inesperado. Revisa el estado de los actuadores antes de reintentar.')
   }
   if (status === 429) {
     return { tipo: 'demasiado-rapido' }
   }
   if (status === 400 || status === 415) {
-    return fallo(status, typeof o?.error === 'string' ? `La API rechazó la orden: ${o.error}.` : `La API rechazó la orden (error ${status}).`)
+    return fallo(status, 'La placa rechazó la orden.')
   }
   if (status === 401) {
-    return fallo(status, 'La API pide usuario y contraseña del profesor y no se completó el inicio de sesión.')
+    return fallo(status, 'Falta iniciar sesión.')
   }
   if (status === 403) {
-    return fallo(status, 'La API rechazó la petición por venir de otro sitio. Recarga la página e inténtalo de nuevo.')
+    return fallo(status, 'La placa rechazó la petición. Recarga la página e intenta de nuevo.')
   }
-  if (status === 500) {
-    return fallo(status, 'Node-RED no pudo procesar la orden. Revisa su registro si sigue pasando.')
-  }
-  return fallo(status, `La API respondió con el error ${status}. Espera unos segundos; si sigue igual, avisa al responsable del borde.`)
+  return fallo(status, 'La placa no pudo atender la orden. Intenta de nuevo en unos segundos.')
 }
 
 // ---- Estado de los actuadores en palabras ---------------------------------------------------------
@@ -155,7 +157,7 @@ export function disponibilidadActuadores(conexion: 'en-linea' | 'fuera-de-linea'
   if (errorEstado) {
     return {
       habilitado: false,
-      motivo: 'No se pudo consultar el estado de la XIAO, y no se mandan órdenes sin saber si responde. Se activan solas cuando vuelva la consulta.',
+      motivo: 'No se pudo consultar el nodo del aula: las órdenes se activan al volver.',
       aviso: null,
     }
   }
@@ -165,17 +167,17 @@ export function disponibilidadActuadores(conexion: 'en-linea' | 'fuera-de-linea'
     case 'fuera-de-linea':
       return {
         habilitado: false,
-        motivo: 'La XIAO está fuera de línea y no recibiría las órdenes. Se activan solas cuando vuelva.',
+        motivo: 'Sin conexión con el nodo del aula: las órdenes se activan al volver.',
         aviso: null,
       }
     case 'sin-datos':
       return {
         habilitado: true,
         motivo: null,
-        aviso: 'Node-RED no ha recibido nada de la XIAO desde que arrancó: la orden se envía al broker, pero puede no llegar.',
+        aviso: 'Aún no hay noticias del nodo del aula: la orden puede no llegar.',
       }
     default:
-      return { habilitado: false, motivo: 'Consultando el estado de la XIAO.', aviso: null }
+      return { habilitado: false, motivo: 'Consultando el estado del nodo del aula…', aviso: null }
   }
 }
 

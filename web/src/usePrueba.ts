@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ErrorApi, ErrorSinSesion, TIEMPO_INICIAL_MS } from './api/energia'
+import { ErrorSinSesion, TIEMPO_INICIAL_MS, mensajeDeError } from './api/energia'
 import { pedirPrueba, solicitarPrueba } from './api/prueba'
-import type { Prueba } from './api/pruebaRespuestas'
+import { AVISO_REGISTRO_ABIERTO, type Prueba } from './api/pruebaRespuestas'
 
 // Mientras hay una prueba pendiente, el resultado se consulta cada segundo (como el progreso del registro: sondeo,
 // no MQTT en el navegador). Sin prueba pendiente no hay sondeo: la hoja solo consulta al montarse.
@@ -97,7 +97,7 @@ export function usePrueba(): EstadoPruebaVista {
           return
         }
         sinSesion = error instanceof ErrorSinSesion
-        const mensaje = error instanceof ErrorApi ? error.message : 'Ocurrió un error inesperado al consultar la prueba.'
+        const mensaje = mensajeDeError(error)
         setDatos((anterior) => ({ ...anterior, error: mensaje, sinSesion }))
       } finally {
         enCurso = false
@@ -146,10 +146,10 @@ export function usePrueba(): EstadoPruebaVista {
         case 'solicitada':
           break
         case 'en-curso':
-          toast.info('Ya hay una prueba en curso', { description: 'Se muestra la espera de esa prueba.' })
+          toast.info('Ya hay una prueba en curso', { description: 'Mostrando esa prueba.' })
           break
         case 'registro-abierto':
-          toast.warning('Hay un registro abierto', { description: 'La visión está ocupada con él. Termínalo o cancélalo antes de probar el reconocimiento.' })
+          toast.warning(AVISO_REGISTRO_ABIERTO.titulo, { description: AVISO_REGISTRO_ABIERTO.descripcion })
           break
         case 'demasiado-rapido':
           toast.warning('Demasiado rápido', { description: 'La prueba no salió. Espera unos segundos entre pruebas.' })

@@ -1,26 +1,27 @@
 import { useState } from 'react'
 import type { MedicionLatencia } from '../api/latenciaRespuestas'
 import { diaDe, formatearDia, formatearHora, formatearMilisegundos } from '../formato'
+import { Vacio } from './Vacio'
 
 interface Props {
   /** De la más nueva a la más vieja. */
   mediciones: MedicionLatencia[]
-  /** Id del encabezado que titula la tabla. */
-  idTitulo: string
+  /** Nombre accesible de la tabla (y de su botón "Ver todas"). */
+  nombre: string
 }
 
 const FILAS_INICIALES = 10
 
-/** Una etapa que no corrió se dice con palabras: un hueco o un cero parecerían una medición. */
+/** Una etapa que no corrió lleva un guion: un hueco o un cero parecerían una medición. */
 function Etapa({ valor }: { valor: number | null }) {
-  return valor === null ? <span className="tabla__vacio">no corrió</span> : <>{formatearMilisegundos(valor)}</>
+  return valor === null ? <Vacio /> : <>{formatearMilisegundos(valor)}</>
 }
 
 /**
  * Mediciones recientes, de la más nueva a la más vieja, como renglones de una bitácora.
  * Va en la columna de detalle de `hoja--intentos` (por eso `tabla--intentos`: sin relleno en los bordes).
  */
-export function TablaLatencias({ mediciones, idTitulo }: Props) {
+export function TablaLatencias({ mediciones, nombre }: Props) {
   const [todas, setTodas] = useState(false)
   // Clave estable: `t` más el número de repetición, por si dos mediciones comparten milisegundo.
   const vistos = new Map<number, number>()
@@ -39,7 +40,7 @@ export function TablaLatencias({ mediciones, idTitulo }: Props) {
   return (
     <>
       <div className="hoja__desplazable">
-        <table className="tabla tabla--intentos tabla--latencias" aria-labelledby={idTitulo}>
+        <table className="tabla tabla--intentos tabla--latencias" aria-label={nombre}>
           <thead>
             <tr>
               <th scope="col">Hora</th>
@@ -69,8 +70,13 @@ export function TablaLatencias({ mediciones, idTitulo }: Props) {
       </div>
       {hayMas && (
         <div>
-          <button type="button" className="boton" aria-expanded={todas} onClick={() => setTodas(!todas)}>
-            {todas ? `Mostrar solo las ${FILAS_INICIALES} más recientes` : `Mostrar las ${mediciones.length} mediciones`}
+          <button
+            type="button"
+            className="boton"
+            aria-label={`${todas ? 'Ver menos' : 'Ver todas'}: ${nombre}`}
+            aria-expanded={todas}
+            onClick={() => setTodas(!todas)}>
+            {todas ? 'Ver menos' : 'Ver todas'}
           </button>
         </div>
       )}

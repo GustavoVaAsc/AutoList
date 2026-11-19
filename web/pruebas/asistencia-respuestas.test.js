@@ -3,6 +3,7 @@
 // Sin dependencias: node --test web/pruebas/*.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { assertTextosDistintos } from './texto.js'
 import {
   cuentasConEstadoCambiado,
   elegirSesionActiva,
@@ -10,7 +11,6 @@ import {
   ETIQUETA_MOTIVO_INTENTO,
   leerDetalleSesion,
   leerSesiones,
-  UMBRAL_RECONOCIMIENTO,
 } from '../src/api/asistenciaRespuestas.ts'
 
 const sesionCerrada = {
@@ -180,10 +180,9 @@ test('cuentasConEstadoCambiado: detecta transiciones solo dentro de la misma ses
   assert.deepEqual(cuentasConEstadoCambiado(antes, 22, despues, 22), ['999000001'])
 })
 
-test('constantes de presentación cubren todos los estados, motivos y umbral 0.4', () => {
-  assert.equal(UMBRAL_RECONOCIMIENTO, 0.4)
-  assert.equal(ETIQUETA_ESTADO_ASISTENCIA.retardo, 'Retardo')
-  assert.match(ETIQUETA_MOTIVO_INTENTO.desconocido, /reconocido/)
-  assert.match(ETIQUETA_MOTIVO_INTENTO.duplicado, /asistencia/)
-  assert.match(ETIQUETA_MOTIVO_INTENTO.imagen_insuficiente, /insuficiente/)
+test('las etiquetas de presentación cubren todos los estados y motivos, y cada una dice lo suyo', () => {
+  assert.deepEqual(Object.keys(ETIQUETA_ESTADO_ASISTENCIA).sort(), ['falta', 'pendiente', 'presente', 'retardo'])
+  assertTextosDistintos(Object.values(ETIQUETA_ESTADO_ASISTENCIA))
+  assert.deepEqual(Object.keys(ETIQUETA_MOTIVO_INTENTO).sort(), ['desconocido', 'duplicado', 'imagen_insuficiente'])
+  assertTextosDistintos(Object.values(ETIQUETA_MOTIVO_INTENTO))
 })

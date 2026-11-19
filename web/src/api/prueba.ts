@@ -29,7 +29,8 @@ export async function pedirPrueba(senal: AbortSignal, tiempoMaximoMs: number = T
   const { cuerpo, horaServidor } = await pedirJson(RUTA_ESTADO, senal, tiempoMaximoMs, false)
   const lectura = leerPrueba(cuerpo)
   if (!lectura.ok) {
-    throw new ErrorApi(`La API devolvió una prueba inválida (${lectura.motivo}). Avisa al responsable del borde.`)
+    console.warn(lectura.motivo)
+    throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
   }
   return { prueba: lectura.prueba, horaServidor }
 }
@@ -57,6 +58,9 @@ export async function solicitarPrueba(): Promise<ResultadoSolicitud> {
       json = await respuesta.json()
     } catch {
       json = undefined
+    }
+    if (respuesta.status >= 400) {
+      console.warn('POST', RUTA_PROBAR, 'respondió', respuesta.status)
     }
     return interpretarSolicitud(respuesta.status, json)
   } finally {
