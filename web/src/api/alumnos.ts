@@ -31,7 +31,7 @@ export async function pedirAlumnos(senal: AbortSignal, tiempoMaximoMs: number = 
   const alCancelar = () => controlador.abort()
   senal.addEventListener('abort', alCancelar)
   const temporizador = setTimeout(() => controlador.abort(), tiempoMaximoMs)
-  const tiempoAgotado = () => new ErrorApi('La API tardó demasiado en responder. Revisa la conexión con la placa.')
+  const tiempoAgotado = () => new ErrorApi('La placa tardó en responder.')
   try {
     let respuesta: Response
     try {
@@ -42,13 +42,14 @@ export async function pedirAlumnos(senal: AbortSignal, tiempoMaximoMs: number = 
       }
       throw controlador.signal.aborted
         ? tiempoAgotado()
-        : new ErrorApi('No se pudo conectar con la API. Revisa que la placa esté encendida y conectada a la red del aula.')
+        : new ErrorApi('No hay conexión con la placa.')
     }
     if (respuesta.status === 401) {
-      throw new ErrorSinSesion('La API pide usuario y contraseña del profesor y no se completó el inicio de sesión.')
+      throw new ErrorSinSesion('Falta iniciar sesión.')
     }
     if (!respuesta.ok) {
-      throw new ErrorApi(`La API respondió con el error ${respuesta.status}. Espera unos segundos; si sigue igual, avisa al responsable del borde.`)
+      console.warn('La placa respondió', respuesta.status, respuesta.url)
+      throw new ErrorApi('La placa no pudo atender la petición. Intenta de nuevo en unos segundos.')
     }
     let cuerpo: unknown
     try {
@@ -57,11 +58,15 @@ export async function pedirAlumnos(senal: AbortSignal, tiempoMaximoMs: number = 
       if (senal.aborted) {
         throw error
       }
-      throw controlador.signal.aborted ? tiempoAgotado() : new ErrorApi('La API respondió algo que no es JSON válido. Avisa al responsable del borde.')
+      if (!controlador.signal.aborted) {
+        console.warn('La respuesta de', respuesta.url, 'no es JSON válido')
+      }
+      throw controlador.signal.aborted ? tiempoAgotado() : new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
     }
     const lectura = leerAlumnos(cuerpo)
     if (!lectura.ok) {
-      throw new ErrorApi(lectura.motivo)
+      console.warn(lectura.motivo)
+      throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
     }
     const fechaServidor = Date.parse(respuesta.headers.get('Date') ?? '')
     return { alumnos: lectura.alumnos, horaServidor: Number.isNaN(fechaServidor) ? Date.now() : fechaServidor }
@@ -115,8 +120,8 @@ export async function enviarImportacion(
         tipo: 'fallo',
         status: null,
         mensaje: controlador.signal.aborted
-          ? 'La API tardó demasiado en responder. No se sabe si se importó el archivo: revisa la lista antes de reintentar.'
-          : 'No se pudo conectar con la API. No se sabe si se importó el archivo: revisa la lista antes de reintentar.',
+          ? 'La placa tardó en responder. No se sabe si se importó el archivo: revisa la lista antes de reintentar.'
+          : 'No hay conexión con la placa. No se sabe si se importó el archivo: revisa la lista antes de reintentar.',
       }
     }
     let cuerpo: unknown
@@ -124,6 +129,9 @@ export async function enviarImportacion(
       cuerpo = await respuesta.json()
     } catch {
       cuerpo = undefined
+    }
+    if (respuesta.status >= 400) {
+      console.warn('POST', ruta, 'respondió', respuesta.status)
     }
     return interpretarRespuesta(respuesta.status, cuerpo)
   } finally {

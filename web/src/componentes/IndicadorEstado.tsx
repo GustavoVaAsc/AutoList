@@ -9,7 +9,7 @@ type EstadoApi = 'conectando' | 'conectada' | 'sin-sesion' | 'sin-conexion'
 const ETIQUETA: Record<EstadoApi, string> = {
   conectando: 'Conectando con la placa',
   conectada: 'Placa conectada',
-  'sin-sesion': 'Sin sesión en la API',
+  'sin-sesion': 'Falta iniciar sesión',
   'sin-conexion': 'Sin conexión con la placa',
 }
 
@@ -34,12 +34,12 @@ const MARCA: Record<EstadoApi, TipoMarca> = {
  * El texto lleva la información y lo lee el lector de pantalla; la marca es
  * redundante y no brilla ni pulsa. La región viva, aparte, anuncia solo los
  * cambios de estado (no el inicial), para no duplicar el texto al cargar.
- * Con la placa conectada, el texto añade cómo están el servicio de visión y la
- * cámara (GET /api/sistema/estado, `useSistema` en App): "Placa conectada · visión
- * y cámara en línea". Si algo no está en línea, esa parte va en el rojo de las
- * faltas reales. La marca y "Placa conectada" siguen diciendo solo si la API
- * responde; sin respuesta del estado del sistema, o con su último sondeo fallido
- * (sus datos ya no son vigentes), no hay detalle.
+ * Con la placa conectada, el texto nombra lo que no está en línea (GET
+ * /api/sistema/estado, `useSistema` en App): "Placa conectada · nodo del aula
+ * fuera de línea", en el rojo de las faltas reales. Si todo está en línea, solo
+ * dice "Placa conectada". La marca y "Placa conectada" siguen diciendo solo si la
+ * API responde; sin respuesta del estado del sistema, o con su último sondeo
+ * fallido (sus datos ya no son vigentes), no hay detalle.
  */
 export function IndicadorEstado() {
   const { lecturas, error, sinSesion } = useEstadoLecturas()
@@ -70,7 +70,7 @@ export function IndicadorEstado() {
         {detalle !== null && (
           <>
             {' · '}
-            <span className={detalle.problema ? 'rostro--falta' : undefined}>{detalle.texto}</span>
+            <span className="rostro--falta">{detalle.texto}</span>
           </>
         )}
       </span>

@@ -42,7 +42,7 @@ export async function pedirEstadoRegistro(senal: AbortSignal, tiempoMaximoMs: nu
   const alCancelar = () => controlador.abort()
   senal.addEventListener('abort', alCancelar)
   const temporizador = setTimeout(() => controlador.abort(), tiempoMaximoMs)
-  const tiempoAgotado = () => new ErrorApi('La API tardó demasiado en responder. Revisa la conexión con la placa.')
+  const tiempoAgotado = () => new ErrorApi('La placa tardó en responder.')
   try {
     let respuesta: Response
     try {
@@ -53,13 +53,14 @@ export async function pedirEstadoRegistro(senal: AbortSignal, tiempoMaximoMs: nu
       }
       throw controlador.signal.aborted
         ? tiempoAgotado()
-        : new ErrorApi('No se pudo conectar con la API. Revisa que la placa esté encendida y conectada a la red del aula.')
+        : new ErrorApi('No hay conexión con la placa.')
     }
     if (respuesta.status === 401) {
-      throw new ErrorSinSesion('La API pide usuario y contraseña del profesor y no se completó el inicio de sesión.')
+      throw new ErrorSinSesion('Falta iniciar sesión.')
     }
     if (!respuesta.ok) {
-      throw new ErrorApi(`La API respondió con el error ${respuesta.status}. Espera unos segundos; si sigue igual, avisa al responsable del borde.`)
+      console.warn('La placa respondió', respuesta.status, respuesta.url)
+      throw new ErrorApi('La placa no pudo atender la petición. Intenta de nuevo en unos segundos.')
     }
     let cuerpo: unknown
     try {
@@ -68,11 +69,15 @@ export async function pedirEstadoRegistro(senal: AbortSignal, tiempoMaximoMs: nu
       if (senal.aborted) {
         throw error
       }
-      throw controlador.signal.aborted ? tiempoAgotado() : new ErrorApi('La API respondió algo que no es JSON válido. Avisa al responsable del borde.')
+      if (!controlador.signal.aborted) {
+        console.warn('La respuesta de', respuesta.url, 'no es JSON válido')
+      }
+      throw controlador.signal.aborted ? tiempoAgotado() : new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
     }
     const lectura = leerRegistro(cuerpo)
     if (!lectura.ok) {
-      throw new ErrorApi(lectura.motivo)
+      console.warn(lectura.motivo)
+      throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
     }
     const fechaServidor = Date.parse(respuesta.headers.get('Date') ?? '')
     return { registro: lectura.registro, horaServidor: Number.isNaN(fechaServidor) ? Date.now() : fechaServidor }
@@ -118,6 +123,9 @@ async function enviarCambio(ruta: string, metodo: 'POST' | 'DELETE', cuerpo?: un
     } catch {
       json = undefined
     }
+    if (respuesta.status >= 400) {
+      console.warn(metodo, ruta, 'respondió', respuesta.status)
+    }
     return { status: respuesta.status, cuerpo: json }
   } finally {
     clearTimeout(temporizador)
@@ -125,7 +133,7 @@ async function enviarCambio(ruta: string, metodo: 'POST' | 'DELETE', cuerpo?: un
 }
 
 const SIN_RESPUESTA = (accion: string) =>
-  `No hubo respuesta de la API (sin conexión o tardó demasiado). No se sabe si ${accion}: revisa el estado antes de reintentar.`
+  `La placa no respondió. No se sabe si ${accion}: revisa el estado antes de reintentar.`
 
 /**
  * Inicia el registro. La API exige Content-Type application/json (otro, 415) y que

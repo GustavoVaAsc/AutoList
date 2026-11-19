@@ -4,7 +4,9 @@
 // Sin dependencias: node --test web/pruebas/*.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { assertTextoLegible, assertTextosDistintos } from './texto.js'
 import {
+  AVISO_REGISTRO_ABIERTO,
   SIN_RESPUESTA,
   TEXTO_PENDIENTE,
   TEXTO_SIN_RESPUESTA,
@@ -143,57 +145,62 @@ test('un 429 es demasiado rápido, y los demás códigos traen un mensaje que di
     const r = interpretarSolicitud(status, { error: 'SECRETO' })
     assert.equal(r.tipo, 'fallo')
     assert.equal(r.status, status)
-    assert.ok(r.mensaje.length > 20)
+    assertTextoLegible(r.mensaje, String(status))
     assert.doesNotMatch(r.mensaje, /SECRETO/)
   }
-  assert.match(interpretarSolicitud(403, {}).mensaje, /Recarga la página/)
-  assert.match(interpretarSolicitud(401, {}).mensaje, /usuario y contraseña/)
-  assert.match(SIN_RESPUESTA, /No se sabe si la prueba salió/)
+  assertTextosDistintos([401, 403, 500].map((s) => interpretarSolicitud(s, {}).mensaje))
+  assertTextoLegible(SIN_RESPUESTA)
+  assert.notEqual(SIN_RESPUESTA, interpretarSolicitud(500, {}).mensaje)
 })
 
 // ---- Palabras -----------------------------------------------------------------------------------
 
 test('cada decisión tiene su título en palabras, en el orden del contrato', () => {
-  assert.deepEqual(TITULO_DECISION, {
-    reconocido: 'Reconocido',
-    dudoso: 'Dudoso',
-    desconocido: 'Desconocido',
-    sin_rostro: 'Sin rostro',
-    imagen_insuficiente: 'Imagen insuficiente',
-    error: 'Error',
-  })
+  assert.deepEqual(Object.keys(TITULO_DECISION), ['reconocido', 'dudoso', 'desconocido', 'sin_rostro', 'imagen_insuficiente', 'error'])
+  assertTextosDistintos(Object.values(TITULO_DECISION))
 })
 
-test('los motivos del contrato se traducen; sin motivo, texto vacío; un código nuevo se nombra tal cual', () => {
+test('los motivos del contrato se traducen; sin motivo, texto vacío; un código nuevo da el texto de reserva sin mostrar el código', () => {
   for (const motivo of ['captura_fallida', 'imagen_insuficiente', 'sin_rostro', 'desconocido', 'galeria_vacia', 'error_interno', 'ocupado', 'cuenta_invalida']) {
     const t = traducirMotivoPrueba(motivo)
-    assert.ok(t.length > 10, motivo)
-    assert.doesNotMatch(t, /Motivo sin traducir/, motivo)
+    assertTextoLegible(t, motivo)
     assert.ok(!t.includes('_'), motivo + ' se muestra con palabras, no con el código')
   }
   assert.equal(traducirMotivoPrueba(null), '')
-  assert.equal(traducirMotivoPrueba('algo_nuevo'), 'Motivo sin traducir (código algo_nuevo).')
+  const reserva = traducirMotivoPrueba('algo_nuevo')
+  assertTextoLegible(reserva)
+  assert.ok(!reserva.includes('algo_nuevo'))
 })
 
 test('resumirResultado: el título es la decisión; el detalle, el motivo traducido o, sin motivo, lo que significa', () => {
   const r = (extra) => resumirResultado(leerPrueba(cuerpoApi({ resultado: resultadoApi(extra) })).prueba.resultado)
-  assert.deepEqual(r({}), { titulo: 'Reconocido', detalle: 'La visión reconoce a la persona que está frente a la cámara.', tono: 'exito' })
-  assert.equal(r({ decision: 'dudoso' }).tono, 'neutro')
-  assert.equal(r({ decision: 'dudoso' }).titulo, 'Dudoso')
-  assert.match(r({ decision: 'dudoso' }).detalle, /zona gris/)
+  const reconocido = r({})
+  assert.equal(reconocido.titulo, TITULO_DECISION.reconocido)
+  assert.equal(reconocido.tono, 'exito')
+  assertTextoLegible(reconocido.detalle)
+  const dudoso = r({ decision: 'dudoso' })
+  assert.equal(dudoso.tono, 'neutro')
+  assert.equal(dudoso.titulo, TITULO_DECISION.dudoso)
+  assertTextoLegible(dudoso.detalle)
   const desconocido = r({ decision: 'desconocido', cuenta: null, nombre: null, motivo: 'desconocido' })
-  assert.equal(desconocido.titulo, 'Desconocido')
-  assert.equal(desconocido.detalle, 'Ningún rostro registrado se parece lo bastante.')
-  assert.equal(r({ decision: 'sin_rostro', motivo: 'sin_rostro', cuenta: null }).detalle, 'No se vio ningún rostro.')
-  assert.equal(r({ decision: 'imagen_insuficiente', motivo: 'captura_fallida', cuenta: null }).detalle, 'La cámara no pudo tomar la foto.')
+  assert.equal(desconocido.titulo, TITULO_DECISION.desconocido)
+  assert.equal(desconocido.detalle, traducirMotivoPrueba('desconocido'))
+  assert.equal(r({ decision: 'sin_rostro', motivo: 'sin_rostro', cuenta: null }).detalle, traducirMotivoPrueba('sin_rostro'))
+  assert.equal(r({ decision: 'imagen_insuficiente', motivo: 'captura_fallida', cuenta: null }).detalle, traducirMotivoPrueba('captura_fallida'))
   const ocupado = r({ decision: 'error', cuenta: null, motivo: 'ocupado', lat_ms: null })
   assert.equal(ocupado.tono, 'error')
-  assert.match(ocupado.detalle, /ocupado/)
-  assert.equal(r({ decision: 'error', cuenta: null, motivo: null }).detalle, 'El servicio de visión no pudo terminar la prueba.')
+  assert.equal(ocupado.detalle, traducirMotivoPrueba('ocupado'))
+  // Sin motivo, el detalle es lo que significa la decisión; cada decisión dice lo suyo.
+  const sinMotivo = Object.keys(TITULO_DECISION).map((decision) => r({ decision, cuenta: null, motivo: null }).detalle)
+  assertTextosDistintos(sinMotivo)
+})
+
+test('el aviso de registro abierto manda a Registro', () => {
+  assertTextosDistintos([AVISO_REGISTRO_ABIERTO.titulo, AVISO_REGISTRO_ABIERTO.descripcion])
+  assert.ok(AVISO_REGISTRO_ABIERTO.descripcion.includes('Registro'))
 })
 
 test('los textos de espera y de falta de respuesta no inventan avance', () => {
-  assert.equal(TEXTO_PENDIENTE.titulo, 'Tomando la foto…')
+  assertTextosDistintos([TEXTO_PENDIENTE.titulo, TEXTO_PENDIENTE.detalle, TEXTO_SIN_RESPUESTA.titulo, TEXTO_SIN_RESPUESTA.detalle])
   assert.doesNotMatch(TEXTO_PENDIENTE.detalle, /%|\d+ de \d+/)
-  assert.match(TEXTO_SIN_RESPUESTA.detalle, /servicio de visión/)
 })

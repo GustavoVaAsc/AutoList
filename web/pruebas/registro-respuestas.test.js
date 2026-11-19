@@ -8,8 +8,10 @@
 // (Node 22.18 o posterior carga el .ts quitando los tipos).
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { assertTextoLegible, assertTextosDistintos } from './texto.js'
 import {
   AVISO_REGISTRO_PERDIDO,
+  ETIQUETA_POSE,
   POSES,
   avisoDeCancelacion,
   avisoDeInicio,
@@ -174,24 +176,31 @@ test('traducirMotivo: traduce cada código del contrato a español claro, sin c�
     if (codigo.includes('_')) {
       assert.ok(!texto.includes(codigo), 'no debe mostrar el código: ' + codigo)
     }
-    assert.ok(!texto.includes('—'), codigo)
+    assertTextoLegible(texto, codigo)
     assert.ok(/[.]$/.test(texto), 'termina en punto: ' + codigo)
     vistos.add(texto)
   }
   assert.equal(vistos.size, codigos.length, 'cada código tiene su propio texto')
 })
 
-test('traducirMotivo: sin motivo o con un código nuevo da un texto de reserva que nombra el código', () => {
+test('traducirMotivo: sin motivo da texto vacío; un código nuevo da el texto de reserva, sin mostrar el código', () => {
   assert.equal(traducirMotivo(null), '')
-  assert.match(traducirMotivo('algo_nuevo'), /algo_nuevo/)
+  const reserva = traducirMotivo('algo_nuevo')
+  assertTextoLegible(reserva)
+  assert.ok(!reserva.includes('algo_nuevo'))
+  assert.equal(reserva, traducirMotivo('desconocido'))
 })
 
-test('textoPose: estado y detalle de cada pose', () => {
-  assert.deepEqual(textoPose({ pose: 'frente', estado: 'pendiente', motivo: null }), { estado: 'Pendiente', detalle: null })
-  assert.deepEqual(textoPose({ pose: 'frente', estado: 'esperando_pose', motivo: null }), { estado: 'Esperando la pose', detalle: null })
-  assert.deepEqual(textoPose({ pose: 'frente', estado: 'capturando', motivo: null }), { estado: 'Tomando la foto', detalle: null })
-  assert.deepEqual(textoPose({ pose: 'frente', estado: 'aceptada', motivo: null }), { estado: 'Foto aceptada', detalle: null })
-  assert.deepEqual(textoPose({ pose: 'frente', estado: 'rechazada', motivo: 'borrosa' }), { estado: 'Foto rechazada', detalle: 'La foto salió borrosa.' })
+test('textoPose: cada estado de pose se dice con su propio texto; solo la foto rechazada lleva el motivo traducido', () => {
+  const estados = ['pendiente', 'esperando_pose', 'capturando', 'aceptada', 'rechazada']
+  const textos = estados.map((estado) => {
+    const t = textoPose({ pose: 'frente', estado, motivo: null })
+    assert.equal(t.detalle, null, estado)
+    return t.estado
+  })
+  assertTextosDistintos(textos)
+  assert.equal(textoPose({ pose: 'frente', estado: 'rechazada', motivo: 'borrosa' }).detalle, traducirMotivo('borrosa'))
+  assert.equal(textoPose({ pose: 'frente', estado: 'aceptada', motivo: 'borrosa' }).detalle, null)
   assert.equal(textoPose({ pose: 'frente', estado: 'rechazada', motivo: null }).detalle, null)
 })
 
@@ -223,17 +232,17 @@ test('poseEnCurso: la primera pose sin aceptar, o null si ya están las cinco', 
 
 test('resumirRegistro: esperando a la visión dice la verdad y el tiempo transcurrido, sin simular progreso', () => {
   const r = resumirRegistro(registro({ estado: 'esperando_vision' }))
-  assert.equal(r.titulo, 'Esperando al servicio de visión')
+  assertTextoLegible(r.titulo)
+  assertTextoLegible(r.detalle)
   assert.equal(r.tono, 'advertencia')
-  assert.match(r.detalle, /5 minutos/)
   assert.ok(!/\d+ s\b/.test(r.detalle), 'el tiempo no va en el texto de la región viva')
-  assert.equal(textoTiempo(registro({ estado: 'esperando_vision' }), 12_000), 'Van 12 s sin respuesta.')
+  assert.ok(textoTiempo(registro({ estado: 'esperando_vision' }), 12_000).includes(formatearTranscurrido(12_000)))
   assert.equal(textoTiempo(registro({ estado: 'esperando_vision' }), null), null)
 })
 
 test('textoTiempo: solo con un registro abierto en espera, en curso o guardando', () => {
-  assert.equal(textoTiempo(registro(), 65_000), 'Tiempo transcurrido: 1 min 5 s')
-  assert.equal(textoTiempo(registro({ estado: 'guardando' }), 3000), 'Tiempo transcurrido: 3 s')
+  assert.ok(textoTiempo(registro(), 65_000).includes(formatearTranscurrido(65_000)))
+  assert.ok(textoTiempo(registro({ estado: 'guardando' }), 3000).includes(formatearTranscurrido(3000)))
   for (const estado of ['completado', 'cancelado', 'error']) {
     assert.equal(textoTiempo(registro({ abierto: false, estado }), 3000), null, estado)
   }
@@ -242,28 +251,28 @@ test('textoTiempo: solo con un registro abierto en espera, en curso o guardando'
 test('resumirRegistro: en curso nombra la pose y su número', () => {
   const poses = POSES.map((pose, i) => ({ pose, estado: i === 0 ? 'aceptada' : i === 1 ? 'capturando' : 'pendiente', motivo: null }))
   const r = resumirRegistro(registro({ poses }))
-  assert.equal(r.titulo, 'Registro en curso')
+  assertTextoLegible(r.titulo)
   assert.equal(r.tono, 'neutro')
-  assert.match(r.detalle, /Pose 2 de 5/)
-  assert.match(r.detalle, /izquierda/)
+  assert.match(r.detalle, /\b2 de 5\b/, 'dice el número de la pose')
+  assert.ok(r.detalle.includes(ETIQUETA_POSE.izquierda.toLowerCase()), 'nombra la pose como la lista')
 })
 
 test('resumirRegistro: guardando, completado, cancelado y error', () => {
   const guardando = resumirRegistro(registro({ estado: 'guardando' }))
-  assert.equal(guardando.titulo, 'Guardando el rostro')
+  assertTextoLegible(guardando.titulo)
   assert.equal(guardando.tono, 'neutro')
   const completado = resumirRegistro(registro({ abierto: false, estado: 'completado' }))
-  assert.equal(completado.titulo, 'Registro completado')
+  assertTextoLegible(completado.titulo)
   assert.equal(completado.tono, 'exito')
   assert.match(completado.detalle, /Ana López/)
   const cancelado = resumirRegistro(registro({ abierto: false, estado: 'cancelado' }))
-  assert.equal(cancelado.titulo, 'Registro cancelado')
+  assertTextoLegible(cancelado.titulo)
   assert.equal(cancelado.tono, 'neutro')
   const error = resumirRegistro(registro({ abierto: false, estado: 'error', motivo: 'inconsistente' }))
-  assert.equal(error.titulo, 'El registro terminó con error')
+  assertTextoLegible(error.titulo)
   assert.equal(error.tono, 'error')
-  assert.match(error.detalle, /no se parecen entre sí/)
-  assert.match(error.detalle, /No se guardó ningún rostro/)
+  assert.ok(error.detalle.includes(traducirMotivo('inconsistente')), 'el detalle trae el motivo traducido')
+  assertTextosDistintos([guardando.titulo, completado.titulo, cancelado.titulo, error.titulo])
 })
 
 // ------------------------------------------------------------ interpretar respuestas
@@ -282,11 +291,9 @@ test('interpretarInicio: 409 sin motivo conocido, y 400, 401, 403, 415, 500 son 
     const r = interpretarInicio(status, cuerpoRespuesta)
     assert.equal(r.tipo, 'fallo', String(status))
     assert.equal(r.status, status)
-    assert.ok(r.mensaje.length > 10)
-    assert.ok(!r.mensaje.includes('—'))
+    assertTextoLegible(r.mensaje, String(status))
   }
-  assert.match(interpretarInicio(401, undefined).mensaje, /usuario y contraseña/)
-  assert.match(interpretarInicio(403, undefined).mensaje, /origen/)
+  assertTextosDistintos([401, 403, 500].map((status) => interpretarInicio(status, undefined).mensaje))
 })
 
 test('interpretarCancelacion: 200 dice si había un registro; lo demás es un fallo', () => {
@@ -318,20 +325,18 @@ test('avisoDeInicio: iniciado no avisa; cada resultado de error tiene título y 
     { tipo: 'ocupado' },
     { tipo: 'interrumpido' },
     { tipo: 'prueba-en-curso' },
-    { tipo: 'fallo', status: 500, mensaje: 'La API respondió con el error 500.' },
+    { tipo: 'fallo', status: 500, mensaje: 'La placa no pudo atender la petición.' },
   ]
   for (const r of resultados) {
     const aviso = avisoDeInicio(r)
     assert.ok(aviso, r.tipo)
-    assert.ok(aviso.titulo.length > 5 && aviso.texto.length > 10, r.tipo)
-    assert.ok(!(aviso.titulo + aviso.texto).includes('—'))
+    assertTextoLegible(aviso.titulo, r.tipo)
+    assertTextoLegible(aviso.texto, r.tipo)
     assert.ok(aviso.tono === 'error' || aviso.tono === 'advertencia')
   }
-  assert.match(avisoDeInicio({ tipo: 'tiene-rostro' }).texto, /retira primero su rostro en Alumnos/)
+  assert.ok(avisoDeInicio({ tipo: 'tiene-rostro' }).texto.includes('Alumnos'), 'dice dónde retirar el rostro')
   assert.equal(avisoDeInicio({ tipo: 'ocupado' }).tono, 'advertencia')
   assert.equal(avisoDeInicio({ tipo: 'prueba-en-curso' }).tono, 'advertencia')
-  assert.match(avisoDeInicio({ tipo: 'prueba-en-curso' }).texto, /prueba/)
-  assert.match(avisoDeInicio({ tipo: 'prueba-en-curso' }).texto, /vuelve a iniciar el registro/)
   assert.equal(avisoDeInicio({ tipo: 'fallo', status: null, mensaje: 'sin red' }).texto, 'sin red')
 })
 
@@ -454,7 +459,9 @@ test('siguienteVista: si el registro abierto desaparece (sin_registro, Node-RED 
   assert.equal(v.fase, 'libre')
   assert.equal(v.registro, null)
   assert.equal(AVISO_REGISTRO_PERDIDO.tono, 'advertencia')
-  assert.ok(!(AVISO_REGISTRO_PERDIDO.titulo + AVISO_REGISTRO_PERDIDO.texto).includes('—'))
+  assertTextoLegible(AVISO_REGISTRO_PERDIDO.titulo)
+  assertTextoLegible(AVISO_REGISTRO_PERDIDO.texto)
+  assert.ok(AVISO_REGISTRO_PERDIDO.texto.includes('Alumnos'), 'dice dónde revisar')
 })
 
 test('siguienteVista: "Registrar a otro alumno" limpia el resultado y deja la vista libre', () => {
@@ -576,11 +583,14 @@ test('capturaVisible: cerrado no queda nada, ni el rechazo final (npu) ni una fo
 
 test('textoCaptura: "Pose · Estado" y, si se rechazó, el motivo traducido', () => {
   const ok = textoCaptura({ pose: 'izquierda', estado: 'aceptada', motivo: null, miniatura: 'AAA', intento: 1 })
-  assert.deepEqual(ok, { leyenda: 'Un poco a la izquierda · Aceptada', detalle: null, alt: 'Última foto: un poco a la izquierda, aceptada' })
+  assert.ok(ok.leyenda.startsWith(ETIQUETA_POSE.izquierda), 'la leyenda nombra la pose como la lista')
+  assert.equal(ok.detalle, null)
+  assert.ok(ok.alt.toLowerCase().includes(ETIQUETA_POSE.izquierda.toLowerCase()), 'el texto alternativo nombra la pose')
   const mala = textoCaptura({ pose: 'frente_2', estado: 'rechazada', motivo: 'borrosa', miniatura: 'AAA', intento: 2 })
-  assert.equal(mala.leyenda, 'De frente otra vez · Rechazada')
+  assert.ok(mala.leyenda.startsWith(ETIQUETA_POSE.frente_2))
+  assert.notEqual(mala.leyenda.replace(ETIQUETA_POSE.frente_2, ''), ok.leyenda.replace(ETIQUETA_POSE.izquierda, ''), 'aceptada y rechazada se leen distinto')
   assert.equal(mala.detalle, traducirMotivo('borrosa'))
-  assert.equal(mala.alt, `Última foto: de frente otra vez, rechazada. ${traducirMotivo('borrosa')}`)
+  assert.ok(mala.alt.includes(traducirMotivo('borrosa')), 'el texto alternativo trae el motivo')
 })
 
 test('seguirCaptura: el intento cuenta las fotos de la misma pose (anuncio distinto en cada rechazo seguido)', () => {

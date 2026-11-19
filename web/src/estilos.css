@@ -163,12 +163,11 @@
   --d-pulsar: 100ms;          /* botón presionado */
   --d-realce: 140ms;          /* puntero encima de un botón o una fila */
   --d-salida: 160ms;          /* quitar el puntero; salida del diálogo */
-  --d-salir-vista: 90ms;      /* la vista que se va */
   --d-entrada: 220ms;         /* bloques de una vista */
   --escalon: 35ms;            /* entre bloques */
   --d-fila: 240ms;            /* renglón que se escribe (el escalón, de 25 ms, está en la tabla) */
   --d-trazo: 480ms;           /* la palomita o diagonal que se traza */
-  --d-indicador: 220ms;       /* subrayado activo de la navegación */
+  --d-indicador: 220ms;       /* el velo del diálogo al aparecer */
   --d-toast: 320ms;           /* avisos de Sonner al entrar y al reubicarse */
   --d-resorte: 420ms;         /* diálogo: lo que tarda el resorte en asentarse */
   /* Resorte subamortiguado (ζ = 0.55, asentado en 420 ms, rebote de 12.6 %),
@@ -447,11 +446,9 @@ code {
 }
 
 /* Navegación: pestañas de texto. Son enlaces (cambian el hash). La vista activa
-   lleva un subrayado de tinta que se desliza entre vistas: continuidad espacial,
-   solo al cambiar de ruta. */
+   lleva un borde inferior de tinta. */
 .navegacion-contenedor {
   grid-area: nav;
-  position: relative;
   justify-self: start;
 }
 
@@ -482,7 +479,7 @@ code {
   gap: var(--e-2);
   min-height: 44px;
   padding: 0 var(--e-4);
-  border-radius: var(--r-control);
+  border-bottom: 3px solid transparent;
   color: var(--suave);
   font-size: var(--t-ui);
   line-height: 1.25;
@@ -493,6 +490,7 @@ code {
 }
 
 .navegacion__enlace[aria-current='page'] {
+  border-bottom-color: var(--tinta);
   color: var(--tinta);
 }
 
@@ -518,23 +516,6 @@ code {
     flex-direction: column;
     gap: 2px;
   }
-}
-
-/* Subrayado activo: línea de 1 px escalada en GPU (transform únicamente, sin
-   recalcular layout en cada fotograma). */
-.navegacion__indicador {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 1px;
-  height: 3px;
-  background: var(--tinta);
-  transform-origin: left center;
-  pointer-events: none;
-}
-
-.navegacion__indicador--animado {
-  transition: transform var(--d-indicador) var(--ease-entrada);
 }
 
 /* Estado de la placa: marca un hecho real (la API respondió o no). La marca de
@@ -609,18 +590,16 @@ code {
   }
 }
 
-/* Vista. Se remonta al cambiar de ruta (App la identifica por ruta): sus
-   bloques entran escalonados (ver "Movimiento de las vistas"). Cuando se va, la
-   anterior sale con un fundido corto. */
+/* Vista. Se remonta al cambiar de ruta (App la identifica por ruta): entra con un
+   fundido y sus bloques entran escalonados (ver "Movimiento de las vistas"). */
 .vista {
-  transition:
-    opacity var(--d-salir-vista) var(--ease-entrada),
-    transform var(--d-salir-vista) var(--ease-entrada);
+  animation: aparecer-vista var(--d-entrada) var(--ease-entrada) backwards;
 }
 
-.vista--sale {
-  opacity: 0;
-  transform: translateY(-4px);
+@keyframes aparecer-vista {
+  from {
+    opacity: 0;
+  }
 }
 
 .pagina {
@@ -656,13 +635,6 @@ code {
   color: var(--tinta);
 }
 
-.entradilla {
-  max-width: 62ch;
-  font-size: var(--t-cuerpo);
-  line-height: 1.55;
-  color: var(--cuerpo);
-}
-
 /* Hoja: el papel de la lista. Se separa de la mesa por tono, un borde fino y la
    regla doble de tinta de arriba (como el borde de un formulario impreso): sin
    sombra. Esquinas casi rectas. */
@@ -686,17 +658,9 @@ code {
   gap: var(--e-3) var(--e-6);
 }
 
-.hoja__encabezado--tabla {
-  padding: var(--e-5) var(--e-8) var(--e-4);
-}
-
 @media (max-width: 640px) {
   .hoja__encabezado {
     padding: var(--e-5) var(--e-4) var(--e-4);
-  }
-
-  .hoja__encabezado--tabla {
-    padding: var(--e-4);
   }
 }
 
@@ -1034,6 +998,11 @@ code {
   grid-template-columns: minmax(0, 1fr) 19rem;
   gap: var(--e-6);
   align-items: start;
+}
+
+/* Sin margen (la zona del CSV está plegada): la hoja ocupa todo el ancho. */
+.rejilla-alumnos--sola {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 @media (max-width: 999px) {
@@ -1627,26 +1596,42 @@ code {
   color: var(--cuerpo);
 }
 
+/* Descargar el CSV: el botón y, con la sesión en curso, por qué no se puede todavía. */
+.hoja__descarga {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--e-3);
+}
+
+/* Una sola línea bajo el título de la hoja. */
+.hoja__subtitulo-linea {
+  margin-top: var(--e-2);
+}
+
+/* Contenido que se abre bajo su resumen (los intentos rechazados). */
+.plegable > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-weight: 600;
+  color: var(--tinta);
+  cursor: pointer;
+}
+
+/* Dentro de una hoja sin otro contenido, el resumen lleva el relleno de la hoja. */
+.plegable--hoja > summary {
+  padding: 0 var(--e-8);
+}
+
 @media (max-width: 640px) {
-  .tabla--asistencia tr > :nth-child(2),
-  .tabla--asistencia .tabla__hora-col,
-  .tabla--asistencia .tabla__hora-celda,
-  .tabla--asistencia .tabla__confianza-col,
-  .tabla--asistencia .tabla__confianza-celda {
-    display: none;
+  .plegable--hoja > summary {
+    padding: 0 var(--e-4);
   }
+}
 
-  .tabla--asistencia .tabla__n {
-    padding-right: 0;
-  }
-
-  .tabla--asistencia .tabla__nombre {
-    padding-left: var(--e-3);
-  }
-
-  .tabla--asistencia .tabla__sub {
-    display: block;
-  }
+.plegable[open] > summary {
+  margin-bottom: var(--e-2);
 }
 
 .hoja--intentos {
@@ -1774,10 +1759,6 @@ code {
 
 /* Registro. Elegir al alumno: renglones de la hoja con una casilla de opción cada uno.
    Los que ya tienen rostro se ven en tinta suave y no se pueden elegir. */
-.hoja__entradilla {
-  margin-top: var(--e-3);
-}
-
 .hoja__cuerpo.hoja__cuerpo--pie-lista {
   padding-top: var(--e-3);
   padding-bottom: var(--e-3);
@@ -2499,11 +2480,6 @@ code {
     transition-delay: 0ms !important;
   }
 
-  .navegacion__indicador--animado {
-    transition: none !important;
-  }
-
-  .vista--sale,
   .dialogo,
   .zona[data-estado='encima'],
   .boton:active,
@@ -2511,9 +2487,4 @@ code {
   .selector:active {
     transform: none !important;
   }
-}
-
-/* Registro: dos cajas seguidas en el margen (la acción que sigue y la prueba de reconocimiento) no se tocan. */
-.margen > .caja-margen + .caja-margen {
-  margin-top: var(--e-4);
 }

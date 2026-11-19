@@ -54,13 +54,13 @@ function avisarSinVista(resultado: Exclude<ResultadoImportacion, { tipo: 'exito'
       break
     case 'carrera':
       toast.warning('Se importó solo una parte del archivo', {
-        description: `Otra importación agregó cuentas mientras tanto. Quedó escrito esto: ${resumirConteos(resultado.conteos)}.`,
+        description: `Otra importación agregó cuentas mientras tanto. Quedó escrito: ${resumirConteos(resultado.conteos)}.`,
         duration: 8000,
       })
       break
     case 'existentes':
       toast.warning('No se importó nada', {
-        description: `${archivo} trae cuentas que ya existen. Vuelve a Alumnos y elige el archivo otra vez para decidir qué hacer con ellas.`,
+        description: `${archivo} trae cuentas que ya existen. Elige el archivo otra vez para decidir qué hacer con ellas.`,
         duration: 8000,
       })
       break
@@ -170,7 +170,7 @@ export function useImportacion(alEscribir: () => void, sinSesion: boolean): Esta
               mostrar({
                 tipo: 'fallo',
                 status: 409,
-                mensaje: 'La API volvió a pedir una decisión sobre las cuentas existentes, algo que no debería pasar. No se sabe si se importó el archivo: revisa la lista y avisa al responsable del borde.',
+                mensaje: 'La placa volvió a preguntar por las cuentas existentes. No se sabe si se importó el archivo: revisa la lista antes de reintentar.',
               })
             }
             break
@@ -226,7 +226,7 @@ export function useImportacion(alEscribir: () => void, sinSesion: boolean): Esta
       return
     }
     fijarPorDecidir(null)
-    toast('Importación cancelada', { description: 'No se escribió nada en la lista de alumnos.' })
+    toast('Importación cancelada', { description: 'No se importó nada.' })
   }, [fijarPorDecidir])
 
   return { enviando, archivo, aviso, porDecidir, elegir, decidir, cancelar }

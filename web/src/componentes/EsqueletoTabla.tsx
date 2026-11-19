@@ -1,5 +1,11 @@
 const FILAS = 6
 
+interface Props {
+  /** Lo que anuncia el lector de pantalla mientras carga. */
+  etiqueta?: string
+  filas?: number
+}
+
 /**
  * Marcador de la tabla mientras llega la primera respuesta. Ocupa el lugar de
  * los renglones para que la página no salte al llegar los datos, y su pulso
@@ -7,14 +13,14 @@ const FILAS = 6
  * está esperando. Los bloques son decorativos: el estado lo anuncia el texto
  * oculto. Va dentro de la hoja de la lista, que ya tiene su título.
  */
-export function EsqueletoTabla() {
+export function EsqueletoTabla({ etiqueta = 'Cargando la lista de alumnos', filas = FILAS }: Props) {
   return (
     <div aria-busy="true">
       <p role="status" className="solo-lectores">
-        Cargando la lista de alumnos
+        {etiqueta}
       </p>
       <div className="esqueleto" aria-hidden="true">
-        {Array.from({ length: FILAS }, (_, i) => (
+        {Array.from({ length: filas }, (_, i) => (
           <div className="esqueleto__fila" key={i}>
             <span className="esqueleto__bloque esqueleto__bloque--n" />
             <span className="esqueleto__bloque esqueleto__bloque--cuenta" />

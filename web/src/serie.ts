@@ -35,10 +35,6 @@ export interface Serie {
   puntos: PuntoSerie[]
   /** Lecturas dentro de la ventana, de la más vieja a la más nueva. */
   visibles: Lectura[]
-  /** Lecturas anteriores a la ventana, que no se dibujan. */
-  omitidas: number
-  /** La más nueva de las omitidas, para decir hasta cuándo llegan. */
-  ultimaOmitida: Lectura | null
   /** Si la ventana visible abarca más de un día calendario. */
   cruzaDias: boolean
 }
@@ -72,8 +68,6 @@ export function construirSerie(lecturas: Lectura[]): Serie {
   return {
     puntos,
     visibles,
-    omitidas: lecturas.length - visibles.length,
-    ultimaOmitida: lecturas[lecturas.length - visibles.length - 1] ?? null,
     cruzaDias: cruzaDias(visibles),
   }
 }

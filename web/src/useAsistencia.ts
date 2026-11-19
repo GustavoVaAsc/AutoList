@@ -6,7 +6,7 @@ import {
   type DetalleSesion,
   type ResumenSesion,
 } from './api/asistenciaRespuestas'
-import { ErrorApi, ErrorSinSesion, TIEMPO_INICIAL_MS } from './api/energia'
+import { ErrorSinSesion, TIEMPO_INICIAL_MS, mensajeDeError } from './api/energia'
 
 const LIMITE_SESIONES = 50
 const SIN_CAMBIOS: readonly string[] = []
@@ -136,10 +136,7 @@ export function useAsistencia(cadaMs: number): EstadoAsistenciaVista {
       } catch (error) {
         if (cancelacion.signal.aborted) return
         sinSesionLocal = error instanceof ErrorSinSesion
-        const mensaje =
-          error instanceof ErrorApi
-            ? error.message
-            : 'Ocurrió un error inesperado al consultar la asistencia.'
+        const mensaje = mensajeDeError(error)
         setEstado((anterior) => ({
           ...anterior,
           cargandoDetalle: false,

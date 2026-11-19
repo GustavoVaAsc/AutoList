@@ -8,7 +8,6 @@ import { DialogoRetiro } from '../componentes/DialogoRetiro'
 import { EsqueletoCifra, EsqueletoTabla } from '../componentes/EsqueletoTabla'
 import { EstadoVacio } from '../componentes/EstadoVacio'
 import { MarcaAsistencia } from '../componentes/MarcaAsistencia'
-import { NumeroAnimado } from '../componentes/NumeroAnimado'
 import { Pagina } from '../componentes/Pagina'
 import { TablaAlumnos } from '../componentes/TablaAlumnos'
 import { ZonaCSV } from '../componentes/ZonaCSV'
@@ -22,7 +21,7 @@ import { useRetiro } from '../useRetiro'
 const CONSULTA_CADA_S = 10
 
 // La materia del grupo, tal como la nombra el plan (docs/HIGH-LEVEL-PLAN.md,
-// línea "Materia" sin el periodo). Es el campo fijo del encabezado de la hoja.
+// línea "Materia" sin el periodo). Va de subtítulo bajo el título de la hoja.
 const MATERIA = 'Fundamentos de Sistemas Embebidos'
 
 // Un <option> solo admite texto, no <bdi>: el grupo viene del CSV y puede traer
@@ -30,15 +29,14 @@ const MATERIA = 'Fundamentos de Sistemas Embebidos'
 // (FSI y PDI) para que no reordene el texto que lo rodea.
 const aislar = (texto: string) => `⁨${texto}⁩`
 
-const entero = (n: number) => String(Math.round(n))
-
 /**
  * Alumnos: la lista misma, compuesta como una hoja de asistencia (web/DESIGN.md).
- * El encabezado lleva los campos del formulario (materia, grupo) y los conteos
- * de lo que se ve; debajo van los renglones. La búsqueda por nombre o cuenta y
- * el filtro de grupo se aplican en el cliente y los conteos siguen a lo visible.
- * Cada renglón lleva su acción (registrar o retirar el rostro). La importación
- * del CSV es una acción secundaria y vive en el margen de la hoja.
+ * El encabezado lleva el filtro de grupo, la búsqueda y los conteos de lo que se
+ * ve; debajo van los renglones. La búsqueda por nombre o cuenta y el filtro de
+ * grupo se aplican en el cliente y los conteos siguen a lo visible. Cada renglón
+ * lleva su acción (registrar o retirar el rostro). La importación del CSV es una
+ * acción secundaria: con la lista vacía su zona está en el margen de la hoja y,
+ * con lista, aparece al pulsar "Importar CSV".
  */
 export function Alumnos() {
   const lista = useAlumnos(CONSULTA_CADA_S * 1000)
@@ -77,6 +75,9 @@ export function Alumnos() {
   const retiro = useRetiro(recargar, alTerminarRetiro)
   const [grupo, setGrupo] = useState('')
   const [busqueda, setBusqueda] = useState('')
+  const [importarAbierto, setImportarAbierto] = useState(false)
+  const botonImportar = useRef<HTMLButtonElement>(null)
+  const focoEnZona = useRef(false)
 
   const grupos = alumnos === null ? [] : gruposDe(alumnos)
   // Si el grupo elegido desaparece de la lista (se renombró), se vuelve a "todos".
@@ -88,20 +89,48 @@ export function Alumnos() {
   // Los conteos son los de la hoja que se ve: con un grupo elegido, los de ese grupo.
   const conRostro = visibles.filter((a) => a.rostro === 'registrado').length
   const hayLista = alumnos !== null && alumnos.length > 0
+  const listaVacia = alumnos !== null && alumnos.length === 0
+  const mostrarZona = listaVacia || importarAbierto
+
+  // Si la zona se pliega con el foco dentro (la primera importación llena la lista y la zona vacía deja de
+  // mostrarse), el foco pasa al botón "Importar CSV" o, si no hay, al título.
+  useEffect(() => {
+    if (!mostrarZona && focoEnZona.current) {
+      focoEnZona.current = false
+      if (document.activeElement === null || document.activeElement === document.body) {
+        ;(botonImportar.current ?? document.getElementById('titulo-lista'))?.focus()
+      }
+    }
+  }, [mostrarZona])
 
   return (
     <>
       <Pagina>
-        <div className="rejilla-alumnos">
+        <div className={mostrarZona ? 'rejilla-alumnos' : 'rejilla-alumnos rejilla-alumnos--sola'}>
           <section className="hoja hoja--lista" aria-labelledby="titulo-lista">
             <header className="hoja__encabezado">
-              <h1 id="titulo-lista" className="hoja__titulo" tabIndex={-1}>Lista de alumnos</h1>
-              <div className="campos">
-                <dl className="campo campo--materia">
-                  <dt className="campo__etiqueta">Materia</dt>
-                  <dd className="campo__valor">{MATERIA}</dd>
-                </dl>
-                {hayLista && (
+              <div className="hoja__barra">
+                <h1 id="titulo-lista" className="hoja__titulo" tabIndex={-1}>Lista de alumnos</h1>
+                {!listaVacia && (
+                  <button
+                    type="button"
+                    className="boton"
+                    ref={botonImportar}
+                    aria-expanded={importarAbierto}
+                    aria-controls="margen-importar"
+                    onClick={() => setImportarAbierto(!importarAbierto)}
+                  >
+                    Importar CSV
+                  </button>
+                )}
+              </div>
+              <p className="etiqueta-tecnica hoja__subtitulo-linea">{MATERIA}</p>
+              {/* La zona plegada no anuncia nada: el aviso de que se importa va aquí, siempre montado. */}
+              <p role="status" className="solo-lectores">
+                {importacion.enviando && !mostrarZona ? `Importando ${importacion.archivo ?? 'el archivo'}…` : ''}
+              </p>
+              {hayLista && (
+                <div className="campos campos--dos">
                   <div className="campo campo--grupo">
                     <label htmlFor="filtro-grupo" className="campo__etiqueta">Grupo</label>
                     <select id="filtro-grupo" className="selector selector--campo" value={grupoActivo} onChange={(e) => setGrupo(e.target.value)}>
@@ -113,18 +142,15 @@ export function Alumnos() {
                       ))}
                     </select>
                   </div>
-                )}
-                {hayLista && <CampoBusqueda id="busqueda-alumnos" etiqueta="Buscar por nombre o cuenta" valor={busqueda} alCambiar={setBusqueda} />}
-              </div>
+                  <CampoBusqueda id="busqueda-alumnos" etiqueta="Buscar por nombre o cuenta" valor={busqueda} alCambiar={setBusqueda} />
+                </div>
+              )}
               {alumnos === null && error === null && (
                 <dl className="resumen" aria-hidden="true">
                   <div className="resumen__item"><dt className="campo__etiqueta">Alumnos</dt><dd className="resumen__valor"><EsqueletoCifra /></dd></div>
                   <div className="resumen__item"><dt className="campo__etiqueta">Con rostro</dt><dd className="resumen__valor"><EsqueletoCifra /></dd></div>
                   <div className="resumen__item"><dt className="campo__etiqueta">Pendientes</dt><dd className="resumen__valor"><EsqueletoCifra /></dd></div>
                 </dl>
-              )}
-              {alumnos === null && error !== null && (
-                <p className="etiqueta-tecnica">Sin datos: no se pudo leer la lista de alumnos.</p>
               )}
               {hayLista && buscando && (
                 <p role="status" className="solo-lectores">
@@ -134,25 +160,21 @@ export function Alumnos() {
               {hayLista && (
                 <dl className="resumen">
                   <div className="resumen__item">
-                    <dt className="campo__etiqueta">
-                      {visibles.length === 1 ? 'Alumno' : 'Alumnos'}
-                      {grupoActivo !== '' && <> en <bdi>{grupoActivo}</bdi></>}
-                      {buscando && (visibles.length === 1 ? ' que coincide' : ' que coinciden')}
-                    </dt>
-                    <dd className="resumen__valor"><NumeroAnimado valor={visibles.length} formato={entero} /></dd>
+                    <dt className="campo__etiqueta">Alumnos</dt>
+                    <dd className="resumen__valor">{visibles.length}</dd>
                   </div>
                   <div className="resumen__item">
                     <dt className="campo__etiqueta">Con rostro</dt>
                     <dd className="resumen__valor resumen__valor--presente">
                       <MarcaAsistencia tipo="presente" />
-                      <NumeroAnimado valor={conRostro} formato={entero} />
+                      {conRostro}
                     </dd>
                   </div>
                   <div className="resumen__item">
                     <dt className="campo__etiqueta">Pendientes</dt>
                     <dd className="resumen__valor">
                       <MarcaAsistencia tipo="pendiente" />
-                      <NumeroAnimado valor={visibles.length - conRostro} formato={entero} />
+                      {visibles.length - conRostro}
                     </dd>
                   </div>
                 </dl>
@@ -162,11 +184,10 @@ export function Alumnos() {
             {error !== null && (
               <div className="hoja__cuerpo">
                 <div className="aviso aviso--error">
-                  <p className="aviso__titulo">{alumnos === null ? 'No se pudo cargar la lista de alumnos' : 'No se pudo actualizar'}</p>
+                  <p className="aviso__titulo">{alumnos === null ? 'No se pudo cargar la lista' : 'No se pudo actualizar la lista'}</p>
                   <p>
-                    {error}{' '}
-                    {horaServidor !== null ? `Se muestran los datos de las ${formatearHora(horaServidor)}. ` : ''}
-                    {sinSesion ? 'La vista no insistirá sola.' : `La vista lo vuelve a intentar cada ${CONSULTA_CADA_S} s.`}
+                    {error}
+                    {horaServidor !== null ? ` Mostrando la de las ${formatearHora(horaServidor)}.` : ''}
                   </p>
                   {sinSesion && (
                     <button type="button" className="boton" onClick={recargar}>
@@ -188,7 +209,7 @@ export function Alumnos() {
             {alumnos !== null && alumnos.length === 0 && (
               <div className="hoja__cuerpo">
                 <EstadoVacio anidado titulo="Todavía no hay alumnos">
-                  Importa el CSV de un grupo con la zona para soltar el archivo y la lista aparece aquí, con el estado del rostro de cada alumno.
+                  Importa el CSV de un grupo y la lista aparecerá aquí.
                 </EstadoVacio>
               </div>
             )}
@@ -212,19 +233,33 @@ export function Alumnos() {
                     </button>
                   }
                 >
-                  Prueba con otra parte del nombre o de la cuenta{grupoActivo !== '' ? ', o con otro grupo' : ''}. La búsqueda ignora acentos y mayúsculas.
+                  Prueba con otra parte del nombre o de la cuenta.
                 </EstadoVacio>
               </div>
             )}
 
             {hayLista && visibles.length > 0 && (
-              <div className="hoja__desplazable" role="region" aria-label="Tabla de alumnos, con desplazamiento horizontal" tabIndex={0}>
+              <div className="hoja__desplazable" role="region" aria-label="Tabla de alumnos" tabIndex={0}>
                 <TablaAlumnos alumnos={visibles} cambiadas={cambiadas} idTitulo="titulo-lista" alRetirar={retiro.pedir} />
               </div>
             )}
           </section>
 
-          <section className="margen" aria-labelledby="titulo-importar">
+          {/* Plegada sigue montada: así la zona sigue evitando que el navegador abra un CSV soltado fuera de ella. */}
+          <section
+            id="margen-importar"
+            className="margen"
+            aria-labelledby="titulo-importar"
+            hidden={!mostrarZona}
+            onFocus={() => {
+              focoEnZona.current = true
+            }}
+            onBlur={(e) => {
+              if (e.relatedTarget !== null) {
+                focoEnZona.current = false
+              }
+            }}
+          >
             <ZonaCSV enviando={importacion.enviando} archivo={importacion.archivo} alElegir={importacion.elegir} />
           </section>
         </div>

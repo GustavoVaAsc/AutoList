@@ -18,27 +18,21 @@ interface Grupo {
   titulo: string
   /** Cómo se llama lo que se ve del grupo en la línea de estado ("Puerta: cerrada"). */
   campo: 'puerta' | 'led' | 'luz' | null
-  nota: string | null
 }
 
 const GRUPOS: readonly Grupo[] = [
-  { grupo: 'puerta', titulo: 'Puerta', campo: 'puerta', nota: 'El servo solo abre: la puerta se cierra sola a los 3 s.' },
-  {
-    grupo: 'led',
-    titulo: 'LED de estado',
-    campo: 'led',
-    nota: 'Con una sesión activa, verde, rojo y ámbar se ven 3 s y vuelve el azul; azul y apagado no cambian el azul. Al terminar la sesión el LED se apaga.',
-  },
-  { grupo: 'buzzer', titulo: 'Buzzer', campo: null, nota: 'El buzzer no informa su estado: se oye.' },
-  { grupo: 'luz', titulo: 'Luz de la tira de 12 V', campo: 'luz', nota: null },
+  { grupo: 'puerta', titulo: 'Puerta', campo: 'puerta' },
+  { grupo: 'led', titulo: 'LED', campo: 'led' },
+  { grupo: 'buzzer', titulo: 'Buzzer', campo: null },
+  { grupo: 'luz', titulo: 'Luz', campo: 'luz' },
 ]
 
 /**
- * Control manual de la XIAO: puerta (servo), LED, buzzer y luz, con el estado actual de cada uno en palabras
- * (aula/actuador/estado, por GET /api/sistema/estado). Con la XIAO fuera de línea los botones se desactivan y la
- * hoja dice por qué. Los botones usan `aria-disabled` y no `disabled`: conservan el foco mientras la orden va en
- * camino. "Abrir puerta" pide confirmación en un diálogo (DialogoPuerta); las demás órdenes salen con un clic. Mismas
- * piezas que la hoja de Sistema (web/DESIGN.md, Composición): sin CSS nuevo.
+ * Control manual del nodo del aula: puerta, LED, buzzer y luz, con el estado actual de cada uno en palabras
+ * (por GET /api/sistema/estado). Con el nodo fuera de línea los botones se desactivan y un solo aviso dice por qué.
+ * Los botones usan `aria-disabled` y no `disabled`: conservan el foco mientras la orden va en camino. "Abrir puerta",
+ * la orden con riesgo, es el botón destacado y pide confirmación en un diálogo (DialogoPuerta); el LED, el buzzer y
+ * la luz son botones pequeños y salen con un clic. Mismas piezas que la hoja de Sistema (web/DESIGN.md, Composición).
  */
 export function HojaActuadores({ sistema, errorEstado, reconsultar }: Props) {
   const { ocupado, enviando, enviar } = useActuadores(reconsultar)
@@ -51,6 +45,8 @@ export function HojaActuadores({ sistema, errorEstado, reconsultar }: Props) {
   const estado = estadoEnPalabras(sistema?.actuadores?.datos ?? null)
   const etiquetaEstado = etiquetaEstadoActuadores(conexion, errorEstado)
   const bloqueado = ocupado || !disponibilidad.habilitado
+  // Un solo aviso: el motivo del bloqueo o, sin él, la advertencia de que la orden puede no llegar.
+  const aviso = disponibilidad.motivo ?? disponibilidad.aviso
 
   // El diálogo se cierra cuando la API responde a la orden confirmada (el resultado sale en un aviso).
   const enviandoConfirmada = confirmacion !== null && confirmacion.fase === 'enviando'
@@ -61,9 +57,9 @@ export function HojaActuadores({ sistema, errorEstado, reconsultar }: Props) {
   }, [enviandoConfirmada, enviando])
 
   // Si el panel se bloquea mientras el diálogo espera la decisión (la XIAO salió de línea o el sondeo del estado falla),
-  // el diálogo se cierra: ya no puede confirmar nada, y el motivo está a la vista en esta hoja (aviso "Las órdenes
-  // están desactivadas"), a donde vuelve el foco, el botón "Abrir puerta", que lo describe con aria-describedby. Dejarlo
-  // abierto con el motivo repetido adentro mantendría tapada la hoja justo cuando hay algo que leer en ella.
+  // el diálogo se cierra: ya no puede confirmar nada, y el motivo está a la vista en esta hoja (el aviso de arriba),
+  // a donde vuelve el foco, el botón "Abrir puerta", que lo describe con aria-describedby. Dejarlo abierto con el
+  // motivo repetido adentro mantendría tapada la hoja justo cuando hay algo que leer en ella.
   const preguntando = confirmacion !== null && confirmacion.fase === 'preguntando'
   useEffect(() => {
     if (preguntando && bloqueado) {
@@ -86,9 +82,9 @@ export function HojaActuadores({ sistema, errorEstado, reconsultar }: Props) {
     <button
       key={orden.id}
       type="button"
-      className="boton"
+      className={pideConfirmacion(orden) ? 'boton boton--primario' : 'boton boton--fila'}
       aria-disabled={bloqueado}
-      aria-describedby={disponibilidad.motivo !== null ? 'motivo-actuadores' : undefined}
+      aria-describedby={aviso !== null ? 'motivo-actuadores' : undefined}
       onClick={() => pulsar(orden)}
     >
       {enviando === orden.id ? 'Enviando…' : orden.etiqueta}
@@ -102,21 +98,13 @@ export function HojaActuadores({ sistema, errorEstado, reconsultar }: Props) {
           <h2 id="titulo-actuadores" className="hoja__subtitulo">
             Actuadores
           </h2>
-          <p className="etiqueta-tecnica hora-lectura">
-            Órdenes manuales a la XIAO. Salen por el broker: el estado de cada actuador se actualiza cuando la XIAO lo
-            confirma.
-          </p>
-          {disponibilidad.motivo !== null && (
-            <div id="motivo-actuadores" className={`aviso ${conexion === 'fuera-de-linea' || errorEstado ? 'aviso--error' : 'aviso--advertencia'}`}>
-              <p className="aviso__titulo">Las órdenes están desactivadas</p>
-              <p>{disponibilidad.motivo}</p>
-            </div>
-          )}
-          {disponibilidad.aviso !== null && (
-            <div className="aviso aviso--advertencia">
-              <p className="aviso__titulo">Sin confirmación de la XIAO</p>
-              <p>{disponibilidad.aviso}</p>
-            </div>
+          {aviso !== null && (
+            <p
+              id="motivo-actuadores"
+              className={`aviso ${disponibilidad.motivo !== null && (conexion === 'fuera-de-linea' || errorEstado) ? 'aviso--error' : 'aviso--advertencia'}`}
+            >
+              {aviso}
+            </p>
           )}
 
           {GRUPOS.map((g) => (
@@ -128,7 +116,6 @@ export function HojaActuadores({ sistema, errorEstado, reconsultar }: Props) {
                     {etiquetaEstado}: {estado[g.campo]}
                   </p>
                 )}
-                {g.nota !== null && <p className="etiqueta-tecnica hora-lectura">{g.nota}</p>}
               </div>
               <div className="dialogo__acciones">{ORDENES.filter((o) => o.grupo === g.grupo).map(boton)}</div>
             </div>

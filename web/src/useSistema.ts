@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ErrorApi, ErrorSinSesion, TIEMPO_INICIAL_MS } from './api/energia'
+import { ErrorSinSesion, TIEMPO_INICIAL_MS, mensajeDeError } from './api/energia'
 import { pedirSistema } from './api/sistema'
 import type { Sistema } from './api/sistemaRespuestas'
 
@@ -63,8 +63,7 @@ export function useSistema(cadaMs: number): EstadoSistema {
           return
         }
         sinSesion = error instanceof ErrorSinSesion
-        const mensaje =
-          error instanceof ErrorApi ? error.message : 'Ocurrió un error inesperado al consultar el estado del sistema.'
+        const mensaje = mensajeDeError(error)
         setEstado((anterior) => ({ ...anterior, error: mensaje, sinSesion }))
       } finally {
         enCurso = false

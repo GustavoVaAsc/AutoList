@@ -1,5 +1,5 @@
 // Lógica pura del estado del sistema: validar la respuesta de GET /api/sistema/estado (pestaña Sistema de
-// nodered/flows/flows.json) y decir con palabras cómo están el servicio de visión, la cámara (XIAO) y los
+// nodered/flows/flows.json) y decir con palabras cómo están el reconocimiento, el nodo del aula (la XIAO) y los
 // actuadores. Los textos de la hoja y de la cabecera salen de aquí para poder probarlos.
 // Sin DOM, sin fetch y sin importar nada: `node --test web/pruebas/*.test.js` carga este archivo
 // directo en Node 22.18+ quitando los tipos.
@@ -197,16 +197,6 @@ export function leerSistema(cuerpo: unknown): ResultadoSistema {
   }
 }
 
-/**
- * Antigüedad (ms) de algo que Node-RED recibió en `t`, en el instante `ahora` (performance.now()). Parte de la
- * hora de la placa (`horaServidor`, cabecera Date de la última respuesta) y suma el tiempo transcurrido desde
- * esa respuesta (`recibidoEn`, performance.now() al recibirla): sigue contando entre consultas sin depender del
- * reloj de la laptop. Nunca es negativa.
- */
-export function antiguedadMs(t: number, horaServidor: number, recibidoEn: number, ahora: number): number {
-  return Math.max(0, horaServidor - t + (ahora - recibidoEn))
-}
-
 // ---- Qué decir de cada uno ----------------------------------------------------------------------
 
 export type Conexion = 'en-linea' | 'fuera-de-linea' | 'sin-datos'
@@ -230,30 +220,34 @@ const ESTADO: Record<Conexion, string> = {
   'sin-datos': 'Sin datos',
 }
 
+/** Con esta señal (dBm) o menos, el nodo del aula se conecta mal. */
+export const SENAL_DEBIL_DBM = -80
+/** Con menos de esta memoria libre (bytes) el nodo del aula puede quedarse sin recursos. */
+export const MEMORIA_MINIMA_BYTES = 30 * 1024
+
 function detalleVision(d: EstadoVision): string[] {
   const detalle: string[] = []
   if (d.modo === 'inactivo') detalle.push('Modo inactivo')
   if (d.modo === 'pase') detalle.push('Modo pase de lista')
   if (d.modo === 'enrolando') detalle.push('Registrando un rostro')
-  if (d.galeria !== null) detalle.push(`${d.galeria} ${d.galeria === 1 ? 'rostro' : 'rostros'} en la galería`)
-  if (d.modelo !== null && d.modelo !== '') detalle.push(`Modelo ${d.modelo}`)
+  if (d.galeria !== null) detalle.push(`${d.galeria} ${d.galeria === 1 ? 'rostro registrado' : 'rostros registrados'}`)
   return detalle
 }
 
+// Dice si la cámara está encendida y, de lo demás (señal, memoria, memoria flash, cortes), solo lo que falla.
 function detalleCamara(d: EstadoCamara): string[] {
   const detalle: string[] = []
-  if (d.rssi !== null) detalle.push(`Señal ${d.rssi} dBm`)
-  if (d.heap !== null) detalle.push(`Memoria libre ${Math.round(d.heap / 1024)} KB`)
-  if (d.temp !== null) detalle.push(`Chip a ${d.temp.toFixed(1)} °C`)
   if (d.camara !== null) detalle.push(d.camara ? 'Cámara encendida' : 'Cámara apagada')
-  if (d.corte === true) detalle.push('Capturas suspendidas por temperatura o enfriamiento')
-  if (d.nvs === false) detalle.push('Memoria flash (NVS) con falla')
+  if (d.rssi !== null && d.rssi <= SENAL_DEBIL_DBM) detalle.push('Señal débil')
+  if (d.heap !== null && d.heap < MEMORIA_MINIMA_BYTES) detalle.push('Poca memoria')
+  if (d.nvs === false) detalle.push('Falla de la memoria interna')
+  if (d.corte === true) detalle.push('Capturas suspendidas por temperatura')
   return detalle
 }
 
 function detalleActuadores(d: EstadoActuadores): string[] {
   const detalle: string[] = []
-  if (d.servo !== null) detalle.push(`Servo ${d.servo}`)
+  if (d.servo !== null) detalle.push(`Puerta ${d.servo === 'abierto' ? 'abierta' : 'cerrada'}`)
   if (d.led !== null) detalle.push(`LED ${d.led === 'ambar' ? 'ámbar' : d.led}`)
   if (d.luz !== null) detalle.push(d.luz ? 'Luz encendida' : 'Luz apagada')
   return detalle
@@ -281,14 +275,14 @@ export function filasSistema(sistema: Sistema | null): FilaSistema[] {
   const conexionCamara = conexionDe(camara)
   const filaVision = fila(
     'vision',
-    'Servicio de visión',
+    'Reconocimiento',
     conexionVision,
     vision !== null && conexionVision === 'en-linea' ? detalleVision(vision.datos) : [],
     vision?.t ?? null,
   )
   const filaCamara = fila(
     'camara',
-    'Cámara (XIAO)',
+    'Nodo del aula',
     conexionCamara,
     camara !== null && conexionCamara === 'en-linea' ? detalleCamara(camara.datos) : [],
     camara?.t ?? null,
@@ -299,7 +293,7 @@ export function filasSistema(sistema: Sistema | null): FilaSistema[] {
     filaActuadores = fila('actuadores', 'Actuadores', 'sin-datos', [], null)
   } else if (conexionCamara === 'fuera-de-linea') {
     const ultimo = detalleActuadores(actuadores.datos).map((texto) => `Último estado: ${texto.toLowerCase()}`)
-    filaActuadores = fila('actuadores', 'Actuadores', 'fuera-de-linea', ['La XIAO está fuera de línea', ...ultimo], actuadores.t)
+    filaActuadores = fila('actuadores', 'Actuadores', 'fuera-de-linea', ['Sin conexión con el nodo del aula', ...ultimo], actuadores.t)
   } else {
     filaActuadores = fila('actuadores', 'Actuadores', 'en-linea', detalleActuadores(actuadores.datos), actuadores.t)
   }
@@ -307,9 +301,8 @@ export function filasSistema(sistema: Sistema | null): FilaSistema[] {
 }
 
 export interface DetalleCabecera {
+  /** Lo que no está en línea, con su nombre: "nodo del aula fuera de línea". */
   texto: string
-  /** Algo no está en línea (caído o sin datos): la cabecera lo destaca. */
-  problema: boolean
 }
 
 const TEXTO_CONEXION: Record<Conexion, string> = {
@@ -317,24 +310,26 @@ const TEXTO_CONEXION: Record<Conexion, string> = {
   'fuera-de-linea': 'fuera de línea',
   'sin-datos': 'sin datos',
 }
-// Qué se dice primero: lo caído, luego lo que no se sabe, y al final lo que está bien.
+// Qué se dice primero: lo caído, luego lo que no se sabe.
 const GRAVEDAD: Record<Conexion, number> = { 'fuera-de-linea': 2, 'sin-datos': 1, 'en-linea': 0 }
 
 /**
- * El detalle del indicador de la cabecera: la placa sigue diciendo si responde y esto añade cómo están el
- * servicio de visión y la cámara. Iguales: "visión y cámara en línea". Distintos: lo peor primero ("cámara fuera
- * de línea, visión en línea"). Null mientras no hay respuesta de la API.
+ * El detalle del indicador de la cabecera: la placa dice si responde y esto solo añade lo que falla, con su
+ * nombre (el reconocimiento y el nodo del aula). Si todo está en línea no hay detalle, y tampoco mientras no hay
+ * respuesta de la API. Iguales: "reconocimiento y nodo del aula fuera de línea". Distintos: lo peor primero
+ * ("nodo del aula fuera de línea, reconocimiento sin datos").
  */
 export function detalleCabecera(sistema: Sistema | null): DetalleCabecera | null {
   if (sistema === null) return null
   const partes = [
-    { nombre: 'visión', conexion: conexionDe(sistema.vision) },
-    { nombre: 'cámara', conexion: conexionDe(sistema.camara) },
+    { nombre: 'reconocimiento', conexion: conexionDe(sistema.vision) },
+    { nombre: 'nodo del aula', conexion: conexionDe(sistema.camara) },
   ]
-  const problema = partes.some((p) => p.conexion !== 'en-linea')
-  if (partes[0]!.conexion === partes[1]!.conexion) {
-    return { texto: `visión y cámara ${TEXTO_CONEXION[partes[0]!.conexion]}`, problema }
+  const fallan = partes.filter((p) => p.conexion !== 'en-linea')
+  if (fallan.length === 0) return null
+  if (fallan.length === 2 && fallan[0]!.conexion === fallan[1]!.conexion) {
+    return { texto: `${fallan[0]!.nombre} y ${fallan[1]!.nombre} ${TEXTO_CONEXION[fallan[0]!.conexion]}` }
   }
-  const ordenadas = [...partes].sort((a, b) => GRAVEDAD[b.conexion] - GRAVEDAD[a.conexion])
-  return { texto: ordenadas.map((p) => `${p.nombre} ${TEXTO_CONEXION[p.conexion]}`).join(', '), problema }
+  fallan.sort((a, b) => GRAVEDAD[b.conexion] - GRAVEDAD[a.conexion])
+  return { texto: fallan.map((p) => `${p.nombre} ${TEXTO_CONEXION[p.conexion]}`).join(', ') }
 }

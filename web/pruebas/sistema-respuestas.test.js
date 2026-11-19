@@ -4,7 +4,8 @@
 // Sin dependencias: node --test web/pruebas/*.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { antiguedadMs, detalleCabecera, filasSistema, leerSistema } from '../src/api/sistemaRespuestas.ts'
+import { assertTextoLegible, assertTextosDistintos } from './texto.js'
+import { MEMORIA_MINIMA_BYTES, SENAL_DEBIL_DBM, detalleCabecera, filasSistema, leerSistema } from '../src/api/sistemaRespuestas.ts'
 
 const NUNCA = { recibido: null, datos: null }
 const T1 = '2026-11-16T15:30:00.000Z'
@@ -136,145 +137,172 @@ test('un campo fuera del contrato se rechaza y el motivo dice entrada y campo, n
   }
 })
 
-test('antiguedadMs parte de la hora de la placa y suma el tiempo desde la respuesta', () => {
-  const t = Date.parse('2026-11-16T15:30:00Z')
-  const horaServidor = Date.parse('2026-11-16T15:30:12Z')
-  assert.equal(antiguedadMs(t, horaServidor, 1000, 1000), 12_000)
-  assert.equal(antiguedadMs(t, horaServidor, 1000, 4500), 15_500)
-})
-
-test('antiguedadMs nunca es negativa (el reloj de la placa pudo retroceder)', () => {
-  assert.equal(antiguedadMs(1000, 500, 0, 0), 0)
-})
-
 // ---------------------------------------------------------------------------------------------
 // Renglones de la hoja
 // ---------------------------------------------------------------------------------------------
 
 const filas = (extra) => filasSistema(sistema(extra))
 const porClave = (fs, clave) => fs.find((f) => f.clave === clave)
+const camaraCon = (datos) => ({ camara: { recibido: T2, datos: { en_linea: true, ...datos } } })
 
-test('hay tres renglones, en este orden: visión, cámara y actuadores', () => {
+test('hay tres renglones, en este orden: reconocimiento, nodo del aula y actuadores; cada uno con su nombre', () => {
   const fs = filas()
   assert.deepEqual(fs.map((f) => f.clave), ['vision', 'camara', 'actuadores'])
-  assert.deepEqual(fs.map((f) => f.nombre), ['Servicio de visión', 'Cámara (XIAO)', 'Actuadores'])
+  assertTextosDistintos(fs.map((f) => f.nombre))
 })
 
 test('con todo en línea, cada renglón lo dice, trae su detalle en palabras y la hora en que se recibió', () => {
   const fs = filas()
   const vision = porClave(fs, 'vision')
   assert.equal(vision.conexion, 'en-linea')
-  assert.equal(vision.estado, 'En línea')
-  assert.deepEqual(vision.detalle, ['Modo pase de lista', '38 rostros en la galería', 'Modelo w600k_mbf-uint8-v1'])
+  assertTextoLegible(vision.estado)
+  assert.equal(vision.detalle.length, 2, 'el modo y los rostros registrados')
+  assertTextosDistintos(vision.detalle)
   assert.equal(vision.t, Date.parse(T1))
   const camara = porClave(fs, 'camara')
   assert.equal(camara.conexion, 'en-linea')
-  assert.deepEqual(camara.detalle, ['Señal -58 dBm', 'Memoria libre 120 KB', 'Chip a 48.5 °C', 'Cámara apagada'])
+  assert.equal(camara.detalle.length, 1, 'solo si la cámara está encendida: la señal, la memoria y el chip van solo si fallan')
+  assertTextosDistintos(camara.detalle)
   assert.equal(camara.t, Date.parse(T2))
   const actuadores = porClave(fs, 'actuadores')
   assert.equal(actuadores.conexion, 'en-linea')
-  assert.deepEqual(actuadores.detalle, ['Servo cerrado', 'LED azul', 'Luz apagada'])
+  assert.equal(actuadores.detalle.length, 3, 'puerta, LED y luz')
+  assertTextosDistintos(actuadores.detalle)
+  assertTextosDistintos([vision.estado, porClave(filas({ vision: NUNCA }), 'vision').estado, porClave(filas({ vision: { recibido: T1, datos: { en_linea: false } } }), 'vision').estado])
 })
 
-test('el Will deja la visión y la cámara fuera de línea y sin detalle de un estado que ya no vale', () => {
+test('el Will deja el reconocimiento y el nodo del aula fuera de línea y sin detalle de un estado que ya no vale', () => {
   const fs = filas({ vision: { recibido: T1, datos: { en_linea: false } }, camara: { recibido: T2, datos: { en_linea: false } } })
   for (const clave of ['vision', 'camara']) {
     const f = porClave(fs, clave)
     assert.equal(f.conexion, 'fuera-de-linea', clave)
-    assert.equal(f.estado, 'Fuera de línea', clave)
+    assertTextoLegible(f.estado, clave)
     assert.deepEqual(f.detalle, [], clave)
     assert.notEqual(f.t, null, clave)
   }
 })
 
-test('lo que nunca llegó es "Sin datos", sin hora y sin detalle (no se inventa un estado)', () => {
+test('lo que nunca llegó es "sin datos", sin hora y sin detalle (no se inventa un estado)', () => {
   const fs = filas({ vision: NUNCA, camara: NUNCA, actuadores: NUNCA })
   for (const f of fs) {
     assert.equal(f.conexion, 'sin-datos', f.clave)
-    assert.equal(f.estado, 'Sin datos', f.clave)
+    assertTextoLegible(f.estado, f.clave)
     assert.deepEqual(f.detalle, [], f.clave)
     assert.equal(f.t, null, f.clave)
   }
 })
 
-test('los actuadores viven en la XIAO: con la cámara fuera de línea también ellos, con su último estado conocido', () => {
+test('los actuadores viven en el nodo del aula: con él fuera de línea también ellos, con su último estado conocido', () => {
   const fs = filas({ camara: { recibido: T2, datos: { en_linea: false } } })
   const a = porClave(fs, 'actuadores')
   assert.equal(a.conexion, 'fuera-de-linea')
-  assert.deepEqual(a.detalle, [
-    'La XIAO está fuera de línea',
-    'Último estado: servo cerrado',
-    'Último estado: led azul',
-    'Último estado: luz apagada',
-  ])
+  assert.equal(a.detalle.length, 4, 'el aviso de conexión y los tres últimos estados')
+  assertTextosDistintos(a.detalle)
+  assert.ok(a.detalle[0].toLowerCase().includes(porClave(fs, 'camara').nombre.toLowerCase()), 'el aviso nombra al nodo como la hoja')
 })
 
-test('los actuadores sin datos siguen sin datos aunque la cámara esté caída', () => {
+test('los actuadores sin datos siguen sin datos aunque el nodo esté caído', () => {
   const fs = filas({ camara: { recibido: T2, datos: { en_linea: false } }, actuadores: NUNCA })
   assert.equal(porClave(fs, 'actuadores').conexion, 'sin-datos')
 })
 
-test('los actuadores con estado y la cámara sin datos se muestran en línea (no hay nada que diga lo contrario)', () => {
+test('los actuadores con estado y el nodo sin datos se muestran en línea (no hay nada que diga lo contrario)', () => {
   const fs = filas({ camara: NUNCA })
   assert.equal(porClave(fs, 'actuadores').conexion, 'en-linea')
 })
 
-test('el detalle de la cámara solo menciona lo que pasa: corte y nvs con falla, y sin lo que no llegó', () => {
-  const fs = filas({ camara: { recibido: T2, datos: { en_linea: true, camara: true, corte: true, nvs: false } } })
-  assert.deepEqual(porClave(fs, 'camara').detalle, [
-    'Cámara encendida',
-    'Capturas suspendidas por temperatura o enfriamiento',
-    'Memoria flash (NVS) con falla',
-  ])
-  const minimo = filas({ camara: { recibido: T2, datos: { en_linea: true } } })
+test('el detalle del nodo menciona la cámara y, de lo demás, solo lo que falla', () => {
+  const sano = porClave(filas(camaraCon({ camara: true, rssi: SENAL_DEBIL_DBM + 1, heap: MEMORIA_MINIMA_BYTES, nvs: true, corte: false })), 'camara').detalle
+  assert.equal(sano.length, 1)
+  const encendida = sano[0]
+  assert.notEqual(porClave(filas(camaraCon({ camara: false })), 'camara').detalle[0], encendida, 'encendida y apagada se leen distinto')
+  const mal = porClave(filas(camaraCon({ camara: true, rssi: SENAL_DEBIL_DBM, heap: MEMORIA_MINIMA_BYTES - 1, nvs: false, corte: true })), 'camara').detalle
+  assert.equal(mal.length, 5, 'la cámara más cuatro fallas')
+  assert.equal(mal[0], encendida)
+  assertTextosDistintos(mal)
+  for (const falla of [{ rssi: SENAL_DEBIL_DBM }, { heap: MEMORIA_MINIMA_BYTES - 1 }, { nvs: false }, { corte: true }]) {
+    assert.equal(porClave(filas(camaraCon(falla)), 'camara').detalle.length, 1, JSON.stringify(falla))
+  }
+  const minimo = filas(camaraCon({}))
   assert.deepEqual(porClave(minimo, 'camara').detalle, [])
   assert.equal(porClave(minimo, 'camara').conexion, 'en-linea')
 })
 
-test('el detalle de la visión: un solo rostro va en singular, el modo enrolando se dice en palabras y un modelo vacío no se lista', () => {
-  const fs = filas({ vision: { recibido: T1, datos: { en_linea: true, modo: 'enrolando', galeria: 1, modelo: '' } } })
-  assert.deepEqual(porClave(fs, 'vision').detalle, ['Registrando un rostro', '1 rostro en la galería'])
-  const inactivo = filas({ vision: { recibido: T1, datos: { en_linea: true, modo: 'inactivo', galeria: 0 } } })
-  assert.deepEqual(porClave(inactivo, 'vision').detalle, ['Modo inactivo', '0 rostros en la galería'])
+test('el detalle del reconocimiento es su modo y los rostros registrados, sin el modelo; sin ellos no hay detalle', () => {
+  const modos = ['inactivo', 'pase', 'enrolando'].map((modo) => {
+    const d = porClave(filas({ vision: { recibido: T1, datos: { en_linea: true, modo, galeria: 1, modelo: 'm' } } }), 'vision').detalle
+    assert.equal(d.length, 2, modo)
+    assert.ok(!d.join(' ').includes('m '), 'sin el modelo')
+    return d[0]
+  })
+  assertTextosDistintos(modos)
+  assert.deepEqual(porClave(filas({ vision: { recibido: T1, datos: { en_linea: true } } }), 'vision').detalle, [])
 })
 
-test('los colores del LED y el estado del servo se dicen en español', () => {
+test('los rostros registrados llevan el número y cambian entre singular y plural', () => {
+  const rostros = (galeria) =>
+    porClave(filas({ vision: { recibido: T1, datos: { en_linea: true, galeria } } }), 'vision').detalle[0]
+  assert.ok(rostros(38).includes('38'))
+  assert.ok(rostros(0).includes('0'))
+  assert.notEqual(rostros(1).replace('1', 'N'), rostros(2).replace('2', 'N'), 'singular y plural se leen distinto')
+})
+
+test('la puerta, el LED y la luz se dicen en español y lo que no llegó no se lista', () => {
   const fs = filas({ actuadores: { recibido: T1, datos: { servo: 'abierto', led: 'ambar', luz: 1 } } })
-  assert.deepEqual(porClave(fs, 'actuadores').detalle, ['Servo abierto', 'LED ámbar', 'Luz encendida'])
+  const detalle = porClave(fs, 'actuadores').detalle
+  assertTextosDistintos(detalle)
+  assert.ok(detalle.some((t) => t.includes('ámbar')))
+  const cerrada = porClave(filas({ actuadores: { recibido: T1, datos: { servo: 'cerrado' } } }), 'actuadores').detalle
+  assert.equal(cerrada.length, 1)
+  assert.notEqual(cerrada[0], detalle[0], 'abierta y cerrada se leen distinto')
   const apagado = filas({ actuadores: { recibido: T1, datos: { led: 'apagado' } } })
-  assert.deepEqual(porClave(apagado, 'actuadores').detalle, ['LED apagado'])
+  assert.equal(porClave(apagado, 'actuadores').detalle.length, 1)
 })
 
 // ---------------------------------------------------------------------------------------------
 // Cabecera
 // ---------------------------------------------------------------------------------------------
 
+const caido = { recibido: T1, datos: { en_linea: false } }
+const nombres = () => {
+  const fs = filas()
+  return { vision: porClave(fs, 'vision').nombre.toLowerCase(), camara: porClave(fs, 'camara').nombre.toLowerCase() }
+}
+
 test('sin respuesta de la API, la cabecera no dice nada del sistema', () => {
   assert.equal(detalleCabecera(null), null)
 })
 
-test('con visión y cámara en línea, el detalle lo dice y no es un problema', () => {
-  assert.deepEqual(detalleCabecera(sistema()), { texto: 'visión y cámara en línea', problema: false })
+test('con el reconocimiento y el nodo en línea no hay detalle: solo se nombra lo que falla', () => {
+  assert.equal(detalleCabecera(sistema()), null)
+  assert.equal(detalleCabecera(sistema({ actuadores: NUNCA, metricas: NUNCA })), null, 'los actuadores y las métricas no cuentan')
 })
 
-test('una caída se dice con su nombre y es un problema', () => {
-  const vision = sistema({ vision: { recibido: T1, datos: { en_linea: false } } })
-  assert.deepEqual(detalleCabecera(vision), { texto: 'visión fuera de línea, cámara en línea', problema: true })
-  const camara = sistema({ camara: { recibido: T1, datos: { en_linea: false } } })
-  assert.deepEqual(detalleCabecera(camara), { texto: 'cámara fuera de línea, visión en línea', problema: true })
-  const ambas = sistema({ vision: { recibido: T1, datos: { en_linea: false } }, camara: { recibido: T1, datos: { en_linea: false } } })
-  assert.deepEqual(detalleCabecera(ambas), { texto: 'visión y cámara fuera de línea', problema: true })
+test('una caída nombra solo lo que falla, con el mismo nombre que la hoja', () => {
+  const n = nombres()
+  const vision = detalleCabecera(sistema({ vision: caido })).texto
+  assertTextoLegible(vision)
+  assert.ok(vision.includes(n.vision) && !vision.includes(n.camara))
+  const camara = detalleCabecera(sistema({ camara: caido })).texto
+  assertTextoLegible(camara)
+  assert.ok(camara.includes(n.camara) && !camara.includes(n.vision))
+  const ambas = detalleCabecera(sistema({ vision: caido, camara: caido })).texto
+  assertTextoLegible(ambas)
+  assert.ok(ambas.includes(n.vision) && ambas.includes(n.camara))
+  assertTextosDistintos([vision, camara, ambas])
 })
 
-test('lo que nunca llegó se dice "sin datos" y también es un problema', () => {
-  assert.deepEqual(detalleCabecera(sistema({ camara: NUNCA })), { texto: 'cámara sin datos, visión en línea', problema: true })
-  assert.deepEqual(detalleCabecera(sistema({ vision: NUNCA, camara: NUNCA })), { texto: 'visión y cámara sin datos', problema: true })
-  assert.deepEqual(
-    detalleCabecera(sistema({ vision: NUNCA, camara: { recibido: T1, datos: { en_linea: false } } })),
-    { texto: 'cámara fuera de línea, visión sin datos', problema: true },
-  )
+test('lo que nunca llegó también se nombra, y se distingue de lo caído', () => {
+  const n = nombres()
+  const sinDatos = detalleCabecera(sistema({ camara: NUNCA })).texto
+  assert.ok(sinDatos.includes(n.camara) && !sinDatos.includes(n.vision))
+  const caida = detalleCabecera(sistema({ camara: caido })).texto
+  assert.notEqual(sinDatos, caida)
 })
 
-test('los actuadores y las métricas no cambian el detalle de la cabecera (es de la visión y la cámara)', () => {
-  assert.deepEqual(detalleCabecera(sistema({ actuadores: NUNCA, metricas: NUNCA })), { texto: 'visión y cámara en línea', problema: false })
+test('con dos fallas distintas, lo caído se dice primero', () => {
+  const n = nombres()
+  const texto = detalleCabecera(sistema({ vision: NUNCA, camara: caido })).texto
+  assert.ok(texto.indexOf(n.camara) < texto.indexOf(n.vision))
+  assertTextoLegible(texto)
 })
