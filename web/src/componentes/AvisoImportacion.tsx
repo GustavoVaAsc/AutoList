@@ -15,9 +15,8 @@ export function AvisoImportacion({ aviso }: { aviso: Aviso }) {
       <div className="aviso aviso--advertencia aviso--entra" role="alert">
         <p className="aviso__titulo">Se importó solo una parte del archivo</p>
         <p>
-          Otra importación agregó cuentas del archivo mientras esta se escribía. Quedó escrito esto: {resumirConteos(conteos)}, de{' '}
-          {conteos.total} {conteos.total === 1 ? 'fila' : 'filas'}. Las omitidas son cuentas que la otra importación ya había agregado y no se
-          tocaron. Para actualizar sus nombres o grupos, vuelve a elegir el archivo y decide qué hacer con las cuentas existentes.
+          Otra importación agregó cuentas mientras tanto. Quedó escrito: {resumirConteos(conteos)}, de {conteos.total}{' '}
+          {conteos.total === 1 ? 'fila' : 'filas'}. Para actualizar nombres o grupos, vuelve a elegir el archivo.
         </p>
       </div>
     )

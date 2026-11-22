@@ -112,7 +112,7 @@ function fallo(status: number | null, mensaje: string): ResultadoImportacion {
   return { tipo: 'fallo', status, mensaje }
 }
 
-const NO_RECONOCIDA = 'La API respondió algo que la vista no reconoce. No se sabe si se importó el archivo: revisa la lista y avisa al responsable del borde.'
+const NO_RECONOCIDA = 'La placa respondió algo inesperado. No se sabe si se importó el archivo: revisa la lista antes de reintentar.'
 
 /**
  * Traduce la respuesta de POST /api/alumnos/importar. `cuerpo` es el JSON ya
@@ -140,7 +140,7 @@ export function interpretarRespuesta(status: number, cuerpo: unknown): Resultado
       const totalErrores = esConteo(o?.total_errores) ? Math.max(o.total_errores, filas.length) : filas.length
       return {
         tipo: 'filas-invalidas',
-        error: texto(o?.error) ?? 'El servidor rechazó el archivo. No se importó nada.',
+        error: texto(o?.error) ?? 'El archivo no es válido. No se importó nada.',
         totalErrores,
         filas,
       }
@@ -163,15 +163,15 @@ export function interpretarRespuesta(status: number, cuerpo: unknown): Resultado
       return fallo(status, NO_RECONOCIDA)
     }
     case 401:
-      return fallo(status, 'La API pide usuario y contraseña del profesor y no se completó el inicio de sesión. No se importó nada.')
+      return fallo(status, 'Falta iniciar sesión. No se importó nada.')
     case 403:
-      return fallo(status, 'La API rechazó la petición por su origen o su cabecera de seguridad. Abre la página desde la dirección de la placa (https://<ip-de-la-placa>:1880/app/). No se importó nada.')
+      return fallo(status, 'La placa rechazó la petición. Recarga la página e intenta de nuevo. No se importó nada.')
     case 413:
-      return fallo(status, 'El archivo pesa más de 256 KiB, el máximo que acepta la API. No se importó nada.')
+      return fallo(status, 'El archivo pesa más de 256 KiB. No se importó nada.')
     case 415:
-      return fallo(status, 'La API solo acepta archivos CSV (text/csv). No se importó nada.')
+      return fallo(status, 'Solo se aceptan archivos CSV. No se importó nada.')
     default:
-      return fallo(status, `La API respondió con el error ${status}. Revisa la lista antes de reintentar; si sigue igual, avisa al responsable del borde.`)
+      return fallo(status, 'La placa no pudo atender la petición. Revisa la lista antes de reintentar.')
   }
 }
 
@@ -197,7 +197,7 @@ export function validarArchivoLocal(archivo: { name: string; size: number; type:
   }
   const extensionDeTexto = /\.(csv|txt)$/i.test(archivo.name)
   if (!extensionDeTexto && !archivo.type.toLowerCase().startsWith('text/')) {
-    return 'Elige un archivo CSV de texto (.csv). Excel: guárdalo como CSV UTF-8 (delimitado por comas).'
+    return 'Elige un archivo CSV. Desde Excel, guárdalo como CSV UTF-8.'
   }
   return null
 }
@@ -230,7 +230,7 @@ export type LecturaAlumnos = { ok: true; alumnos: Alumno[] } | { ok: false; moti
  */
 export function leerAlumnos(cuerpo: unknown): LecturaAlumnos {
   if (!Array.isArray(cuerpo)) {
-    return { ok: false, motivo: 'La API devolvió datos que la vista no reconoce (se esperaba una lista de alumnos). Avisa al responsable del borde.' }
+    return { ok: false, motivo: 'se esperaba una lista de alumnos' }
   }
   const alumnos: Alumno[] = []
   for (const [posicion, elemento] of (cuerpo as unknown[]).entries()) {
@@ -240,7 +240,7 @@ export function leerAlumnos(cuerpo: unknown): LecturaAlumnos {
     const grupo = texto(o?.grupo)
     const rostro = o?.rostro
     if (cuenta === null || nombre === null || grupo === null || (rostro !== 'pendiente' && rostro !== 'registrado')) {
-      return { ok: false, motivo: `El alumno ${posicion + 1} de la respuesta no tiene cuenta, nombre, grupo y estado del rostro válidos. Avisa al responsable del borde.` }
+      return { ok: false, motivo: `el alumno ${posicion + 1} de la respuesta no tiene cuenta, nombre, grupo y estado del rostro válidos` }
     }
     alumnos.push({ cuenta, nombre, grupo, rostro })
   }

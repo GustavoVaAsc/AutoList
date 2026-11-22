@@ -33,7 +33,7 @@ export function SeleccionAlumno({ alumnos, elegida, alElegir, bloqueado }: Props
   return (
     <fieldset className="eleccion">
       <legend className="solo-lectores">Alumno por registrar</legend>
-      <div ref={lista} className="eleccion__lista" role="region" aria-label="Alumnos, con desplazamiento vertical" tabIndex={0}>
+      <div ref={lista} className="eleccion__lista" role="region" aria-label="Alumnos" tabIndex={0}>
         {alumnos.map((a) => {
           const registrado = a.rostro === 'registrado'
           return (

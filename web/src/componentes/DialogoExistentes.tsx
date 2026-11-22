@@ -53,11 +53,10 @@ export function DialogoExistentes({ datos, enviando, alDecidir, alCancelar }: Pr
       {mostrado !== null && (
         <div className="dialogo__interior">
           <h2 id="titulo-dialogo" className="dialogo__titulo">
-            {total === 1 ? 'Una cuenta del archivo ya existe' : `${total} cuentas del archivo ya existen`}
+            {total === 1 ? 'Una cuenta ya existe' : `${total} cuentas ya existen`}
           </h2>
           <p id="descripcion-dialogo">
-            Todavía no se importó nada. Elige qué hacer con las cuentas que ya existen; en los dos casos se importan las nuevas.
-            Nunca se borra a nadie ni se toca el rostro ni el consentimiento de nadie.
+            Todavía no se importó nada. Elige qué hacer con ellas; las cuentas nuevas se importan en los dos casos.
           </p>
           <ul className="existentes" tabIndex={0} aria-label="Cuentas que ya existen">
             {mostrado.existentes.map((e) => (
@@ -73,32 +72,32 @@ export function DialogoExistentes({ datos, enviando, alDecidir, alCancelar }: Pr
                         El archivo trae: <bdi>{e.csv.nombre}</bdi> · <bdi>{e.csv.grupo}</bdi>
                       </>
                     ) : (
-                      'El archivo trae el mismo nombre y grupo'
+                      'Sin cambios en el archivo'
                     )}
-                    {e.tieneRostro ? '. Tiene rostro registrado' : ''}
+                    {e.tieneRostro ? ' · Con rostro' : ''}
                   </span>
                 </span>
               </li>
             ))}
           </ul>
           <p className="etiqueta-tecnica">
-            <strong>Actualizar nombre y grupo</strong> pone los del archivo en las cuentas existentes (cambian {cambian} de {total}).{' '}
-            <strong>Omitir existentes</strong> las deja como están.
+            <strong>Actualizar</strong> pone el nombre y el grupo del archivo (cambian {cambian} de {total}).{' '}
+            <strong>Omitir</strong> deja esas cuentas como están.
           </p>
           <div className="dialogo__acciones">
             <button type="button" className="boton" data-foco-inicial aria-disabled={enviando} onClick={() => !enviando && alCancelar()}>
               Cancelar
             </button>
             <button type="button" className="boton" aria-disabled={enviando} onClick={() => !enviando && alDecidir('omitir')}>
-              Omitir existentes
+              Omitir
             </button>
             <button type="button" className="boton" aria-disabled={enviando} onClick={() => !enviando && alDecidir('actualizar')}>
-              Actualizar nombre y grupo
+              Actualizar
             </button>
           </div>
           {enviando && (
             <p role="status" className="etiqueta-tecnica">
-              Importando el archivo
+              Importando…
             </p>
           )}
         </div>

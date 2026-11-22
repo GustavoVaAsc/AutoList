@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { pedirLecturas, ErrorApi, ErrorSinSesion, TIEMPO_INICIAL_MS, type Lectura } from './api/energia'
+import { pedirLecturas, ErrorSinSesion, TIEMPO_INICIAL_MS, type Lectura, mensajeDeError } from './api/energia'
 
 export interface EstadoLecturas {
   /** Lecturas de la última consulta correcta, de la más vieja a la más nueva. */
@@ -93,7 +93,7 @@ export function useLecturas(limite: number, cadaMs: number): EstadoLecturas {
           return
         }
         sinSesion = error instanceof ErrorSinSesion
-        const mensaje = error instanceof ErrorApi ? error.message : 'Ocurrió un error inesperado al consultar la API.'
+        const mensaje = mensajeDeError(error)
         setEstado((anterior) => ({ ...anterior, error: mensaje, sinSesion }))
       } finally {
         enCurso = false

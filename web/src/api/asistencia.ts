@@ -32,7 +32,7 @@ function horaDeRespuesta(respuesta: Response): number {
   return Number.isNaN(fecha) ? Date.now() : fecha
 }
 
-async function pedirJson(
+export async function pedirJson(
   url: string,
   senal: AbortSignal,
   tiempoMaximoMs: number,
@@ -43,7 +43,7 @@ async function pedirJson(
   senal.addEventListener('abort', alCancelar)
   const temporizador = setTimeout(() => controlador.abort(), tiempoMaximoMs)
   const tiempoAgotado = () =>
-    new ErrorApi('La API tardó demasiado en responder. Revisa la conexión con la placa.')
+    new ErrorApi('La placa tardó en responder.')
   try {
     let respuesta: Response
     try {
@@ -55,23 +55,18 @@ async function pedirJson(
       if (senal.aborted) throw error
       throw controlador.signal.aborted
         ? tiempoAgotado()
-        : new ErrorApi(
-            'No se pudo conectar con la API. Revisa que la placa esté encendida y conectada a la red del aula.',
-          )
+        : new ErrorApi('No hay conexión con la placa.')
     }
     const horaServidor = horaDeRespuesta(respuesta)
     if (respuesta.status === 401) {
-      throw new ErrorSinSesion(
-        'La API pide usuario y contraseña del profesor y no se completó el inicio de sesión.',
-      )
+      throw new ErrorSinSesion('Falta iniciar sesión.')
     }
     if (permitirNoEncontrado && respuesta.status === 404) {
       return { cuerpo: null, noEncontrado: true, horaServidor }
     }
     if (!respuesta.ok) {
-      throw new ErrorApi(
-        `La API respondió con el error ${respuesta.status}. Espera unos segundos; si sigue igual, avisa al responsable del borde.`,
-      )
+      console.warn('La placa respondió', respuesta.status, respuesta.url)
+      throw new ErrorApi('La placa no pudo atender la petición. Intenta de nuevo en unos segundos.')
     }
     let cuerpo: unknown
     try {
@@ -80,7 +75,7 @@ async function pedirJson(
       if (senal.aborted) throw error
       throw controlador.signal.aborted
         ? tiempoAgotado()
-        : new ErrorApi('La API respondió algo que no es JSON válido. Avisa al responsable del borde.')
+        : new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
     }
     return { cuerpo, noEncontrado: false, horaServidor }
   } finally {
@@ -102,7 +97,8 @@ export async function pedirSesiones(
   )
   const leido = leerSesiones(cuerpo)
   if (!leido.ok) {
-    throw new ErrorApi(`La API devolvió una lista de sesiones inválida (${leido.motivo})`)
+    console.warn(leido.motivo)
+    throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
   }
   return { sesiones: leido.sesiones, horaServidor }
 }
@@ -123,7 +119,8 @@ export async function pedirDetalleSesion(
   }
   const leido = leerDetalleSesion(cuerpo)
   if (!leido.ok) {
-    throw new ErrorApi(`La API devolvió un detalle de sesión inválido (${leido.motivo})`)
+    console.warn(leido.motivo)
+    throw new ErrorApi('La placa respondió algo inesperado. Intenta de nuevo.')
   }
   return { detalle: leido.detalle, horaServidor }
 }
@@ -147,26 +144,27 @@ export async function descargarCsvSesion(id: number): Promise<ResultadoDescargaC
       return {
         ok: false,
         mensaje: controlador.signal.aborted
-          ? 'La placa tardó demasiado en entregar el archivo CSV.'
-          : 'No se pudo conectar con la placa para descargar el archivo CSV.',
+          ? 'La placa tardó en responder.'
+          : 'No hay conexión con la placa.',
       }
     }
     if (respuesta.status === 401) {
-      return { ok: false, mensaje: 'Inicia sesión con el usuario y la contraseña del profesor.' }
+      return { ok: false, mensaje: 'Falta iniciar sesión.' }
     }
     if (respuesta.status === 404) {
       return {
         ok: false,
-        mensaje: 'Todavía no existe el reporte CSV de esta sesión en la placa.',
+        mensaje: 'Todavía no hay CSV de esta sesión.',
       }
     }
     if (!respuesta.ok) {
-      return { ok: false, mensaje: `La placa respondió con el error ${respuesta.status}.` }
+      console.warn('La placa respondió', respuesta.status, respuesta.url)
+      return { ok: false, mensaje: 'La placa no pudo entregar el CSV. Intenta de nuevo.' }
     }
     const blob = await respuesta.blob()
     return { ok: true, blob, nombreArchivo: `sesion-${id}.csv` }
   } catch {
-    return { ok: false, mensaje: 'No se pudo terminar de leer el archivo CSV.' }
+    return { ok: false, mensaje: 'No se pudo terminar de descargar el CSV.' }
   } finally {
     clearTimeout(temporizador)
   }

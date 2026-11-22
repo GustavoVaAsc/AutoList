@@ -6,14 +6,14 @@ import { cruzaDias } from '../serie'
 interface Props {
   /** De la más vieja a la más nueva. */
   lecturas: Lectura[]
-  /** Id del encabezado que titula la tabla. */
-  idTitulo: string
+  /** Nombre accesible de la tabla (y de su botón "Ver todas"). */
+  nombre: string
 }
 
 const FILAS_INICIALES = 10
 
 /** Lecturas recientes, de la más nueva a la más vieja, como renglones de una bitácora. También es la alternativa accesible a la gráfica. */
-export function TablaLecturas({ lecturas, idTitulo }: Props) {
+export function TablaLecturas({ lecturas, nombre }: Props) {
   const [todas, setTodas] = useState(false)
   const recientes = [...lecturas].reverse()
   // Clave estable: `t` más el número de repetición, por si dos lecturas comparten milisegundo.
@@ -31,7 +31,7 @@ export function TablaLecturas({ lecturas, idTitulo }: Props) {
   return (
     <>
       <div className="hoja__desplazable">
-        <table className="tabla tabla--lecturas" aria-labelledby={idTitulo}>
+        <table className="tabla tabla--lecturas" aria-label={nombre}>
           <thead>
             <tr>
               <th scope="col">Hora</th>
@@ -59,8 +59,13 @@ export function TablaLecturas({ lecturas, idTitulo }: Props) {
       </div>
       {hayMas && (
         <div className="hoja__pie">
-          <button type="button" className="boton" aria-expanded={todas} onClick={() => setTodas(!todas)}>
-            {todas ? `Mostrar solo las ${FILAS_INICIALES} más recientes` : `Mostrar las ${recientes.length} lecturas`}
+          <button
+            type="button"
+            className="boton"
+            aria-label={`${todas ? 'Ver menos' : 'Ver todas'}: ${nombre}`}
+            aria-expanded={todas}
+            onClick={() => setTodas(!todas)}>
+            {todas ? 'Ver menos' : 'Ver todas'}
           </button>
         </div>
       )}

@@ -22,11 +22,22 @@ const crypto = require("crypto");
 const REALM = "Pase de lista";
 // Tope del cuerpo de cualquier petición de la API. Node-RED lee el cuerpo de los
 // http in sin un tope propio fiable para texto crudo (como el CSV de la lista
-// maestra), y los parsers corren después de este middleware. Se rechaza antes de
-// leerlo, por Content-Length (tras autenticar). Una petición sin longitud
-// conocida (Transfer-Encoding) no se admite: no se podría acotar.
+// maestra). Se rechaza antes de leerlo, por Content-Length (tras autenticar). Una
+// petición sin longitud conocida (Transfer-Encoding) no se admite: no se podría
+// acotar. "Antes de leerlo" depende de en qué punto corre este middleware: como
+// httpNodeMiddleware corre después de los parsers de JSON y de formularios de la
+// app del editor (@node-red/editor-api monta bodyParser.json y urlencoded en "/",
+// antes que los http in), solo bastaba para el texto crudo. Por eso settings.js
+// también lo pone en httpAdminMiddleware, que corre antes de esos parsers, solo para
+// las rutas /api (soloRutasApi): una petición sin credenciales, de otro origen o con
+// un cuerpo que no se admite se rechaza sin leer ni un byte. Que corra dos veces en
+// una petición aceptada es inocuo: solo lee cabeceras y no cambia nada.
 const LIMITE_CUERPO_BYTES = 256 * 1024;
 const RUTA_GALERIA = "/api/galeria";
+// Las rutas de la API: /api, /api/ y todo lo que cuelgue de /api/. Sin distinguir mayúsculas, como Express (que
+// atiende /API/Alumnos con el http in de /api/alumnos). Express compara la ruta sin decodificar y sin normalizar
+// ("/%61pi/x" y "//api/x" no llegan a ningún http in), y este patrón se aplica a esa misma ruta (req.path).
+const RUTA_API = /^\/api(?:\/|$)/i;
 const EJEMPLO = "cambiar_esta_clave"; // el placeholder de orangepi/.env.example
 const MIN_TOKEN_GALERIA = 32;
 const MIN_CLAVE_PROFESOR = 16;
@@ -196,4 +207,15 @@ function crearMiddlewareApi({ usuario, clave, tokenGaleria }) {
     };
 }
 
-module.exports = { crearMiddlewareApi, validarSecretosApi, LIMITE_CUERPO_BYTES };
+// Envuelve el middleware de la API para que solo actúe sobre las rutas /api; las demás (el editor, /auth, los estáticos
+// de /app/, las rutas de administración) pasan sin tocarse. Se usa en httpAdminMiddleware (ver settings.js).
+function soloRutasApi(autenticarApi) {
+    return function autenticarSoloApi(req, res, next) {
+        if (RUTA_API.test(String(req.path))) {
+            return autenticarApi(req, res, next);
+        }
+        return next();
+    };
+}
+
+module.exports = { crearMiddlewareApi, soloRutasApi, validarSecretosApi, LIMITE_CUERPO_BYTES, RUTA_API };

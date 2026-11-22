@@ -78,7 +78,7 @@ MOTIVOS_RECHAZO = {
     "inconsistente": "las fotos no coinciden",
 }
 # Un registro que agota los intentos de una pose termina en "error" con el motivo del ULTIMO
-# rechazo (contrato v0.14): esos motivos llevan el mismo texto que cuando son un rechazo.
+# rechazo (contrato v0.16): esos motivos llevan el mismo texto que cuando son un rechazo.
 MOTIVOS_ERROR = dict(MOTIVOS_RECHAZO)
 MOTIVOS_ERROR.update({
     "ocupado": "ya hay un registro",

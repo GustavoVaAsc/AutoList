@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { pedirAlumnos } from './api/alumnos'
 import { cuentasConRostroCambiado, type Alumno } from './api/alumnosRespuestas'
-import { ErrorApi, ErrorSinSesion, TIEMPO_INICIAL_MS } from './api/energia'
+import { ErrorSinSesion, TIEMPO_INICIAL_MS, mensajeDeError } from './api/energia'
 
 export interface EstadoAlumnos {
   /** Lista de la última consulta correcta; null mientras no haya llegado ninguna. */
@@ -100,7 +100,7 @@ export function useAlumnos(cadaMs: number): EstadoAlumnos {
           return
         }
         sinSesion = error instanceof ErrorSinSesion
-        const mensaje = error instanceof ErrorApi ? error.message : 'Ocurrió un error inesperado al consultar la API.'
+        const mensaje = mensajeDeError(error)
         esperas.current.splice(0).forEach((p) => p.fallo(new Error(mensaje)))
         setEstado((anterior) => ({ ...anterior, error: mensaje, sinSesion, cambiadas: SIN_CAMBIOS }))
       } finally {

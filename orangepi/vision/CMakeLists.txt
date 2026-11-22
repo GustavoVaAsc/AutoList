@@ -13,14 +13,11 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 enable_testing()
 
 # --- Dependencias -----------------------------------------------------------
-# OpenCV 4.6 de Debian por pkg-config. Las libopencv_*.so.407 sueltas de /usr/lib
-# (sin headers) no se enlazan: ningun .so sin enlace de desarrollo entra por -l.
-# --as-needed evita que opencv4.pc meta decenas de modulos (viz, cvv...) como DT_NEEDED.
+# OpenCV de Debian por pkg-config (>= 4.6; bookworm trae 4.6, trixie 4.10). Un .so sin
+# enlace de desarrollo (p. ej. libopencv_*.so.407 suelto en /usr/lib, sin headers) no entra
+# por -l. --as-needed evita que opencv4.pc meta decenas de modulos (viz, cvv...) como DT_NEEDED.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(OPENCV REQUIRED IMPORTED_TARGET opencv4>=4.6)
-if(OPENCV_VERSION VERSION_GREATER_EQUAL 4.7)
-  message(FATAL_ERROR "Se requiere OpenCV 4.6.x (la de Debian); pkg-config encontro ${OPENCV_VERSION}")
-endif()
 find_package(Threads REQUIRED)
 # nlohmann/json: la capa JSON del contrato MQTT (include/vision/json_payload.hpp).
 find_package(nlohmann_json 3.11 REQUIRED)

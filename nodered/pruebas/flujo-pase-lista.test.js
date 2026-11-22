@@ -141,9 +141,11 @@ test("sin_rostro y error no van a la base ni mandan retroalimentación: solo dej
     }
 });
 
-test("modo prueba se ignora con un aviso, sea cual sea la decisión", () => {
+test("modo prueba no llega a la base y deja un aviso neutro (no es un descarte: va a la prueba de reconocimiento), sea cual sea la decisión", () => {
     for (const decision of ["reconocido", "dudoso", "desconocido", "sin_rostro"]) {
-        assertDescarte(validar(mensaje(resultado({ modo: "prueba", decision }))), /modo prueba ignorado/);
+        const r = validar(mensaje(resultado({ modo: "prueba", decision })));
+        assert.equal(r.salida[0], null, "no debe llegar a la base");
+        assert.equal(r.salida[1].payload, "Resultado de prueba: no marca asistencia (va a la prueba de reconocimiento)");
     }
 });
 
@@ -275,7 +277,8 @@ test("un descarte nunca repite el contenido del mensaje (ni la cuenta)", () => {
     for (const m of casos) {
         const r = validar(m);
         assert.equal(r.salida[0], null);
-        const todo = JSON.stringify(r.salida) + r.avisos.join("|") + r.logs.join("|");
+        // La salida 4 (solo modo prueba) lleva la cuenta a propósito, hacia la pestaña Registro: flujo-prueba.test.js.
+        const todo = JSON.stringify(r.salida.slice(0, 3)) + r.avisos.join("|") + r.logs.join("|");
         assert.doesNotMatch(todo, new RegExp(CUENTA), "el descarte no debe llevar la cuenta");
         assert.doesNotMatch(todo, /SECRETO/);
     }
@@ -434,7 +437,8 @@ test("los mqtt out publican solo en aula/actuador/cmd (sin retain) y aula/sesion
 });
 
 test("la cadena es entrada → validar → límite → sentencia → retroalimentación, y los avisos van al debug de consola", () => {
-    assert.deepEqual(nodo(ID.validar).wires, [[ID.limite], [ID.avisos]]);
+    // La tercera salida de la validación (la latencia de la NPU) tiene su propia cadena: flujo-latencia.test.js.
+    assert.deepEqual(nodo(ID.validar).wires.slice(0, 2), [[ID.limite], [ID.avisos]]);
     assert.deepEqual(nodo(ID.limite).wires, [[ID.consulta]]);
     assert.deepEqual(nodo(ID.consulta).wires, [[ID.retro]]);
     const d = nodo(ID.avisos);

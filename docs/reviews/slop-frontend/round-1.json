@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "round": 1,
+  "slug": "slop-frontend",
+  "docFile": "docs/reviews/slop-frontend/doc.md",
+  "submittedAt": "2026-11-18T23:09:18.670Z",
+  "docHash": "sha256:26fc910ce9a34405b8885415d0c517891d819898d72f19d774e66f2ef13b65a4",
+  "overall": "",
+  "comments": [],
+  "answers": [
+    {
+      "id": "ultima-foto",
+      "type": "single",
+      "prompt": "¿Qué hago con el recuadro \"Última foto\" (V-REG-2)?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "prueba-ubicacion",
+      "type": "single",
+      "prompt": "¿Dónde va \"Probar reconocimiento\" (V-REG-1)?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "fases",
+      "type": "single",
+      "prompt": "¿Cómo lo hacemos?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "global",
+      "type": "multi",
+      "prompt": "Global y cabecera, ¿qué se aplica?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "nombre-xiao",
+      "type": "single",
+      "prompt": "¿Cómo se llama la XIAO de cara a la profesora?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "alumnos",
+      "type": "multi",
+      "prompt": "Alumnos, ¿qué se aplica?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "registro",
+      "type": "multi",
+      "prompt": "Registro, ¿qué se aplica? (Última foto y la prueba se deciden arriba)",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "asistencia",
+      "type": "multi",
+      "prompt": "Asistencia, ¿qué se aplica?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "metricas",
+      "type": "multi",
+      "prompt": "Métricas, ¿qué se aplica?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "animaciones",
+      "type": "multi",
+      "prompt": "¿Qué animaciones se simplifican?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "codigo",
+      "type": "multi",
+      "prompt": "Código, ¿qué se aplica?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    },
+    {
+      "id": "notas",
+      "type": "text",
+      "prompt": "¿Algo que viste en el navegador y que no aparece aquí?",
+      "selected": [],
+      "other": "",
+      "text": "",
+      "answered": false
+    }
+  ],
+  "mac": "hmac-sha256:c52b360d3695e3db8a9852b8a6567ee6c7a3db454dc605d6509e90aad9a79953"
+}

@@ -1432,8 +1432,10 @@ test("flows.json: rutas, tópicos y cables del flujo Registro", () => {
     assert.deepEqual(rutas, [
         "delete /api/alumnos/:cuenta/rostro",
         "get /api/enrolamiento/estado",
+        "get /api/enrolamiento/prueba",
         "post /api/enrolamiento",
-        "post /api/enrolamiento/cancelar"
+        "post /api/enrolamiento/cancelar",
+        "post /api/enrolamiento/probar"
     ]);
     const entradas = nodos.filter((n) => n.type === "mqtt in").map((n) => n.topic).sort();
     assert.deepEqual(entradas, ["aula/vision/embedding", "aula/vision/enrolamiento"]);
@@ -1460,7 +1462,7 @@ test("flows.json: rutas, tópicos y cables del flujo Registro", () => {
 test("flows.json: toda consulta del flujo Registro va parametrizada y sin credenciales", () => {
     const tab = flujos.find((n) => n.type === "tab" && n.label === "Registro");
     const consultas = flujos.filter((n) => n.z === tab.id && n.type === "postgresql");
-    assert.equal(consultas.length, 6);
+    assert.equal(consultas.length, 7); // la séptima, el SELECT del nombre de la prueba de reconocimiento (flujo-prueba.test.js)
     for (const n of consultas) {
         assert.equal(n.postgreSQLConfig, "a1f0c0de00000003", n.name);
         assert.ok(!/\$\{|\+\s*msg|'\s*\+|`/.test(n.query), "consulta concatenada: " + n.name);

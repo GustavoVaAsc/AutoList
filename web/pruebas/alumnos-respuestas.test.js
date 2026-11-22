@@ -7,6 +7,7 @@
 // (Node 22.18 o posterior carga el .ts quitando los tipos).
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { assertTextoLegible, assertTextosDistintos } from './texto.js'
 import {
   cuentasConRostroCambiado,
   gruposDe,
@@ -66,7 +67,7 @@ test('400 ignora filas mal formadas y nunca baja el total por debajo de las list
 test('400 con un cuerpo ilegible da un mensaje propio y no revienta', () => {
   const r = interpretarRespuesta(400, undefined)
   assert.equal(r.tipo, 'filas-invalidas')
-  assert.match(r.error, /No se importó nada/)
+  assertTextoLegible(r.error)
 })
 
 const existente = {
@@ -116,23 +117,28 @@ test('409 no se adivina: sin escrito booleano, sin existentes o con una existent
   }
 })
 
-test('413, 415, 401 y 403 dan un fallo con su código y un mensaje que dice que no se importó nada', () => {
+test('413, 415, 401 y 403 dan un fallo con su código y un mensaje propio, legible y que no repite el texto del servidor', () => {
+  const mensajes = []
   for (const status of [401, 403, 413, 415]) {
     const r = interpretarRespuesta(status, { error: 'texto del servidor' })
     assert.equal(r.tipo, 'fallo')
     assert.equal(r.status, status)
-    assert.match(r.mensaje, /No se importó nada/)
+    assert.ok(!r.mensaje.includes('texto del servidor'))
+    mensajes.push(r.mensaje)
   }
-  assert.match(interpretarRespuesta(413, undefined).mensaje, /256 KiB/)
-  assert.match(interpretarRespuesta(415, undefined).mensaje, /text\/csv/)
+  assertTextosDistintos(mensajes)
+  assert.ok(interpretarRespuesta(413, undefined).mensaje.includes('256'), 'dice el tope')
+  assert.ok(interpretarRespuesta(415, undefined).mensaje.includes('CSV'), 'dice qué tipo se acepta')
+  assert.ok(!interpretarRespuesta(415, undefined).mensaje.includes('256'), '413 y 415 no se intercambian')
 })
 
-test('otro código (411, 500) da un fallo que remite a revisar la lista', () => {
+test('otro código (411, 500) da un fallo legible; el código va en `status` y no en el texto', () => {
   for (const status of [411, 500, 502]) {
     const r = interpretarRespuesta(status, undefined)
     assert.equal(r.tipo, 'fallo')
     assert.equal(r.status, status)
-    assert.match(r.mensaje, new RegExp(`error ${status}`))
+    assertTextoLegible(r.mensaje)
+    assert.ok(!r.mensaje.includes(String(status)))
   }
 })
 
@@ -152,11 +158,11 @@ test('validarArchivoLocal: con extensión .csv o .txt pasa cualquier tipo declar
 
 test('validarArchivoLocal: el tope es 256 KiB exactos', () => {
   assert.equal(validarArchivoLocal({ name: 'a.csv', size: MAX_BYTES, type: 'text/csv' }), null)
-  assert.match(validarArchivoLocal({ name: 'a.csv', size: MAX_BYTES + 1, type: 'text/csv' }), /256 KiB/)
+  assert.ok(validarArchivoLocal({ name: 'a.csv', size: MAX_BYTES + 1, type: 'text/csv' }).includes('256'), 'dice el tope')
 })
 
 test('validarArchivoLocal: rechaza vacíos y lo que no es texto', () => {
-  assert.match(validarArchivoLocal({ name: 'a.csv', size: 0, type: 'text/csv' }), /vacío/)
+  assertTextoLegible(validarArchivoLocal({ name: 'a.csv', size: 0, type: 'text/csv' }))
   const noTexto = [
     { name: 'foto.png', size: 10, type: 'image/png' },
     { name: 'foto.csv.png', size: 10, type: 'image/png' },
@@ -168,7 +174,7 @@ test('validarArchivoLocal: rechaza vacíos y lo que no es texto', () => {
     { name: 'datos.pdf', size: 10, type: 'application/pdf' },
   ]
   for (const archivo of noTexto) {
-    assert.match(validarArchivoLocal(archivo), /CSV/, archivo.name)
+    assertTextoLegible(validarArchivoLocal(archivo), archivo.name)
   }
 })
 
@@ -200,7 +206,7 @@ test('leerAlumnos: rechaza lo que no es una lista o trae un alumno roto, y dice 
   assert.equal(leerAlumnos(null).ok, false)
   const roto = leerAlumnos([lista[0], { ...lista[1], rostro: 'raro' }])
   assert.equal(roto.ok, false)
-  assert.match(roto.motivo, /alumno 2/)
+  assert.match(roto.motivo, /\b2\b/, 'dice cuál alumno')
   assert.equal(leerAlumnos([{ ...lista[0], cuenta: 320068234 }]).ok, false)
 })
 

@@ -1,6 +1,6 @@
 import { CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { formatearDiaYHoraCorta, formatearFechaYHora, formatearHora, formatearPotencia } from '../formato'
-import { VENTANA_MS, type Serie } from '../serie'
+import type { Serie } from '../serie'
 
 interface Props {
   serie: Serie
@@ -43,7 +43,7 @@ function TooltipPotencia({ active, payload }: PropsTooltip) {
  * que se refrescan cada 5 s no se animan: animarlos sería ruido sin información.
  */
 export function GraficaPotencia({ serie }: Props) {
-  const { puntos, visibles, omitidas, ultimaOmitida, cruzaDias } = serie
+  const { puntos, visibles, cruzaDias } = serie
   const potencias = visibles.map((l) => l.p)
   const primera = visibles[0]!
   const ultima = visibles[visibles.length - 1]!
@@ -108,9 +108,6 @@ export function GraficaPotencia({ serie }: Props) {
       </div>
       <p id="resumen-grafica" className="grafica__resumen">
         {resumen}
-        {omitidas > 0 &&
-          ultimaOmitida !== null &&
-          ` Solo se dibujan los últimos ${VENTANA_MS / 60_000} min: las ${omitidas} lecturas anteriores (hasta la del ${formatearFechaYHora(ultimaOmitida.t)}) están solo en la tabla.`}
       </p>
     </>
   )

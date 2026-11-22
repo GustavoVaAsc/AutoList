@@ -3,7 +3,9 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { crearMiddlewareApi, validarSecretosApi, LIMITE_CUERPO_BYTES } = require("../autenticacion-api");
+const fs = require("node:fs");
+const path = require("node:path");
+const { crearMiddlewareApi, soloRutasApi, validarSecretosApi, LIMITE_CUERPO_BYTES, RUTA_API } = require("../autenticacion-api");
 
 const USUARIO = "profe";
 const CLAVE = "clave:con:dos:puntos";
@@ -17,8 +19,13 @@ function basic(usuario, clave) {
 // Los métodos que cambian estado llevan, por omisión, las cabeceras que pone el
 // frontend (X-Pase-Lista y el mismo origen); `csrf: false` las quita para probarlas.
 const HOST = "placa.local:1880";
-function ejecutar(opciones, { ruta = "/api/alumnos", metodo = "GET", cabeceras = {}, csrf = true } = {}) {
-    const middleware = crearMiddlewareApi({ usuario: USUARIO, clave: CLAVE, tokenGaleria: TOKEN, ...opciones });
+// `envolver`: el middleware tal como corre en httpAdminMiddleware (soloRutasApi). `encadenar`: el paso de httpAdminMiddleware
+// seguido del de httpNodeMiddleware sobre la misma petición y la misma respuesta (lo que pasa con una petición aceptada).
+function ejecutar(opciones, { ruta = "/api/alumnos", metodo = "GET", cabeceras = {}, csrf = true, envolver = false, encadenar = false } = {}) {
+    const base = crearMiddlewareApi({ usuario: USUARIO, clave: CLAVE, tokenGaleria: TOKEN, ...opciones });
+    const middleware = encadenar
+        ? (req, res, next) => soloRutasApi(base)(req, res, () => base(req, res, next))
+        : envolver ? soloRutasApi(base) : base;
     if (csrf && metodo !== "GET" && metodo !== "HEAD") {
         cabeceras = { Host: HOST, "X-Pase-Lista": "1", ...cabeceras };
     }
@@ -320,6 +327,75 @@ test("registro: GET /api/enrolamiento/estado exige Basic y no el token de la gal
     assert.equal(conToken.res.statusCode, 401);
 });
 
+// Prueba de reconocimiento (POST /api/enrolamiento/probar y GET /api/enrolamiento/prueba, pestaña "Registro"
+// de flows.json). El POST publica una orden a la visión, así que hereda Basic, X-Pase-Lista y el mismo origen
+// sin cambios en el middleware; el GET es de solo lectura (get-solo-lectura.test.js) y solo acepta Basic.
+test("prueba de reconocimiento: POST sin cuerpo, autenticado, con X-Pase-Lista y del mismo origen pasa", () => {
+    assert.equal(post(JSON_PROPIO, { ruta: "/api/enrolamiento/probar" }).siguio, true);
+});
+
+test("prueba de reconocimiento: POST sin X-Pase-Lista o de otro origen: 403; sin credenciales o con el token de la galería: 401", () => {
+    for (const cabeceras of [
+        { Host: HOST },
+        { ...JSON_PROPIO, Origin: "https://sitio-malo.example" },
+        { ...JSON_PROPIO, "Sec-Fetch-Site": "cross-site" }
+    ]) {
+        const { siguio, res } = post(cabeceras, { ruta: "/api/enrolamiento/probar" });
+        assert.equal(siguio, false);
+        assert.equal(res.statusCode, 403);
+    }
+    const sin = ejecutar({}, { metodo: "POST", ruta: "/api/enrolamiento/probar" });
+    assert.equal(sin.siguio, false);
+    assert.equal(sin.res.statusCode, 401);
+    const conToken = ejecutar({}, { metodo: "POST", ruta: "/api/enrolamiento/probar", cabeceras: { "X-Galeria-Token": TOKEN } });
+    assert.equal(conToken.siguio, false);
+    assert.equal(conToken.res.statusCode, 401);
+});
+
+test("prueba de reconocimiento: GET /api/enrolamiento/prueba exige Basic y no el token de la galería", () => {
+    assert.equal(ejecutar({}, { ruta: "/api/enrolamiento/prueba", cabeceras: { Authorization: basic(USUARIO, CLAVE) } }).siguio, true);
+    const conToken = ejecutar({}, { ruta: "/api/enrolamiento/prueba", cabeceras: { "X-Galeria-Token": TOKEN } });
+    assert.equal(conToken.siguio, false);
+    assert.equal(conToken.res.statusCode, 401);
+});
+
+// Control manual de los actuadores (POST /api/actuadores, pestaña "Actuadores" de flows.json). Cambia el
+// estado de la XIAO, así que la ruta tiene que quedar detrás de Basic, X-Pase-Lista y el mismo origen sin
+// cambios en el middleware; el 415, el 400 y el 429 son del flujo (flujo-actuadores.test.js).
+test("actuadores: POST autenticado, con X-Pase-Lista y del mismo origen pasa", () => {
+    const { siguio } = post({ ...JSON_PROPIO, "Content-Type": "application/json", "Content-Length": "13" }, { ruta: "/api/actuadores" });
+    assert.equal(siguio, true);
+});
+
+test("actuadores: sin X-Pase-Lista, de otro origen o de otro sitio: 403 y la orden no llega al flujo", () => {
+    for (const cabeceras of [
+        { Host: HOST, "Content-Type": "application/json" },
+        { ...JSON_PROPIO, Origin: "https://sitio-malo.example" },
+        { ...JSON_PROPIO, "Sec-Fetch-Site": "cross-site" },
+        { ...JSON_PROPIO, "X-Pase-Lista": "0" }
+    ]) {
+        const { siguio, res } = post(cabeceras, { ruta: "/api/actuadores" });
+        assert.equal(siguio, false);
+        assert.equal(res.statusCode, 403);
+    }
+});
+
+test("actuadores: sin credenciales, o solo con el token de la galería: 401", () => {
+    const sin = ejecutar({}, { metodo: "POST", ruta: "/api/actuadores", cabeceras: { "Content-Type": "application/json" } });
+    assert.equal(sin.siguio, false);
+    assert.equal(sin.res.statusCode, 401);
+    const conToken = ejecutar({}, { metodo: "POST", ruta: "/api/actuadores", cabeceras: { "X-Galeria-Token": TOKEN } });
+    assert.equal(conToken.siguio, false);
+    assert.equal(conToken.res.statusCode, 401);
+});
+
+test("actuadores: el tope de cuerpo y Transfer-Encoding también la cubren", () => {
+    const grande = post({ ...JSON_PROPIO, "Content-Length": String(LIMITE_CUERPO_BYTES + 1) }, { ruta: "/api/actuadores" });
+    assert.equal(grande.res.statusCode, 413);
+    const chunked = post({ ...JSON_PROPIO, "Transfer-Encoding": "chunked" }, { ruta: "/api/actuadores" });
+    assert.equal(chunked.res.statusCode, 411);
+});
+
 // ---------------------------------------------------------------- secretos
 
 const BUENOS = {
@@ -393,4 +469,150 @@ test("secretos: los mensajes nunca llevan el valor", () => {
     ]) {
         assert.throws(() => validarSecretosApi(entrada), (e) => !/SECRET/.test(e.message));
     }
+});
+
+// ---------------------------------------------------------------- httpAdminMiddleware: la API se autentica antes de los parsers del editor
+
+// Lo que importa de una respuesta (sus métodos son funciones distintas en cada objeto).
+const datos = (res) => ({ statusCode: res.statusCode, cabeceras: res.cabeceras, cuerpo: res.cuerpo });
+
+const SIN_AUTENTICAR = [
+    "/api", "/api/", "/api/alumnos", "/api/alumnos/importar", "/api/enrolamiento/estado", "/api/sesiones/12/csv", "/api/galeria",
+    "/API/Alumnos", "/Api/alumnos/", "/aPi", "/API/GALERIA/", "/api/inexistente", "/api/x/y/z"
+];
+
+// Rutas que no son de la API: el editor, /auth, los estáticos de /app/, las de administración y variantes que Express no
+// enruta a ningún http in (compara la ruta sin decodificar ni normalizar).
+const NO_API = [
+    "/", "/flows", "/auth/login", "/auth/token", "/settings", "/nodes", "/context/flow/abc", "/app/", "/app/assets/index.js",
+    "/apis", "/apix/y", "/api-x", "/apiary", "/x/api/y", "/admin/api", "/%61pi/alumnos", "//api/alumnos", "/ api/x", "", "/red/red.js"
+];
+
+test("soloRutasApi: /api, /api/... y sus variantes de mayúsculas y barra final se rechazan sin credenciales, con el mismo 401 y las mismas cabeceras que el middleware directo", () => {
+    for (const ruta of SIN_AUTENTICAR) {
+        const envuelto = ejecutar({}, { ruta, envolver: true });
+        const directo = ejecutar({}, { ruta });
+        assert.equal(envuelto.siguio, false, ruta);
+        assert.equal(envuelto.res.statusCode, 401, ruta);
+        assert.deepEqual(datos(envuelto.res), datos(directo.res), ruta);
+        assert.equal(envuelto.res.cabeceras["cache-control"], "no-store");
+        assert.equal(envuelto.res.cabeceras["x-content-type-options"], "nosniff");
+    }
+});
+
+test("soloRutasApi: la galería sigue pidiendo solo su token (con Basic, 401 sin desafío Basic) y /API/Galeria/ cuenta como la galería", () => {
+    for (const ruta of ["/api/galeria", "/API/Galeria/"]) {
+        const conBasic = ejecutar({}, { ruta, envolver: true, cabeceras: { Authorization: basic(USUARIO, CLAVE) } });
+        assert.equal(conBasic.siguio, false, ruta);
+        assert.equal(conBasic.res.cabeceras["www-authenticate"], "X-Galeria-Token");
+        assert.equal(ejecutar({}, { ruta, envolver: true, cabeceras: { "X-Galeria-Token": TOKEN } }).siguio, true, ruta);
+    }
+});
+
+test("soloRutasApi: lo que no es /api pasa sin credenciales y sin tocar la respuesta (ni cabeceras, ni estado)", () => {
+    for (const ruta of NO_API) {
+        for (const metodo of ["GET", "POST"]) {
+            const r = ejecutar({}, { ruta, metodo, envolver: true, csrf: false });
+            assert.equal(r.siguio, true, metodo + " " + JSON.stringify(ruta));
+            assert.deepEqual(r.res.cabeceras, {}, "no fija cabeceras: de eso se encarga cabecerasBasicas de settings.js");
+            assert.equal(r.res.statusCode, 200);
+            assert.equal(r.res.cuerpo, undefined);
+        }
+    }
+    // Una ruta sin forma de ruta no hace fallar nada: pasa (Express no la enruta).
+    for (const path of [undefined, null, 5, {}]) {
+        let siguio = false;
+        const res = { status() { assert.fail("no debía responder"); } };
+        assert.doesNotThrow(() => soloRutasApi(() => assert.fail("no debía autenticar"))({ path }, res, () => { siguio = true; }));
+        assert.equal(siguio, true);
+    }
+});
+
+test("RUTA_API: solo /api, /api/ y lo que cuelga de /api/, sin distinguir mayúsculas", () => {
+    for (const ok of ["/api", "/api/", "/api/x", "/API/x", "/aPi/x/y"]) {
+        assert.ok(RUTA_API.test(ok), ok);
+    }
+    for (const no of ["/", "/apix", "/api-x", "/apiX/y", "/%61pi", "//api", "/x/api", " /api", "/api\n", "api/x"]) {
+        assert.ok(!RUTA_API.test(no), JSON.stringify(no));
+    }
+});
+
+// Cada escenario: la petición y lo que debe responder el middleware cuando corre en httpAdminMiddleware, antes de que ningún parser lea un byte.
+const ESCENARIOS_CUERPO = [
+    ["413: Content-Length mayor que el tope", { metodo: "POST", cabeceras: { Authorization: basic(USUARIO, CLAVE), "Content-Length": String(LIMITE_CUERPO_BYTES + 1) } }, 413],
+    ["411: Transfer-Encoding", { metodo: "POST", cabeceras: { Authorization: basic(USUARIO, CLAVE), "Transfer-Encoding": "chunked" } }, 411],
+    ["400: Content-Length que no es un número", { metodo: "POST", cabeceras: { Authorization: basic(USUARIO, CLAVE), "Content-Length": "abc" } }, 400],
+    ["403: sin X-Pase-Lista", { metodo: "POST", csrf: false, cabeceras: { Authorization: basic(USUARIO, CLAVE), Host: HOST, "Content-Length": "10" } }, 403],
+    ["403: de otro origen", { metodo: "POST", cabeceras: { Authorization: basic(USUARIO, CLAVE), Origin: "https://sitio-malo.example", "Content-Length": "10" } }, 403],
+    ["403: Sec-Fetch-Site de otro sitio", { metodo: "POST", cabeceras: { Authorization: basic(USUARIO, CLAVE), "Sec-Fetch-Site": "cross-site", "Content-Length": "10" } }, 403],
+    ["401: sin credenciales y con un cuerpo enorme (gana el 401: no se mira el cuerpo antes de autenticar)", { metodo: "POST", cabeceras: { "Content-Length": String(50 * 1024 * 1024) } }, 401],
+    ["401: credenciales erróneas", { metodo: "POST", cabeceras: { Authorization: basic(USUARIO, "mala"), "Content-Length": "10" } }, 401]
+];
+
+test("soloRutasApi: los rechazos por cuerpo, origen o credenciales (401, 403, 411, 413) salen del paso de httpAdminMiddleware, idénticos a los del middleware directo", () => {
+    for (const [nombre, peticion, estado] of ESCENARIOS_CUERPO) {
+        for (const ruta of ["/api/actuadores", "/API/Alumnos/importar"]) {
+            const envuelto = ejecutar({}, { ...peticion, ruta, envolver: true });
+            const directo = ejecutar({}, { ...peticion, ruta });
+            assert.equal(envuelto.siguio, false, nombre);
+            assert.equal(envuelto.res.statusCode, estado, nombre);
+            assert.deepEqual(datos(envuelto.res), datos(directo.res), nombre);
+        }
+    }
+});
+
+test("soloRutasApi: una petición aceptada pasa, y que el middleware corra dos veces (httpAdminMiddleware y luego httpNodeMiddleware) da lo mismo que correrlo una", () => {
+    const aceptadas = [
+        { ruta: "/api/alumnos", cabeceras: { Authorization: basic(USUARIO, CLAVE) } },
+        { ruta: "/API/Alumnos/", cabeceras: { Authorization: basic(USUARIO, CLAVE) } },
+        { ruta: "/api/galeria", cabeceras: { "X-Galeria-Token": TOKEN } },
+        { ruta: "/api/actuadores", metodo: "POST", cabeceras: { Authorization: basic(USUARIO, CLAVE), "Content-Type": "application/json", "Content-Length": "13" } },
+        { ruta: "/api/alumnos/importar", metodo: "POST", cabeceras: { Authorization: basic(USUARIO, CLAVE), "Content-Length": String(LIMITE_CUERPO_BYTES) } },
+        { ruta: "/api/enrolamiento/probar", metodo: "POST", cabeceras: { Authorization: basic(USUARIO, CLAVE) } }
+    ];
+    for (const peticion of aceptadas) {
+        const una = ejecutar({}, peticion);
+        const envuelta = ejecutar({}, { ...peticion, envolver: true });
+        const dos = ejecutar({}, { ...peticion, encadenar: true });
+        assert.equal(una.siguio, true, peticion.ruta);
+        assert.equal(envuelta.siguio, true);
+        assert.equal(dos.siguio, true);
+        assert.deepEqual(datos(dos.res), datos(una.res), "no cambia la respuesta ni sus cabeceras");
+        assert.equal(dos.res.statusCode, 200);
+    }
+    // Y lo que se rechaza lo rechaza el primer paso, sin llegar al segundo.
+    for (const [nombre, peticion, estado] of ESCENARIOS_CUERPO) {
+        const dos = ejecutar({}, { ...peticion, ruta: "/api/alumnos", encadenar: true });
+        assert.equal(dos.siguio, false, nombre);
+        assert.equal(dos.res.statusCode, estado, nombre);
+    }
+});
+
+// El orden (httpAdminMiddleware antes del bodyParser.json y urlencoded del editor, que leen el cuerpo de cualquier ruta) se verificó
+// leyendo el código instalado de Node-RED 5.0.9: @node-red/editor-api/lib/index.js, líneas 50-60 (adminApp.use(httpAdminMiddleware) en
+// la 52, bodyParser.json y urlencoded en la 59-60, con el límite apiMaxLength || '5mb' de la 58). Si se sube Node-RED, hay que volver a
+// comprobarlo.
+test("settings.js: httpAdminMiddleware lleva las cabeceras básicas y después la autenticación de la API solo para /api, y apiMaxLength baja a 1mb", () => {
+    const texto = fs.readFileSync(path.join(__dirname, "..", "settings.js"), "utf8");
+    assert.match(texto, /const \{ crearMiddlewareApi, soloRutasApi, validarSecretosApi \} = require\("\.\/autenticacion-api"\);/);
+    assert.match(texto, /^\s+httpAdminMiddleware: \[cabecerasBasicas, soloRutasApi\(autenticarApi\)\],$/m);
+    assert.match(texto, /^\s+httpNodeMiddleware: autenticarApi,$/m, "los http in siguen con su propia autenticación");
+    assert.match(texto, /^\s+apiMaxLength: "1mb",$/m);
+    assert.equal((texto.match(/apiMaxLength:/g) || []).length, 1);
+    // El editor no se queda sin espacio: el despliegue manda todo flows.json (compacto), y la API ya limita su cuerpo.
+    const flujos = fs.readFileSync(path.join(__dirname, "..", "flows", "flows.json"), "utf8");
+    const compacto = Buffer.byteLength(JSON.stringify(JSON.parse(flujos)), "utf8");
+    const tope = 1024 * 1024;
+    assert.ok(compacto * 2 < tope, "flows.json compacto (" + compacto + " bytes) debe caber con holgura en 1mb");
+    assert.ok(LIMITE_CUERPO_BYTES < tope, "el tope de la API (256 KiB) cabe en el del parser");
+});
+
+test("settings.js no cambia httpAdminRoot ni httpNodeRoot: soloRutasApi (RUTA_API, /^\\/api/) supone que el editor y los http in cuelgan de /", () => {
+    const texto = fs.readFileSync(path.join(__dirname, "..", "settings.js"), "utf8");
+    // Con otra raíz (por ejemplo /editor o /nodos), req.path dentro de httpAdminMiddleware dejaría de ser "/api/..." y la autenticación
+    // previa a los parsers no se aplicaría: si algún día se cambia una raíz, hay que cambiar RUTA_API y soloRutasApi con ella.
+    const sinComentarios = texto.split("\n").filter((linea) => !/^\s*\/\//.test(linea)).join("\n");
+    assert.doesNotMatch(sinComentarios, /\bhttpAdminRoot\b/);
+    assert.doesNotMatch(sinComentarios, /\bhttpNodeRoot\b/);
+    assert.doesNotMatch(sinComentarios, /\bhttpRoot\b/);
 });

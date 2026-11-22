@@ -89,7 +89,7 @@ EstadoServo ControlActuadores::estadoServo() const {
 
 bool ControlActuadores::servoAbierto() const { return servo_abierto_; }
 
-bool ControlActuadores::aplicarLed(PedidoLed pedido) {
+bool ControlActuadores::aplicarLed(PedidoLed pedido, uint32_t ahora_ms) {
   ColorLed nuevo;
   switch (pedido) {
     case PedidoLed::Azul:
@@ -112,20 +112,49 @@ bool ControlActuadores::aplicarLed(PedidoLed pedido) {
   }
   const ColorLed antes = colorLed();
   color_retro_ = nuevo;
+  // Con la sesión activa solo verde, rojo y ámbar abren (o reinician) la
+  // ventana; azul y apagado la cierran y el LED sigue azul.
+  retro_visible_ = sesion_activa_ && (nuevo == ColorLed::Verde || nuevo == ColorLed::Rojo ||
+                                      nuevo == ColorLed::Ambar);
+  if (retro_visible_) retro_desde_ms_ = ahora_ms;
   return colorLed() != antes;
+}
+
+bool ControlActuadores::revisarLed(uint32_t ahora_ms) {
+  if (!retro_visible_) return false;
+  // Resta sin signo: correcta aunque millis() haya dado la vuelta.
+  if (static_cast<uint32_t>(ahora_ms - retro_desde_ms_) < kRetroSesionMs) return false;
+  retro_visible_ = false;
+  // Con la sesión activa vuelve al azul; si la sesión ya terminó durante la
+  // ventana, el color se olvida y el LED se apaga.
+  if (!sesion_activa_) color_retro_ = ColorLed::Apagado;
+  return true;  // el color efectivo cambió
 }
 
 bool ControlActuadores::aplicarSesionActiva(bool activa) {
   const ColorLed antes = colorLed();
+  // Repetir el mismo estado (retenido, reconexión) no cambia nada ni acorta la
+  // ventana. Si la sesión empieza, el azul manda y se cierra la ventana. Si
+  // termina, el LED se apaga y el color recordado se olvida, salvo que haya una
+  // ventana abierta: ese color se ve hasta que venza (revisarLed) y entonces
+  // se apaga.
+  if (activa != sesion_activa_) {
+    if (activa) {
+      retro_visible_ = false;
+    } else if (!retro_visible_) {
+      color_retro_ = ColorLed::Apagado;
+    }
+  }
   sesion_activa_ = activa;
   return colorLed() != antes;
 }
 
 ColorLed ControlActuadores::colorLed() const {
-  // Con la sesión activa el azul manda sobre el color de retroalimentación
-  // (plan 6.1: azul = sesión activa). El color pedido por el cmd se recuerda
-  // y vuelve cuando termina la sesión.
-  return sesion_activa_ ? ColorLed::Azul : color_retro_;
+  // Con la sesión activa el azul manda (plan 6.1: azul = sesión activa),
+  // salvo durante la ventana de retroalimentación de kRetroSesionMs, que puede
+  // seguir abierta unos instantes tras terminar la sesión.
+  if (sesion_activa_ && !retro_visible_) return ColorLed::Azul;
+  return color_retro_;
 }
 
 ColorLed ControlActuadores::colorRetroalimentacion() const { return color_retro_; }

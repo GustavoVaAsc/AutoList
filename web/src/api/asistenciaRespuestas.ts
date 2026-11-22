@@ -70,9 +70,6 @@ export type ResultadoDetalleSesion =
   | { ok: true; detalle: DetalleSesion }
   | { ok: false; motivo: string }
 
-/** Umbral coseno configurado en el reconocedor facial (docs/HIGH-LEVEL-PLAN.md, sección 4.4). */
-export const UMBRAL_RECONOCIMIENTO = 0.4
-
 export const ETIQUETA_ESTADO_ASISTENCIA: Record<EstadoAsistencia, string> = {
   presente: 'Presente',
   retardo: 'Retardo',
@@ -86,9 +83,9 @@ export const ETIQUETA_METODO_ASISTENCIA: Record<MetodoAsistencia, string> = {
 }
 
 export const ETIQUETA_MOTIVO_INTENTO: Record<MotivoIntento, string> = {
-  desconocido: 'Rostro no reconocido o fuera del grupo',
-  duplicado: 'Ya tenía asistencia en esta sesión',
-  imagen_insuficiente: 'Imagen insuficiente para reconocer',
+  desconocido: 'No reconocido',
+  duplicado: 'Ya registrado',
+  imagen_insuficiente: 'Imagen insuficiente',
 }
 
 const MAX_INT_PG = 2147483647
