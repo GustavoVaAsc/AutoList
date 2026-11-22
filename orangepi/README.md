@@ -427,7 +427,7 @@ curl -k -u profesor "https://127.0.0.1:1880/api/enrolamiento/prueba"
 Cuatro endpoints del flujo `Registro` de `nodered/flows/flows.json`. El contrato completo (códigos, cuerpos y cómo avanza la inscripción) está en el [plan, sección 6.7](../docs/HIGH-LEVEL-PLAN.md#67-frontend-web-de-registro-web-vite--react--typescript); aquí, cómo probarlos. Los que cambian datos llevan `X-Pase-Lista: 1` (sin ella, 403, ver [Autenticación](#autenticación)). **Para verificar la API usa solo cuentas del rango sintético** (las `99900xxxx` de la importación): el registro escribe el consentimiento y, si llega un embedding, el rostro. Sin el servicio de visión corriendo en la placa, un registro queda en `esperando_vision` y se cancela solo a los 5 minutos.
 
 ```bash
-# Progreso del registro (solo lectura; sin ningún registro: "abierto": false y "estado": "sin_registro")
+# Progreso del registro (solo lectura; sin ningún registro: "abierto": false y "estado": "sin_registro"; con "estado": "error" y "motivo": "duplicado", "duplicado_de" trae la cuenta que ya tiene ese rostro)
 curl -sk -u profesor https://127.0.0.1:1880/api/enrolamiento/estado
 
 # Iniciar: JSON con consentimiento true. 202; 400, 404 (cuenta inexistente), 409 (registro abierto o el alumno ya tiene rostro)

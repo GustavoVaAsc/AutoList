@@ -56,6 +56,8 @@ export interface Registro {
   /** Siempre las 5 poses, en su orden. */
   poses: PoseRegistro[]
   advertencia: AdvertenciaParecido | null
+  /** Con `error` por `duplicado`: la cuenta que ya tiene ese rostro. `null` si no aplica o no vino una cuenta válida. */
+  duplicadoDe: string | null
   /** Milisegundos desde 1970, según el reloj de la placa. */
   inicio: number | null
   actualizado: number | null
@@ -156,6 +158,8 @@ export function leerRegistro(cuerpo: unknown): LecturaRegistro {
     }
     advertencia = { parecidoA }
   }
+  // Un dato ausente o con otra forma no invalida el estado: queda el texto genérico del motivo.
+  const duplicadoDe = typeof o.duplicado_de === 'string' && /^[0-9]{9}$/.test(o.duplicado_de) ? o.duplicado_de : null
   return {
     ok: true,
     registro: {
@@ -166,6 +170,7 @@ export function leerRegistro(cuerpo: unknown): LecturaRegistro {
       motivo,
       poses: POSES.map((pose) => porNombre.get(pose) ?? { pose, estado: 'pendiente', motivo: null, miniatura: null }),
       advertencia,
+      duplicadoDe,
       inicio,
       actualizado,
     },
@@ -435,6 +440,22 @@ export function anuncioContador(contador: ContadorFoto): string {
   }
 }
 
+/**
+ * Con el registro terminado en `error` por `duplicado` y la cuenta dueña del rostro, qué decir:
+ * con qué cuenta coincide (la vista busca su nombre en la lista de alumnos) y qué hacer. Sin
+ * cuenta, null: queda el texto genérico del motivo.
+ */
+export function avisoDuplicado(registro: Registro): { titulo: string; cuenta: string; texto: string } | null {
+  if (registro.abierto || registro.estado !== 'error' || registro.motivo !== 'duplicado' || registro.duplicadoDe === null) {
+    return null
+  }
+  return {
+    titulo: 'Este rostro ya está registrado',
+    cuenta: registro.duplicadoDe,
+    texto: 'Si es la misma persona, no hace falta registrarla otra vez. Si no, retira ese rostro en Alumnos y repite el registro.',
+  }
+}
+
 export type Tono = 'neutro' | 'advertencia' | 'error' | 'exito'
 
 export interface ResumenRegistro {
@@ -481,7 +502,8 @@ export function resumirRegistro(registro: Registro): ResumenRegistro {
     case 'error':
       return {
         titulo: 'El registro terminó con error',
-        detalle: `${traducirMotivo(registro.motivo ?? 'desconocido')} No se guardó ningún rostro.`,
+        // Con la cuenta dueña del duplicado, el aviso de la vista ya dice el motivo: no se repite.
+        detalle: `${avisoDuplicado(registro) !== null ? '' : `${traducirMotivo(registro.motivo ?? 'desconocido')} `}No se guardó ningún rostro.`,
         tono: 'error',
       }
     case 'sin_registro':

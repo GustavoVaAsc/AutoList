@@ -356,7 +356,7 @@ test("cancelar: tras la base, solo la petición HTTP recibe respuesta 200", () =
 
 // ------------------------------------------------ GET /api/enrolamiento/estado
 
-const CLAVES_ESTADO = ["abierto", "cuenta", "nombre", "estado", "motivo", "poses", "advertencia", "inicio", "actualizado"];
+const CLAVES_ESTADO = ["abierto", "cuenta", "nombre", "estado", "motivo", "poses", "advertencia", "duplicado_de", "inicio", "actualizado"];
 
 test("estado: sin ningún registro responde la forma vacía", () => {
     const { salida } = ejecutar(ID.estado, { req: { method: "GET" } });
@@ -364,7 +364,7 @@ test("estado: sin ningún registro responde la forma vacía", () => {
     assert.deepEqual(Object.keys(salida.payload), CLAVES_ESTADO);
     assert.deepEqual(salida.payload, {
         abierto: false, cuenta: null, nombre: null, estado: "sin_registro", motivo: null,
-        poses: [], advertencia: null, inicio: null, actualizado: null
+        poses: [], advertencia: null, duplicado_de: null, inicio: null, actualizado: null
     });
 });
 
@@ -1240,9 +1240,44 @@ test("recorrido: un error 'duplicado' con parecido_a cierra como cualquier error
     assert.equal(estado.abierto, false);
     assert.equal(estado.estado, "error");
     assert.equal(estado.motivo, "duplicado");
-    // La cuenta parecida no sale por la API (solo la advertencia informativa la lleva).
+    // La cuenta dueña sale en `duplicado_de`, no en `advertencia` (esa se guarda igual).
     assert.equal(estado.advertencia, null);
+    assert.equal(estado.duplicado_de, "320068999");
+    assert.ok(!/embedding|coseno/.test(JSON.stringify(estado)));
     assert.equal(embedding(flow, mensajeEmbedding()).salida[0], null);
+});
+
+test("progreso: duplicado con parecido_a inválido o ausente cierra igual y deja duplicado_de en null", () => {
+    for (const extra of [{ parecido_a: "no-cuenta" }, { parecido_a: "12345678" }, { parecido_a: 320068999 }, { parecido_a: null }, {}]) {
+        const flow = abrirInscripcion();
+        const r = progreso(flow, mensajeProgreso({ estado: "error", motivo: "duplicado", ...extra }));
+        assert.deepEqual(r.salida[0], { params: [CUENTA] });
+        const estado = ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload;
+        assert.equal(estado.motivo, "duplicado");
+        assert.equal(estado.duplicado_de, null, JSON.stringify(extra));
+    }
+});
+
+test("progreso: parecido_a solo se conserva con el motivo duplicado (otro error no lo guarda)", () => {
+    const flow = abrirInscripcion();
+    progreso(flow, mensajeProgreso({ estado: "error", motivo: "inconsistente", parecido_a: "320068999" }));
+    assert.equal(ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload.duplicado_de, null);
+});
+
+test("estado: duplicado_de no se arrastra al siguiente registro (ni a un cancelado de otra cuenta)", () => {
+    const flow = abrirInscripcion();
+    progreso(flow, mensajeProgreso({ estado: "error", motivo: "duplicado", parecido_a: "320068999" }));
+    assert.equal(flow.get("inscripcion").duplicado_de, "320068999");
+    // Nuevo registro: la inscripción se crea de cero.
+    const r = ejecutar(ID.validarApartar, peticionPost({ cuenta: CUENTA, consentimiento: true }), { flow });
+    assert.ok(r.salida[0]);
+    ejecutar(ID.abrir, { ...r.salida[0], payload: [{ existe: 1, nombre: NOMBRE, tiene_rostro: false, actualizadas: 1 }] }, { flow });
+    const nuevo = ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload;
+    assert.equal(nuevo.abierto, true);
+    assert.equal(nuevo.duplicado_de, null);
+    // Cancelado después: tampoco aparece.
+    progreso(flow, mensajeProgreso({ estado: "cancelado" }));
+    assert.equal(ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload.duplicado_de, null);
 });
 
 test("recorrido: 'galeria_no_disponible' (rechazo de la orden, paso 0, sin pose) cierra el registro como cualquier error y revierte el consentimiento", () => {

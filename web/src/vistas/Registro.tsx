@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Alumno } from '../api/alumnosRespuestas'
 import {
+  avisoDuplicado,
   filtrarAlumnos,
   ordenarParaRegistro,
   resumirRegistro,
@@ -388,6 +389,8 @@ function SeccionProgreso({ registro, transcurridoMs, alumnos }: PropsProgreso) {
   const resumen = resumirRegistro(registro)
   const tiempo = textoTiempo(registro, transcurridoMs)
   const parecido = registro.advertencia === null ? null : registro.advertencia.parecidoA
+  const duplicado = avisoDuplicado(registro)
+  const duenoDelRostro = duplicado === null || alumnos === null ? null : (alumnos.find((a) => a.cuenta === duplicado.cuenta) ?? null)
   const parecidoA = parecido === null || alumnos === null ? null : (alumnos.find((a) => a.cuenta === parecido) ?? null)
   return (
     <>
@@ -404,6 +407,24 @@ function SeccionProgreso({ registro, transcurridoMs, alumnos }: PropsProgreso) {
           </div>
         </div>
       </div>
+
+      {duplicado !== null && (
+        <div className="hoja__cuerpo">
+          <div className="aviso aviso--error aviso--entra" role="status">
+            <p className="aviso__titulo">{duplicado.titulo}</p>
+            <p>
+              {duenoDelRostro !== null ? (
+                <>
+                  Coincide con <bdi>{duenoDelRostro.nombre}</bdi> (cuenta {duplicado.cuenta}).
+                </>
+              ) : (
+                <>Coincide con la cuenta {duplicado.cuenta}.</>
+              )}{' '}
+              {duplicado.texto}
+            </p>
+          </div>
+        </div>
+      )}
 
       {registro.advertencia !== null && (
         <div className="hoja__cuerpo">

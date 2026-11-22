@@ -16,6 +16,7 @@ import {
   POSES,
   avisoDeCancelacion,
   avisoDeInicio,
+  avisoDuplicado,
   capturaVisible,
   contadorFoto,
   ESPERA_POSE_MS,
@@ -720,4 +721,46 @@ test('contadorFoto: una hora de la placa anterior a `actualizado` no muestra má
   assert.equal(contadorFoto(r, T0 - 800).segundos, 5)
   // Y la cuenta normal no cambia.
   assert.equal(contadorFoto(r, T0 + 4200).segundos, 1)
+})
+
+// ------------------------------------------------------------ duplicado
+
+test('leerRegistro: duplicado_de se lee como duplicadoDe; ausente, null o con otra forma queda en null sin invalidar el estado', () => {
+  assert.equal(registro({ duplicado_de: '320068999' }).duplicadoDe, '320068999')
+  assert.equal(registro().duplicadoDe, null)
+  for (const raro of [null, 320068999, '123', 'abcdefghi', {}, ['320068999']]) {
+    assert.equal(registro({ duplicado_de: raro }).duplicadoDe, null, JSON.stringify(raro))
+  }
+})
+
+test('avisoDuplicado: con error por duplicado y cuenta dice con quién coincide y qué hacer', () => {
+  const r = registro({ abierto: false, estado: 'error', motivo: 'duplicado', duplicado_de: '320068999' })
+  const a = avisoDuplicado(r)
+  assert.equal(a.cuenta, '320068999')
+  assertTextoLegible(a.titulo)
+  assert.match(a.texto, /misma persona/)
+  assert.match(a.texto, /Alumnos/)
+})
+
+test('avisoDuplicado: sin cuenta, con otro motivo o con el registro abierto no hay aviso (queda el texto genérico)', () => {
+  assert.equal(avisoDuplicado(registro({ abierto: false, estado: 'error', motivo: 'duplicado' })), null)
+  assert.equal(avisoDuplicado(registro({ abierto: false, estado: 'error', motivo: 'inconsistente', duplicado_de: '320068999' })), null)
+  assert.equal(avisoDuplicado(registro({ abierto: true, duplicado_de: '320068999' })), null)
+  assert.match(resumirRegistro(registro({ abierto: false, estado: 'error', motivo: 'duplicado' })).detalle, /ya está registrado con otra cuenta/)
+  for (const estado of ['completado', 'cancelado']) {
+    assert.equal(avisoDuplicado(registro({ abierto: false, estado, duplicado_de: '320068999' })), null, estado)
+  }
+})
+
+test('resumirRegistro: con el aviso de duplicado no repite el motivo; sin cuenta válida queda el texto genérico', () => {
+  const con = registro({ abierto: false, estado: 'error', motivo: 'duplicado', duplicado_de: '320068999' })
+  assert.notEqual(avisoDuplicado(con), null)
+  const resumen = resumirRegistro(con)
+  assert.equal(resumen.detalle, 'No se guardó ningún rostro.')
+  // Ni el resumen ni el aviso dicen lo mismo.
+  const aviso = avisoDuplicado(con)
+  assert.ok(!resumen.detalle.includes('ya está registrado'))
+  assert.ok(!resumen.detalle.includes(aviso.titulo))
+  const sin = resumirRegistro(registro({ abierto: false, estado: 'error', motivo: 'duplicado', duplicado_de: 'x' }))
+  assert.equal(sin.detalle, 'Este rostro ya está registrado con otra cuenta. No se guardó ningún rostro.')
 })
