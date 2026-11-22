@@ -7,7 +7,7 @@ interface Props {
 }
 
 /**
- * El recuadro de la última foto, debajo de las cinco poses: la miniatura que mandó la cámara
+ * El recuadro de la última foto, en el margen de Registro: la miniatura que mandó la cámara
  * (JPEG de hasta 160x120) en grande, con la pose y su estado en palabras debajo, y el motivo si
  * se rechazó. Las miniaturas de cada pose siguen en su renglón. Sin ninguna foto lo dice:
  * no pinta una imagen ni un avance de mentira. Es efímera como las
@@ -17,9 +17,9 @@ export function UltimaFoto({ captura }: Props) {
   const texto = captura === null ? null : textoCaptura(captura)
   return (
     <section className="ultima-foto" aria-labelledby="titulo-ultima-foto">
-      <h3 id="titulo-ultima-foto" className="ultima-foto__titulo etiqueta-tecnica">
+      <h2 id="titulo-ultima-foto" className="ultima-foto__titulo etiqueta-tecnica">
         Última foto
-      </h3>
+      </h2>
       {/* Un solo aviso, siempre montado y fuera de la figura (que se vuelve a crear con cada foto): el intento hace distinto el texto de dos rechazos seguidos de la misma pose. */}
       <p role="status" className="solo-lectores">
         {captura === null || texto === null ? '' : `${texto.leyenda}${captura.intento > 1 ? `, intento ${captura.intento}` : ''}. ${texto.detalle ?? ''}`.trim()}

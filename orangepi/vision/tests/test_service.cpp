@@ -1037,6 +1037,11 @@ TEST(una_pose_sin_foto_no_lleva_miniatura) {
   CHECK(!progress.back().thumbnail.has_value());
 }
 
+// El frontend cuenta 5-4-3-2-1 con este mismo plazo (ESPERA_POSE_MS, web/src/api/registroRespuestas.ts).
+TEST(the_pose_delay_is_5_seconds_like_the_frontend_countdown) {
+  CHECK_EQ(ServiceConfig{}.pose_delay.count(), 5000);
+}
+
 TEST(enrollment_waits_for_the_pose_delay_before_capturing) {
   Harness h;
   h.queue_frames(5);

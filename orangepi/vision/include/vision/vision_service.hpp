@@ -65,7 +65,10 @@ struct ServiceConfig {
   // Nombre y version del modelo de reconocimiento; lo publica el servicio en el
   // embedding y en el estado. Provisional hasta que exista el .nb (plan 6.2).
   std::string model_name = "w600k_mbf-uint8-v1";
-  Millis pose_delay{3000};        // tiempo para que el alumno adopte cada pose
+  // Tiempo para que el alumno adopte cada pose. El frontend cuenta este mismo plazo en su
+  // contador regresivo (ESPERA_POSE_MS, web/src/api/registroRespuestas.ts): si cambia uno,
+  // cambia el otro.
+  Millis pose_delay{5000};
   int max_attempts_per_pose = 5;  // intentos antes de abortar el registro
   // La foto viene de la red y no es de fiar: se acota antes de decodificarla. Las
   // dimensiones por defecto cubren UXGA (1600x1200) y el OV3660 (2048x1536).

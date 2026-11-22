@@ -27,6 +27,8 @@ export interface EstadoRegistroVista {
   sinSesion: boolean
   /** Hora (ms) de la última respuesta correcta, según el reloj de la placa. */
   horaServidor: number | null
+  /** performance.now() al recibir esa respuesta: con `horaServidor` da la hora de la placa ahora sin depender del reloj de la laptop (contador de la foto). */
+  recibidoEn: number | null
   /** Milisegundos desde que arrancó el registro mostrado, según el reloj de la placa (null sin registro). */
   transcurridoMs: number | null
   /** Aviso de la última acción que no terminó bien; null si no hay. */
@@ -56,10 +58,11 @@ export interface EstadoRegistroVista {
 export function useRegistro(): EstadoRegistroVista {
   const [vista, setVista] = useState<EstadoVista>(VISTA_INICIAL)
   const vistaRef = useRef(vista)
-  const [datos, setDatos] = useState<{ error: string | null; sinSesion: boolean; horaServidor: number | null }>({
+  const [datos, setDatos] = useState<{ error: string | null; sinSesion: boolean; horaServidor: number | null; recibidoEn: number | null }>({
     error: null,
     sinSesion: false,
     horaServidor: null,
+    recibidoEn: null,
   })
   const [aviso, setAviso] = useState<AvisoRegistro | null>(null)
   const [ocupado, setOcupado] = useState<'iniciar' | 'cancelar' | null>(null)
@@ -118,7 +121,7 @@ export function useRegistro(): EstadoRegistroVista {
         }
         primeraPendiente = false
         despachar({ tipo: 'estado', registro })
-        setDatos({ error: null, sinSesion: false, horaServidor })
+        setDatos({ error: null, sinSesion: false, horaServidor, recibidoEn: performance.now() })
       } catch (error) {
         if (cancelacion.signal.aborted) {
           return
@@ -218,6 +221,7 @@ export function useRegistro(): EstadoRegistroVista {
       error: datos.error,
       sinSesion: datos.sinSesion,
       horaServidor: datos.horaServidor,
+      recibidoEn: datos.recibidoEn,
       transcurridoMs,
       aviso,
       ocupado,

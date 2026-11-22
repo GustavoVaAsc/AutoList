@@ -10,12 +10,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { assertTextoLegible, assertTextosDistintos } from './texto.js'
 import {
+  anuncioContador,
   AVISO_REGISTRO_PERDIDO,
   ETIQUETA_POSE,
   POSES,
   avisoDeCancelacion,
   avisoDeInicio,
   capturaVisible,
+  contadorFoto,
+  ESPERA_POSE_MS,
+  horaDeLaPlaca,
   filtrarAlumnos,
   formatearTranscurrido,
   interpretarCancelacion,
@@ -613,4 +617,107 @@ test('seguirCaptura: otro registro (otra cuenta o inicio) empieza de cero', () =
   const s = seguirCaptura(SEGUIMIENTO_INICIAL, conFotos(['aceptada'], ['AAA']))
   const otro = seguirCaptura(s, registro({ cuenta: '320068235', poses: poses(['esperando_pose']) }))
   assert.equal(otro.captura, null)
+})
+
+// ------------------------------------------------------------ contador de la foto
+
+const T0 = Date.parse(ACTUALIZADO)
+
+function posesEn(...estados) {
+  return POSES.map((pose, i) => ({ pose, estado: estados[i] ?? 'pendiente', motivo: estados[i] === 'rechazada' ? 'borrosa' : null }))
+}
+
+test('ESPERA_POSE_MS: son los 5 s que espera la visión (pose_delay) antes de cada foto', () => {
+  assert.equal(ESPERA_POSE_MS, 5000)
+})
+
+test('contadorFoto: esperando_pose a media cuenta, redondea hacia arriba (5, 4, 3, 2, 1)', () => {
+  const r = registro({ poses: posesEn('aceptada', 'esperando_pose') })
+  assert.deepEqual(contadorFoto(r, T0), { tipo: 'cuenta', pose: 'izquierda', segundos: 5 })
+  assert.equal(contadorFoto(r, T0 + 1).segundos, 5)
+  assert.equal(contadorFoto(r, T0 + 1000).segundos, 4)
+  assert.equal(contadorFoto(r, T0 + 2400).segundos, 3)
+  assert.equal(contadorFoto(r, T0 + 3500).segundos, 2)
+  assert.equal(contadorFoto(r, T0 + 4999).segundos, 1)
+})
+
+test('contadorFoto: tras un rechazo cuenta de nuevo para la misma pose (la visión reintenta)', () => {
+  const r = registro({ poses: posesEn('aceptada', 'rechazada') })
+  assert.deepEqual(contadorFoto(r, T0 + 2000), { tipo: 'cuenta', pose: 'izquierda', segundos: 3 })
+})
+
+test('contadorFoto: con la pose en capturando es "tomando", aunque el plazo no haya vencido', () => {
+  const r = registro({ poses: posesEn('capturando') })
+  assert.deepEqual(contadorFoto(r, T0 + 100), { tipo: 'tomando', pose: 'frente' })
+  assert.deepEqual(contadorFoto(r, null), { tipo: 'tomando', pose: 'frente' })
+})
+
+test('contadorFoto: con el plazo vencido (0 o menos) es "tomando", sin número negativo', () => {
+  const r = registro({ poses: posesEn('esperando_pose') })
+  assert.deepEqual(contadorFoto(r, T0 + ESPERA_POSE_MS), { tipo: 'tomando', pose: 'frente' })
+  assert.deepEqual(contadorFoto(r, T0 + ESPERA_POSE_MS + 8000), { tipo: 'tomando', pose: 'frente' })
+})
+
+test('contadorFoto: esperando_vision es "preparando": no inventa números', () => {
+  const r = registro({ estado: 'esperando_vision' })
+  assert.deepEqual(contadorFoto(r, T0), { tipo: 'preparando', anunciar: true })
+})
+
+test('contadorFoto: sin actualizado, sin hora de la placa o con la pose aún pendiente es "preparando"', () => {
+  assert.deepEqual(contadorFoto(registro({ poses: posesEn('esperando_pose'), actualizado: null }), T0), { tipo: 'preparando', anunciar: true })
+  assert.deepEqual(contadorFoto(registro({ poses: posesEn('esperando_pose') }), null), { tipo: 'preparando', anunciar: true })
+  // Entre una aceptada y la siguiente esperando_pose: se ve, pero no se anuncia.
+  assert.deepEqual(contadorFoto(registro({ poses: posesEn('aceptada') }), T0), { tipo: 'preparando', anunciar: false })
+})
+
+test('contadorFoto: con el registro cerrado, guardando o con las cinco aceptadas no hay contador', () => {
+  const cinco = posesEn('aceptada', 'aceptada', 'aceptada', 'aceptada', 'aceptada')
+  assert.deepEqual(contadorFoto(registro({ abierto: false, estado: 'completado', poses: cinco }), T0), { tipo: 'ninguno' })
+  assert.deepEqual(contadorFoto(registro({ abierto: false, estado: 'cancelado', poses: posesEn('esperando_pose') }), T0), { tipo: 'ninguno' })
+  assert.deepEqual(contadorFoto(registro({ estado: 'guardando', poses: cinco }), T0), { tipo: 'ninguno' })
+  assert.deepEqual(contadorFoto(registro({ poses: cinco }), T0), { tipo: 'ninguno' })
+})
+
+test('contadorFoto: un desfase raro no muestra más que la espera completa', () => {
+  const r = registro({ poses: posesEn('esperando_pose') })
+  assert.equal(contadorFoto(r, T0 - 60_000).segundos, 5)
+})
+
+test('horaDeLaPlaca: suma lo transcurrido en el navegador a la hora de la placa; el reloj local no importa', () => {
+  assert.equal(horaDeLaPlaca(T0, 0), T0)
+  assert.equal(horaDeLaPlaca(T0, 1500), T0 + 1500)
+  assert.equal(horaDeLaPlaca(T0, -5), T0)
+  assert.equal(horaDeLaPlaca(null, 100), null)
+  assert.equal(horaDeLaPlaca(T0, Number.NaN), null)
+})
+
+test('contadorFoto: la cuenta sale de la hora de la placa más lo transcurrido en el navegador (desfase)', () => {
+  // La respuesta llegó cuando la placa decía T0 + 1000 (aunque la laptop marque otra hora):
+  // 1 s después de ese progreso. 600 ms más tarde, en el navegador, quedan 3,4 s.
+  const r = registro({ poses: posesEn('esperando_pose') })
+  const ahora = horaDeLaPlaca(T0 + 1000, 600)
+  assert.deepEqual(contadorFoto(r, ahora), { tipo: 'cuenta', pose: 'frente', segundos: 4 })
+})
+
+test('anuncioContador: solo cambia con la fase y nunca lleva el número que corre', () => {
+  const r = registro({ poses: posesEn('aceptada', 'esperando_pose') })
+  const a = anuncioContador(contadorFoto(r, T0))
+  assert.equal(a, anuncioContador(contadorFoto(r, T0 + 3000)))
+  assert.equal(a, 'Foto de un poco a la izquierda en unos segundos.')
+  assert.equal(anuncioContador({ tipo: 'tomando', pose: 'frente' }), 'Tomando foto.')
+  assert.equal(anuncioContador({ tipo: 'preparando', anunciar: true }), 'Preparando la cámara.')
+  assert.equal(anuncioContador({ tipo: 'preparando', anunciar: false }), '')
+  assert.equal(anuncioContador({ tipo: 'ninguno' }), '')
+})
+
+test('contadorFoto: rechazada con el plazo vencido es "tomando" (la visión ya reintenta)', () => {
+  const r = registro({ poses: posesEn('aceptada', 'rechazada') })
+  assert.deepEqual(contadorFoto(r, T0 + ESPERA_POSE_MS + 1), { tipo: 'tomando', pose: 'izquierda' })
+})
+
+test('contadorFoto: una hora de la placa anterior a `actualizado` no muestra más de 5 s (tope)', () => {
+  const r = registro({ poses: posesEn('esperando_pose') })
+  assert.equal(contadorFoto(r, T0 - 800).segundos, 5)
+  // Y la cuenta normal no cambia.
+  assert.equal(contadorFoto(r, T0 + 4200).segundos, 1)
 })

@@ -1885,6 +1885,100 @@ code {
   }
 }
 
+/* Registro abierto: el contador va antes de la hoja en el DOM, la última foto y Cancelar en el
+   margen, después. En una columna (menos de 1000 px) el orden visual es el del DOM y el
+   contador se ve sin bajar por la tabla. Con espacio, la hoja ocupa la columna izquierda y
+   el contador y el margen se apilan en la derecha. */
+.margen--registro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-4);
+}
+
+@media (max-width: 999px) {
+  .rejilla-alumnos--registro > .contador-foto {
+    max-width: 40rem;
+  }
+}
+
+@media (min-width: 1000px) {
+  /* La fila 1 (contador) mide lo suyo y la 2 (margen) toma el resto: con una hoja más alta, el
+     margen queda pegado al contador y no separado por un hueco; sin contador, la fila 1 queda
+     vacía y solo queda su separación. */
+  .rejilla-alumnos--registro {
+    grid-template-rows: auto 1fr;
+  }
+
+  .rejilla-alumnos--registro > .contador-foto {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .rejilla-alumnos--registro > .hoja {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .rejilla-alumnos--registro > .margen {
+    grid-column: 2;
+    grid-row: 2;
+    position: static;
+  }
+}
+
+/* Escalonado de entrada como en Alumnos: primero la hoja (izquierda), después lo de la derecha. */
+.rejilla-alumnos.rejilla-alumnos--registro > .hoja {
+  animation-delay: 0ms;
+}
+
+.rejilla-alumnos.rejilla-alumnos--registro > .contador-foto,
+.rejilla-alumnos.rejilla-alumnos--registro > .margen {
+  animation-delay: var(--escalon);
+}
+
+/* La foto próxima: la pose que se pide y, en grande, cuánto falta. */
+.contador-foto__pose {
+  font-family: var(--serif);
+  font-size: var(--t-seccion);
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--tinta);
+}
+
+.contador-foto__cuenta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--e-3);
+  color: var(--tinta);
+}
+
+.contador-foto__texto {
+  font-size: var(--t-cuerpo);
+  color: var(--suave);
+}
+
+.contador-foto__numero {
+  font-family: var(--serif);
+  font-size: var(--t-cifra);
+  line-height: 1;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  animation: contador-tic var(--d-entrada) var(--ease-entrada) backwards;
+}
+
+.contador-foto__cuenta--texto {
+  font-family: var(--serif);
+  font-size: var(--t-seccion);
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+@keyframes contador-tic {
+  from {
+    opacity: 0.35;
+  }
+}
+
 /* Con un registro abierto: lo que dice la vista, con la marca de asistencia que le toca. */
 .estado-registro {
   display: flex;

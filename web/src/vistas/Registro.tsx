@@ -9,6 +9,7 @@ import {
   type Registro as DatosRegistro,
 } from '../api/registroRespuestas'
 import { CampoBusqueda } from '../componentes/CampoBusqueda'
+import { CuentaRegresiva } from '../componentes/CuentaRegresiva'
 import { EsqueletoTabla } from '../componentes/EsqueletoTabla'
 import { EstadoVacio } from '../componentes/EstadoVacio'
 import { MarcaAsistencia } from '../componentes/MarcaAsistencia'
@@ -53,7 +54,8 @@ function AvisoDeAccion({ aviso, alCerrar }: { aviso: AvisoRegistro; alCerrar: ()
  * Registro: alta del rostro de un alumno, compuesta como la hoja de Alumnos (web/DESIGN.md).
  * Con la vista libre, la hoja es la lista para elegir al alumno y el margen lleva el
  * consentimiento y "Iniciar registro". Con un registro abierto (iniciado aquí o retomado al
- * recargar la página), la hoja muestra las cinco poses y el margen, la acción que sigue.
+ * recargar la página), la hoja muestra las cinco poses y el margen, de arriba abajo, el contador
+ * de la foto, la última foto y la acción que sigue (cancelar).
  * El progreso se consulta cada segundo (useRegistro). Mientras el reconocimiento no contesta, la
  * vista lo dice y cuenta el tiempo: no simula avance.
  */
@@ -112,7 +114,11 @@ export function Registro() {
 
   return (
     <Pagina>
-      <div className="rejilla-alumnos">
+      <div className={vista.fase === 'abierto' ? 'rejilla-alumnos rejilla-alumnos--registro' : 'rejilla-alumnos'}>
+        {/* Con el registro abierto el contador va antes de la hoja en el DOM: se lee primero y, en una columna, se ve sin bajar por la tabla; con espacio, la rejilla lo pone arriba del margen. */}
+        {vista.fase === 'abierto' && registroVisible !== null && (
+          <CuentaRegresiva registro={registroVisible} horaServidor={registro.horaServidor} recibidoEn={registro.recibidoEn} />
+        )}
         <section className="hoja hoja--lista" aria-labelledby="titulo-registro">
           <header className="hoja__encabezado">
             <h1 id="titulo-registro" ref={encabezado} className="hoja__titulo" tabIndex={-1}>
@@ -203,7 +209,7 @@ export function Registro() {
         </section>
 
         {vista.fase !== 'comprobando' && (
-          <section className="margen" aria-labelledby="titulo-accion">
+          <section className={vista.fase === 'abierto' ? 'margen margen--registro' : 'margen'} aria-labelledby="titulo-accion">
             {(vista.fase === 'libre' || vista.fase === 'iniciando') && (
               <div className="caja-margen">
                 <h2 id="titulo-accion" className="zona__titulo">
@@ -247,6 +253,8 @@ export function Registro() {
                 )}
               </div>
             )}
+
+            {vista.fase === 'abierto' && registroVisible !== null && <UltimaFotoDelRegistro registro={registroVisible} />}
 
             {vista.fase === 'abierto' && registroVisible !== null && (
               <div className="caja-margen">
@@ -364,15 +372,19 @@ function SeccionLista({ alumnos, error, busqueda, alBorrarBusqueda, elegida, alE
   )
 }
 
+/** La última foto, en el margen mientras el registro está abierto: el seguimiento vive en este componente y se pierde al cerrarse. */
+function UltimaFotoDelRegistro({ registro }: { registro: DatosRegistro }) {
+  return <UltimaFoto captura={useUltimaCaptura(registro)} />
+}
+
 interface PropsProgreso {
   registro: DatosRegistro
   transcurridoMs: number | null
   alumnos: Alumno[] | null
 }
 
-/** El resumen del registro, el aviso de parecido, las cinco poses y, con el registro abierto, el recuadro de la última foto debajo de ellas. */
+/** El resumen del registro, el aviso de parecido y las cinco poses. */
 function SeccionProgreso({ registro, transcurridoMs, alumnos }: PropsProgreso) {
-  const captura = useUltimaCaptura(registro)
   const resumen = resumirRegistro(registro)
   const tiempo = textoTiempo(registro, transcurridoMs)
   const parecido = registro.advertencia === null ? null : registro.advertencia.parecidoA
@@ -420,11 +432,6 @@ function SeccionProgreso({ registro, transcurridoMs, alumnos }: PropsProgreso) {
         <ProgresoRegistro poses={registro.poses} idTitulo="titulo-poses" />
       </div>
 
-      {registro.abierto && (
-        <div className="hoja__cuerpo">
-          <UltimaFoto captura={captura} />
-        </div>
-      )}
     </>
   )
 }

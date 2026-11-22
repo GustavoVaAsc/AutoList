@@ -339,6 +339,99 @@ export function textoCaptura(captura: Captura): { leyenda: string; detalle: stri
   return { leyenda: `${pose} · ${estado}`, detalle, alt }
 }
 
+// ---------------------------------------------------------------- contador de la foto
+
+/**
+ * Lo que espera la visión antes de cada foto (`pose_delay` en
+ * orangepi/vision/include/vision/vision_service.hpp). Está repetido: si cambia uno, cambia el
+ * otro. La visión lo cuenta desde que publica `esperando_pose` (al empezar, al pasar a la pose
+ * siguiente y tras un rechazo), y Node-RED guarda esa hora como `actualizado`.
+ * Supuesto: ese es el último progreso antes de la foto. Cualquier mensaje intermedio que renueve
+ * `actualizado` sin reiniciar el `due` de la visión (p. ej. `advertencia`, hoy no emitida; ver
+ * mqtt_contract.hpp) alargaría la cuenta.
+ */
+export const ESPERA_POSE_MS = 5000
+
+/**
+ * - ninguno: no hay foto próxima (registro cerrado, cinco poses aceptadas);
+ * - preparando: la visión aún no contesta o no hay datos para contar (no se inventa un número);
+ *   `anunciar` es false en el instante entre una pose aceptada y la siguiente (no se dice al lector);
+ * - cuenta: faltan `segundos` (de ESPERA_POSE_MS / 1000 a 1) para la foto;
+ * - tomando: la foto se toma ahora (la visión está en `capturando` o el plazo ya venció).
+ */
+export type ContadorFoto =
+  | { tipo: 'ninguno' }
+  | { tipo: 'preparando'; anunciar: boolean }
+  | { tipo: 'cuenta'; pose: NombrePose; segundos: number }
+  | { tipo: 'tomando'; pose: NombrePose }
+
+/**
+ * La hora de la placa ahora. `horaServidor` es la hora de la placa en la última respuesta y
+ * `transcurridoLocalMs` lo que pasó en este navegador desde que llegó (con un reloj monotónico,
+ * performance.now()): el desfase contra el reloj de la placa queda fijo y no depende de que los
+ * dos relojes coincidan ni de la granularidad de 1 s del sondeo. La cabecera Date no lleva
+ * milisegundos, así que la hora puede quedar hasta 1 s atrás y el contador, mostrar de más, nunca
+ * de menos: no dice "Tomando foto" antes de tiempo.
+ */
+export function horaDeLaPlaca(horaServidor: number | null, transcurridoLocalMs: number): number | null {
+  return horaServidor === null || !Number.isFinite(transcurridoLocalMs) ? null : horaServidor + Math.max(0, transcurridoLocalMs)
+}
+
+/**
+ * El contador de la foto próxima. Se cuenta desde `actualizado` (el último progreso que publicó la
+ * visión) hasta `actualizado + ESPERA_POSE_MS`; vale para `esperando_pose` y también para
+ * `rechazada`, porque la visión reintenta la misma pose tras la misma espera. `ahoraPlaca` es la
+ * hora de la placa ahora (`horaDeLaPlaca`), o null si no se conoce. Si algún progreso intermedio
+ * renovara `actualizado` sin reiniciar el `due` de la visión (ver ESPERA_POSE_MS), la cuenta se
+ * alargaría.
+ */
+export function contadorFoto(registro: Registro, ahoraPlaca: number | null): ContadorFoto {
+  if (!registro.abierto) {
+    return { tipo: 'ninguno' }
+  }
+  if (registro.estado === 'esperando_vision') {
+    return { tipo: 'preparando', anunciar: true }
+  }
+  const i = poseEnCurso(registro)
+  if (registro.estado !== 'en_curso' || i === null) {
+    return { tipo: 'ninguno' }
+  }
+  const pose = registro.poses[i]!
+  if (pose.estado === 'capturando') {
+    return { tipo: 'tomando', pose: pose.pose }
+  }
+  if (pose.estado === 'pendiente') {
+    return { tipo: 'preparando', anunciar: false }
+  }
+  if ((pose.estado !== 'esperando_pose' && pose.estado !== 'rechazada') || registro.actualizado === null || ahoraPlaca === null) {
+    return { tipo: 'preparando', anunciar: true }
+  }
+  const faltaMs = registro.actualizado + ESPERA_POSE_MS - ahoraPlaca
+  if (faltaMs <= 0) {
+    return { tipo: 'tomando', pose: pose.pose }
+  }
+  // Un desfase raro no debe mostrar más de la espera completa.
+  return { tipo: 'cuenta', pose: pose.pose, segundos: Math.min(ESPERA_POSE_MS / 1000, Math.ceil(faltaMs / 1000)) }
+}
+
+/**
+ * Lo que se anuncia a un lector de pantalla del contador: solo cambia con la fase (cuenta,
+ * tomando, preparando), no con cada segundo; por eso no lleva la cifra (al recargar a media
+ * cuenta faltarían menos de 5).
+ */
+export function anuncioContador(contador: ContadorFoto): string {
+  switch (contador.tipo) {
+    case 'cuenta':
+      return `Foto de ${ETIQUETA_POSE[contador.pose].toLowerCase()} en unos segundos.`
+    case 'tomando':
+      return 'Tomando foto.'
+    case 'preparando':
+      return contador.anunciar ? 'Preparando la cámara.' : ''
+    case 'ninguno':
+      return ''
+  }
+}
+
 export type Tono = 'neutro' | 'advertencia' | 'error' | 'exito'
 
 export interface ResumenRegistro {
