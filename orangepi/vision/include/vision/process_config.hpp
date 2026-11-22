@@ -69,6 +69,10 @@ struct GallerySettings {
   // Nombre de la variable de entorno con el token (nunca el token mismo).
   std::string token_env = "GALERIA_TOKEN";
   int timeout_ms = 5000;
+  // Si una recarga falla, se reintenta a este intervalo (ms) en vez de esperar a la proxima
+  // reconexion al broker; se duplica en cada fallo hasta kGalleryRetryMaxFactor veces. Mientras
+  // la recarga no haya tenido exito, los registros se rechazan (galeria_no_disponible).
+  int retry_ms = enrollment_limits::kGalleryRetryMs;
 };
 
 // Bloque "umbrales": los del filtro de calidad y los de la decision.
@@ -82,6 +86,35 @@ struct ThresholdSettings {
   // del umbral). PROVISIONAL: se recalibra con LFW (hito del 18 de noviembre, plan,
   // secciones 9 y 12.1).
   float min_similitud_pose = 0.50f;
+
+  // Verificacion del registro (plan 5.4, pasos 3 y 5). Los valores por omision y su
+  // explicacion estan en ServiceConfig (vision_service.hpp) y en PoseLimits (head_pose.hpp):
+  // todos son PROVISIONALES, a calibrar con la ESP32 con los valores que el servicio escribe
+  // por stderr en cada pose.
+  //
+  //   clave de "umbrales"          campo
+  //   max_yaw_frontal_grados       pose.max_frontal_yaw_deg
+  //   min_yaw_lateral_grados       pose.min_lateral_yaw_deg
+  //   max_yaw_grados               pose.max_yaw_deg
+  //   max_pitch_frente_grados      pose.max_first_pitch_deg
+  //   max_pitch_frontal_grados     pose.max_frontal_pitch_deg
+  //   min_pitch_arriba_grados      pose.min_up_pitch_deg
+  //   max_pitch_referencia_grados  pose.max_reference_pitch_deg
+  //   max_pitch_grados             pose.max_pitch_deg
+  //   invertir_giro                pose.invert_turn
+  //   min_similitud_frente         min_similitud_frente
+  //   min_similitud_frente_2       min_similitud_frente_2
+  //   max_rechazos_identidad       max_rechazos_identidad
+  //   min_similitud_duplicado      min_similitud_duplicado
+  //   area_min_otro_rostro         area_min_otro_rostro
+  //   score_min_otro_rostro        score_min_otro_rostro
+  PoseLimits pose;
+  float min_similitud_frente = enrollment_limits::kMinFrontSimilarity;
+  float min_similitud_frente_2 = enrollment_limits::kMinFront2Similarity;
+  int max_rechazos_identidad = enrollment_limits::kMaxIdentityRejections;
+  float min_similitud_duplicado = enrollment_limits::kMinDuplicateSimilarity;
+  float area_min_otro_rostro = enrollment_limits::kOtherFaceMinAreaRatio;
+  float score_min_otro_rostro = enrollment_limits::kOtherFaceMinScore;
 };
 
 // Bloque "servicio": el ritmo del bucle y lo que el servicio publica.

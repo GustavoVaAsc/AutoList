@@ -90,4 +90,36 @@ std::optional<GalleryMatch> Gallery::match(std::span<const float> query) const {
   return GalleryMatch{best->account, best_score, margin};
 }
 
+std::optional<GalleryMatch> Gallery::match_excluding(std::span<const float> query,
+                                                     const std::string& exclude) const {
+  // Sin otra cuenta con la que comparar no hay nada que decir, ni siquiera si la dimension del
+  // embedding no cuadra con la de la cuenta excluida (por ejemplo, un alta vieja de otro modelo
+  // que es lo unico que hay): la dimension se comprueba solo si hay contra quien compararla.
+  const bool hay_otra = std::any_of(entries_.begin(), entries_.end(),
+                                    [&](const Entry& e) { return e.account != exclude; });
+  if (!hay_otra) {
+    return std::nullopt;
+  }
+  if (query.size() != dimension()) {
+    throw EmbeddingError("dimension " + std::to_string(query.size()) +
+                         " distinta de la de la galeria (" + std::to_string(dimension()) + ")");
+  }
+  const std::vector<float> q = l2_normalized(query);
+
+  const Entry* best = nullptr;
+  float best_score = -1.0f;
+  for (const Entry& entry : entries_) {
+    if (entry.account == exclude) continue;
+    float score = 0.0f;
+    for (std::size_t i = 0; i < q.size(); ++i) {
+      score += q[i] * entry.embedding[i];
+    }
+    if (best == nullptr || score > best_score) {
+      best = &entry;
+      best_score = score;
+    }
+  }
+  return GalleryMatch{best->account, best_score, std::nullopt};
+}
+
 }  // namespace vision

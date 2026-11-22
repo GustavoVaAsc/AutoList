@@ -162,6 +162,181 @@ TEST(config_rechaza_una_clave_desconocida_en_los_umbrales) {
   CHECK(error.find("min_similitud_pose_") != std::string::npos);
 }
 
+// La verificacion de pose, la identidad por pose y los rostros de fondo del registro.
+TEST(config_las_omisiones_de_la_verificacion_del_registro_son_las_de_service_config) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config("{}", config, error));
+  const ServiceConfig por_omision;
+  const ServiceConfig servicio = config.to_service_config();
+  CHECK_NEAR(servicio.pose_limits.max_frontal_yaw_deg, por_omision.pose_limits.max_frontal_yaw_deg, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.min_lateral_yaw_deg, por_omision.pose_limits.min_lateral_yaw_deg, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_yaw_deg, por_omision.pose_limits.max_yaw_deg, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_first_pitch_deg, por_omision.pose_limits.max_first_pitch_deg, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_frontal_pitch_deg, por_omision.pose_limits.max_frontal_pitch_deg, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.min_up_pitch_deg, por_omision.pose_limits.min_up_pitch_deg, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_pitch_deg, por_omision.pose_limits.max_pitch_deg, 1e-6);
+  CHECK(!servicio.pose_limits.invert_turn);
+  CHECK_NEAR(servicio.min_front_similarity, por_omision.min_front_similarity, 1e-6);
+  CHECK_NEAR(servicio.min_front_2_similarity, por_omision.min_front_2_similarity, 1e-6);
+  CHECK_EQ(servicio.max_identity_rejections, por_omision.max_identity_rejections);
+  CHECK_EQ(servicio.max_identity_rejections, 3);
+  CHECK_NEAR(servicio.min_duplicate_similarity, por_omision.min_duplicate_similarity, 1e-6);
+  CHECK_NEAR(servicio.min_duplicate_similarity, 0.45, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_reference_pitch_deg, por_omision.pose_limits.max_reference_pitch_deg, 1e-6);
+  CHECK_EQ(config.gallery.retry_ms, 30000);
+  CHECK_NEAR(servicio.other_face_min_area_ratio, por_omision.other_face_min_area_ratio, 1e-6);
+  CHECK_NEAR(servicio.other_face_min_score, por_omision.other_face_min_score, 1e-6);
+}
+
+TEST(config_carga_y_mapea_la_verificacion_del_registro) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"umbrales": {
+      "max_yaw_frontal_grados": 12, "min_yaw_lateral_grados": 25, "max_yaw_grados": 60,
+      "max_pitch_frente_grados": 33, "max_pitch_frontal_grados": 18, "min_pitch_arriba_grados": 14,
+      "max_pitch_referencia_grados": 12, "min_similitud_duplicado": 0.4,
+      "max_pitch_grados": 50, "invertir_giro": true, "min_similitud_frente": 0.25,
+      "min_similitud_frente_2": 0.5, "max_rechazos_identidad": 5, "area_min_otro_rostro": 0.4,
+      "score_min_otro_rostro": 0.6}})",
+                             config, error));
+  const ServiceConfig servicio = config.to_service_config();
+  CHECK_NEAR(servicio.pose_limits.max_frontal_yaw_deg, 12.0, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.min_lateral_yaw_deg, 25.0, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_yaw_deg, 60.0, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_first_pitch_deg, 33.0, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_frontal_pitch_deg, 18.0, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.min_up_pitch_deg, 14.0, 1e-6);
+  CHECK_NEAR(servicio.pose_limits.max_pitch_deg, 50.0, 1e-6);
+  CHECK(servicio.pose_limits.invert_turn);
+  CHECK_NEAR(servicio.min_front_similarity, 0.25, 1e-6);
+  CHECK_NEAR(servicio.min_front_2_similarity, 0.5, 1e-6);
+  CHECK_EQ(servicio.max_identity_rejections, 5);
+  CHECK_NEAR(servicio.pose_limits.max_reference_pitch_deg, 12.0, 1e-6);
+  CHECK_NEAR(servicio.min_duplicate_similarity, 0.4, 1e-6);
+  CHECK_NEAR(servicio.other_face_min_area_ratio, 0.4, 1e-6);
+  CHECK_NEAR(servicio.other_face_min_score, 0.6, 1e-6);
+  // Y el servicio acepta lo que la configuracion produce.
+  CHECK(!check_pose_limits(servicio.pose_limits).has_value());
+}
+
+TEST(config_rechaza_la_verificacion_del_registro_fuera_de_rango) {
+  const auto rechaza = [](const char* documento, const char* clave) {
+    ProcessConfig config;
+    std::string error;
+    CHECK(!parse_process_config(documento, config, error));
+    CHECK(error.find(clave) != std::string::npos);
+  };
+  // Angulos: en (0, 90], finitos y numericos.
+  rechaza(R"({"umbrales": {"max_yaw_frontal_grados": 0}})", "max_yaw_frontal_grados");
+  rechaza(R"({"umbrales": {"min_yaw_lateral_grados": -5}})", "min_yaw_lateral_grados");
+  rechaza(R"({"umbrales": {"max_yaw_grados": 120}})", "max_yaw_grados");
+  rechaza(R"({"umbrales": {"max_pitch_grados": 1e999}})", "");  // infinito: ni el JSON lo admite
+  rechaza(R"({"umbrales": {"max_pitch_grados": 1e300}})", "max_pitch_grados");
+  rechaza(R"({"umbrales": {"min_pitch_arriba_grados": "12"}})", "min_pitch_arriba_grados");
+  rechaza(R"({"umbrales": {"max_pitch_frente_grados": 0}})", "max_pitch_frente_grados");
+  rechaza(R"({"umbrales": {"invertir_giro": 1}})", "invertir_giro");
+  // Menos de 90: atan nunca llega.
+  rechaza(R"({"umbrales": {"max_yaw_grados": 90}})", "max_yaw_grados");
+  rechaza(R"({"umbrales": {"max_pitch_grados": 90}})", "max_pitch_grados");
+  // "arriba" no puede confundirse con el ruido de la estimacion.
+  rechaza(R"({"umbrales": {"min_pitch_arriba_grados": 4}})", "min_pitch_arriba_grados");
+  // Similitudes, score, area relativa y tope de identidad.
+  rechaza(R"({"umbrales": {"min_similitud_frente": 1.1}})", "min_similitud_frente");
+  rechaza(R"({"umbrales": {"min_similitud_frente": -0.1}})", "min_similitud_frente");
+  rechaza(R"({"umbrales": {"min_similitud_frente_2": 1.5}})", "min_similitud_frente_2");
+  rechaza(R"({"umbrales": {"area_min_otro_rostro": 0}})", "area_min_otro_rostro");
+  rechaza(R"({"umbrales": {"area_min_otro_rostro": 0.81}})", "area_min_otro_rostro");
+  rechaza(R"({"umbrales": {"score_min_otro_rostro": 0.91}})", "score_min_otro_rostro");
+  rechaza(R"({"umbrales": {"score_min_otro_rostro": -0.1}})", "score_min_otro_rostro");
+  rechaza(R"({"umbrales": {"max_pitch_referencia_grados": 0}})", "max_pitch_referencia_grados");
+  rechaza(R"({"umbrales": {"max_pitch_referencia_grados": 90}})", "max_pitch_referencia_grados");
+  rechaza(R"({"umbrales": {"min_similitud_duplicado": 0}})", "min_similitud_duplicado");
+  rechaza(R"({"umbrales": {"min_similitud_duplicado": 1.5}})", "min_similitud_duplicado");
+  rechaza(R"({"galeria": {"reintento_ms": 999}})", "reintento_ms");
+  rechaza(R"({"galeria": {"reintento_ms": "30"}})", "reintento_ms");
+  rechaza(R"({"umbrales": {"max_rechazos_identidad": 0}})", "max_rechazos_identidad");
+  rechaza(R"({"umbrales": {"max_rechazos_identidad": 2.5}})", "max_rechazos_identidad");
+  // Los limites extremos aceptados.
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"umbrales": {"area_min_otro_rostro": 0.8, "score_min_otro_rostro": 0.9,
+                       "max_rechazos_identidad": 1}})",
+      config, error));
+}
+
+// Un par incoherente culpa a la clave que el archivo trae, no a la que quedo con su omision.
+TEST(config_la_incoherencia_entre_limites_culpa_a_la_clave_que_el_usuario_escribio) {
+  const auto culpa = [](const char* documento, const char* clave) {
+    ProcessConfig config;
+    std::string error;
+    CHECK(!parse_process_config(documento, config, error));
+    const std::string esperado = std::string("umbrales.") + clave + ":";
+    CHECK(error.rfind(esperado, 0) == 0);  // el mensaje empieza por la clave culpable
+  };
+  // Solo se toca una de las dos: el otro lado queda en su omision (15 / 20 / 55).
+  culpa(R"({"umbrales": {"max_yaw_frontal_grados": 25}})", "max_yaw_frontal_grados");
+  culpa(R"({"umbrales": {"min_yaw_lateral_grados": 10}})", "min_yaw_lateral_grados");
+  culpa(R"({"umbrales": {"max_yaw_grados": 18}})", "max_yaw_grados");
+  culpa(R"({"umbrales": {"max_pitch_frontal_grados": 35}})", "max_pitch_frontal_grados");
+  culpa(R"({"umbrales": {"max_pitch_frente_grados": 10}})", "max_pitch_frente_grados");
+  culpa(R"({"umbrales": {"min_pitch_arriba_grados": 46}})", "min_pitch_arriba_grados");
+  // Con las dos tocadas, la primera del par.
+  culpa(R"({"umbrales": {"max_yaw_grados": 20, "min_yaw_lateral_grados": 25}})", "max_yaw_grados");
+  // El duplicado no puede pasar de "dudoso" (0.45 por omision): se culpa a la clave tocada.
+  culpa(R"({"umbrales": {"min_similitud_duplicado": 0.5}})", "min_similitud_duplicado");
+  culpa(R"({"umbrales": {"min_dudoso_score": 0.4, "min_similitud_duplicado": 0.5}})",
+        "min_similitud_duplicado");
+  culpa(R"({"umbrales": {"min_dudoso_score": 0, "min_recognized_score": 0.6}})", "min_dudoso_score");
+  // frente_2 contra frente.
+  culpa(R"({"umbrales": {"min_similitud_frente": 0.6}})", "min_similitud_frente");
+  culpa(R"({"umbrales": {"min_similitud_frente_2": 0.1}})", "min_similitud_frente_2");
+  culpa(R"({"umbrales": {"min_similitud_frente": 0.6, "min_similitud_frente_2": 0.5}})",
+        "min_similitud_frente_2");
+}
+
+// Un vision.conf anterior a la clave (sin min_similitud_duplicado) con un min_dudoso_score por
+// debajo de 0.45 sigue arrancando: el duplicado efectivo es min(0.45, min_dudoso_score).
+TEST(config_sin_min_similitud_duplicado_se_adapta_a_un_min_dudoso_score_bajo) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"umbrales": {"min_dudoso_score": 0.40}})", config, error));
+  CHECK_NEAR(config.thresholds.min_similitud_duplicado, 0.40, 1e-6);
+  CHECK_NEAR(config.to_service_config().min_duplicate_similarity, 0.40, 1e-6);
+  // Con "dudoso" por encima de 0.45 se queda en 0.45.
+  CHECK(parse_process_config(R"({"umbrales": {"min_dudoso_score": 0.55,
+                                               "min_recognized_score": 0.7}})",
+                             config, error));
+  CHECK_NEAR(config.to_service_config().min_duplicate_similarity, 0.45, 1e-6);
+  // Si el usuario la escribe, se valida: mayor que "dudoso" sigue fallando y la culpa es suya.
+  CHECK(!parse_process_config(R"({"umbrales": {"min_dudoso_score": 0.40,
+                                                "min_similitud_duplicado": 0.45}})",
+                              config, error));
+  CHECK(error.rfind("umbrales.min_similitud_duplicado:", 0) == 0);
+}
+
+TEST(config_acota_el_reintento_de_la_galeria) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(R"({"galeria": {"reintento_ms": 1000}})", config, error));
+  CHECK(parse_process_config(R"({"galeria": {"reintento_ms": 300000}})", config, error));
+  CHECK_EQ(config.gallery.retry_ms, 300000);
+  CHECK(!parse_process_config(R"({"galeria": {"reintento_ms": 300001}})", config, error));
+  CHECK(error.find("reintento_ms") != std::string::npos);
+  CHECK(!parse_process_config(R"({"galeria": {"reintento_ms": 999}})", config, error));
+  CHECK(!parse_process_config(R"({"galeria": {"reintento_ms": 3600000}})", config, error));
+}
+
+TEST(config_acepta_desactivar_la_identidad_por_pose_con_ceros) {
+  ProcessConfig config;
+  std::string error;
+  CHECK(parse_process_config(
+      R"({"umbrales": {"min_similitud_frente": 0, "min_similitud_frente_2": 0}})", config, error));
+  CHECK_NEAR(config.to_service_config().min_front_similarity, 0.0, 1e-9);
+  CHECK_NEAR(config.to_service_config().min_front_2_similarity, 0.0, 1e-9);
+}
+
 TEST(config_mapeo_a_service_config) {
   ProcessConfig config;
   std::string error;

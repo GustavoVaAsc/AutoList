@@ -5,7 +5,9 @@
 // se leen nombres de variables, nunca valores de credenciales.
 #include "vision/process_config.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -83,6 +85,27 @@ bool leer_real(const json& objeto, const char* seccion, const char* clave, doubl
     return false;
   }
   valor = it->get<double>();
+  return true;
+}
+
+// Lee un real finito y lo guarda como float si cae en el rango: [minimo, maximo], o
+// (minimo, maximo] con `abierto_en_minimo`. Se comprueba antes de bajar a float (un 1e300
+// convertido seria un desbordamiento) y el rango se compara YA en float: un tope como 0.9f no
+// es el 0.9 de double, y el valor limite escrito en el archivo tiene que aceptarse.
+bool leer_real_en_rango(const json& objeto, const char* seccion, const char* clave, float& destino,
+                        float minimo, float maximo, bool abierto_en_minimo, const char* texto,
+                        std::string& error) {
+  double valor = destino;
+  if (!leer_real(objeto, seccion, clave, valor, error)) return false;
+  const bool cabe_en_float = std::isfinite(valor) && std::fabs(valor) <= 1e30;
+  const float v = cabe_en_float ? static_cast<float>(valor) : 0.0f;
+  const bool en_rango =
+      cabe_en_float && v <= maximo && (abierto_en_minimo ? v > minimo : v >= minimo);
+  if (!en_rango) {
+    error = ruta(seccion, clave) + ": " + texto;
+    return false;
+  }
+  destino = v;
   return true;
 }
 
@@ -236,6 +259,13 @@ ServiceConfig ProcessConfig::to_service_config() const {
   config.min_recognized_score = thresholds.min_recognized_score;
   config.min_dudoso_score = thresholds.min_dudoso_score;
   config.min_pose_similarity = thresholds.min_similitud_pose;
+  config.pose_limits = thresholds.pose;
+  config.min_front_similarity = thresholds.min_similitud_frente;
+  config.min_front_2_similarity = thresholds.min_similitud_frente_2;
+  config.max_identity_rejections = thresholds.max_rechazos_identidad;
+  config.min_duplicate_similarity = thresholds.min_similitud_duplicado;
+  config.other_face_min_area_ratio = thresholds.area_min_otro_rostro;
+  config.other_face_min_score = thresholds.score_min_otro_rostro;
   config.http_timeout = Millis(capture.http_timeout_ms);
   config.burst_interval = Millis(capture.burst_interval_ms);
   config.max_body_bytes = capture.max_body_bytes;
@@ -347,13 +377,21 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   }
 
   if (!seccion(parsed, "galeria", bloque, error)) return false;
-  if (!solo_claves(bloque, {"url", "token_env", "timeout_ms"}, "galeria", error)) return false;
+  if (!solo_claves(bloque, {"url", "token_env", "timeout_ms", "reintento_ms"}, "galeria", error)) {
+    return false;
+  }
   if (!leer_string(bloque, "galeria", "url", config.gallery.url, error)) return false;
   if (!leer_string(bloque, "galeria", "token_env", config.gallery.token_env, error)) return false;
   if (!leer_entero(bloque, "galeria", "timeout_ms", config.gallery.timeout_ms, error)) {
     return false;
   }
   if (!exigir(!config.gallery.url.empty(), "galeria", "url", "no puede estar vacia", error)) {
+    return false;
+  }
+  if (!leer_entero(bloque, "galeria", "reintento_ms", config.gallery.retry_ms, error)) return false;
+  if (!exigir(config.gallery.retry_ms >= enrollment_limits::kGalleryRetryMinMs &&
+                  config.gallery.retry_ms <= enrollment_limits::kGalleryRetryMaxMs,
+              "galeria", "reintento_ms", "debe estar entre 1000 y 300000 (ms)", error)) {
     return false;
   }
   if (!exigir(config.gallery.timeout_ms > 0, "galeria", "timeout_ms", "debe ser > 0", error)) {
@@ -370,7 +408,14 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
 
   if (!seccion(parsed, "umbrales", bloque, error)) return false;
   if (!solo_claves(bloque, {"min_sharpness", "min_recognized_score", "min_dudoso_score",
-                            "min_similitud_pose"},
+                            "min_similitud_pose", "max_yaw_frontal_grados",
+                            "min_yaw_lateral_grados", "max_yaw_grados",
+                            "max_pitch_frente_grados", "max_pitch_frontal_grados",
+                            "min_pitch_arriba_grados", "max_pitch_referencia_grados",
+                            "max_pitch_grados", "invertir_giro", "min_similitud_frente",
+                            "min_similitud_frente_2", "max_rechazos_identidad",
+                            "min_similitud_duplicado", "area_min_otro_rostro",
+                            "score_min_otro_rostro"},
                    "umbrales", error)) {
     return false;
   }
@@ -398,6 +443,110 @@ bool parse_process_config(const std::string& document, ProcessConfig& out, std::
   }
   if (!exigir(similitud_pose >= 0.0 && similitud_pose <= 1.0, "umbrales",
               "min_similitud_pose", "debe estar entre 0 y 1", error)) {
+    return false;
+  }
+
+  // Verificacion de pose e identidad del registro. Los angulos van en grados, en (0, 90]
+  // (check_pose_limits los afina); las similitudes, en [0, 1]; el score, en [0, 0.9]; el area
+  // relativa, en (0, 0.8].
+  PoseLimits& pose = config.thresholds.pose;
+  constexpr float kTecho = enrollment_limits::kAngleCeilingDeg;
+  const char* grados = "debe ser un numero de grados mayor que 0 y de hasta 90";
+  if (!leer_real_en_rango(bloque, "umbrales", "max_yaw_frontal_grados", pose.max_frontal_yaw_deg,
+                          0.0, kTecho, true, grados, error) ||
+      !leer_real_en_rango(bloque, "umbrales", "min_yaw_lateral_grados", pose.min_lateral_yaw_deg,
+                          0.0, kTecho, true, grados, error) ||
+      !leer_real_en_rango(bloque, "umbrales", "max_yaw_grados", pose.max_yaw_deg, 0.0, kTecho, true,
+                          grados, error) ||
+      !leer_real_en_rango(bloque, "umbrales", "max_pitch_frente_grados",
+                          pose.max_first_pitch_deg, 0.0, kTecho, true, grados, error) ||
+      !leer_real_en_rango(bloque, "umbrales", "max_pitch_frontal_grados",
+                          pose.max_frontal_pitch_deg, 0.0, kTecho, true, grados, error) ||
+      !leer_real_en_rango(bloque, "umbrales", "min_pitch_arriba_grados", pose.min_up_pitch_deg,
+                          0.0, kTecho, true, grados, error) ||
+      !leer_real_en_rango(bloque, "umbrales", "max_pitch_referencia_grados",
+                          pose.max_reference_pitch_deg, 0.0, kTecho, true, grados, error) ||
+      !leer_real_en_rango(bloque, "umbrales", "max_pitch_grados", pose.max_pitch_deg, 0.0, kTecho,
+                          true, grados, error)) {
+    return false;
+  }
+  if (!leer_logico(bloque, "umbrales", "invertir_giro", pose.invert_turn, error)) return false;
+  // La coherencia entre limites. Se culpa a la clave que el archivo SI trae (la que el usuario
+  // toco), no a la que quedo con su valor por omision.
+  if (const auto problem = check_pose_limits(pose)) {
+    const bool culpa_a_la_otra = !bloque.contains(problem->key) && problem->other_key[0] != '\0' &&
+                                 bloque.contains(problem->other_key);
+    error = ruta("umbrales", culpa_a_la_otra ? problem->other_key : problem->key) + ": " +
+            problem->message;
+    return false;
+  }
+  const char* entre_0_y_1 = "debe estar entre 0 y 1";
+  if (!leer_real_en_rango(bloque, "umbrales", "min_similitud_frente",
+                          config.thresholds.min_similitud_frente, 0.0, 1.0, false, entre_0_y_1,
+                          error) ||
+      !leer_real_en_rango(bloque, "umbrales", "min_similitud_frente_2",
+                          config.thresholds.min_similitud_frente_2, 0.0, 1.0, false, entre_0_y_1,
+                          error) ||
+      !leer_real_en_rango(bloque, "umbrales", "score_min_otro_rostro",
+                          config.thresholds.score_min_otro_rostro, 0.0,
+                          enrollment_limits::kOtherFaceMaxScore, false,
+                          "debe estar entre 0 y 0.9 (con mas ignoraria casi cualquier otro rostro)",
+                          error) ||
+      !leer_real_en_rango(bloque, "umbrales", "area_min_otro_rostro",
+                          config.thresholds.area_min_otro_rostro, 0.0,
+                          enrollment_limits::kOtherFaceMaxAreaRatio, true,
+                          "debe ser mayor que 0 y de hasta 0.8 (con mas ignoraria casi cualquier "
+                          "otro rostro)",
+                          error)) {
+    return false;
+  }
+  if (!leer_entero(bloque, "umbrales", "max_rechazos_identidad",
+                   config.thresholds.max_rechazos_identidad, error)) {
+    return false;
+  }
+  if (!exigir(config.thresholds.max_rechazos_identidad >= 1, "umbrales", "max_rechazos_identidad",
+              "debe ser >= 1", error)) {
+    return false;
+  }
+  // Duplicados: en (0, min_dudoso_score]. Un archivo anterior a esta clave no la trae y puede
+  // tener un min_dudoso_score por debajo del 0.45 por omision: en ese caso el valor efectivo es
+  // min(0.45, min_dudoso_score), para que ese archivo siga arrancando. Solo cuando el usuario
+  // ESCRIBE la clave se valida, y entonces se culpa a la clave que el archivo trae.
+  // (El constructor de ServiceConfig, que no sabe si el valor se escribio, lo exige siempre.)
+  if (bloque.contains("min_similitud_duplicado")) {
+    if (!leer_real_en_rango(bloque, "umbrales", "min_similitud_duplicado",
+                            config.thresholds.min_similitud_duplicado, 0.0, 1.0, true,
+                            "debe ser mayor que 0 y de hasta 1", error)) {
+      return false;
+    }
+    if (!exigir(config.thresholds.min_similitud_duplicado <= config.thresholds.min_dudoso_score,
+                "umbrales", "min_similitud_duplicado",
+                "min_similitud_duplicado no puede ser mayor que min_dudoso_score (si no, una "
+                "misma persona podria tener dos cuentas con parecidos que el pase de lista ya "
+                "trata como dudosos)",
+                error)) {
+      return false;
+    }
+  } else {
+    config.thresholds.min_similitud_duplicado =
+        std::min(config.thresholds.min_similitud_duplicado, config.thresholds.min_dudoso_score);
+    if (!exigir(config.thresholds.min_similitud_duplicado > 0.0f, "umbrales", "min_dudoso_score",
+                "con 0 no queda un umbral de duplicado valido (en (0, min_dudoso_score])",
+                error)) {
+      return false;
+    }
+  }
+  // "frente_2" es la misma pose que "frente": no puede ser mas laxo. Se culpa a la clave que el
+  // archivo trae: si solo trae min_similitud_frente (subida por encima del valor por omision de
+  // la otra), esa es la que hay que cambiar.
+  if (!exigir(config.thresholds.min_similitud_frente_2 >= config.thresholds.min_similitud_frente,
+              "umbrales",
+              bloque.contains("min_similitud_frente_2") || !bloque.contains("min_similitud_frente")
+                  ? "min_similitud_frente_2"
+                  : "min_similitud_frente",
+              "min_similitud_frente_2 no puede ser menor que min_similitud_frente (frente_2 es la "
+              "misma pose que frente)",
+              error)) {
     return false;
   }
 

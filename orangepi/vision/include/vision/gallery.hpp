@@ -41,6 +41,13 @@ class Gallery {
   // Mejor candidato por coseno; nullopt si la galeria esta vacia.
   std::optional<GalleryMatch> match(std::span<const float> query) const;
 
+  // Mejor candidato por coseno SIN contar la cuenta `exclude` (para saber si el rostro de un
+  // registro ya pertenece a otra cuenta: la propia puede re-registrarse). nullopt si no hay
+  // otra cuenta. Sin margen: no hay con quien compararlo. Lanza EmbeddingError si la
+  // dimension no coincide con la de la galeria.
+  std::optional<GalleryMatch> match_excluding(std::span<const float> query,
+                                              const std::string& exclude) const;
+
   std::size_t size() const { return entries_.size(); }
   std::size_t dimension() const;  // 0 si la galeria esta vacia
 

@@ -22,6 +22,7 @@
 #include "gcm_apoyo.hpp"
 #include "vision/captura_firma.hpp"
 #include "vision/fakes.hpp"
+#include "vision/json_payload.hpp"
 #include "vision/vision_service.hpp"
 
 namespace vision {
@@ -99,6 +100,8 @@ struct Harness {
   fakes::FakeAnclasReloj anchors;      // RTC, id de arranque y archivo de estado simulados
   AnclasReloj* anchors_ptr = nullptr;  // las pruebas del reloj lo ponen en &anchors
   ServiceConfig config;
+  // Dice si la galeria es de fiar (GalleryStore::loaded_ok en produccion). Vacia = siempre.
+  std::function<bool()> gallery_ready;
   std::unique_ptr<VisionService> service;
 
   explicit Harness(double min_sharpness = 0.0) {
@@ -107,11 +110,15 @@ struct Harness {
     config.accept_png = true;  // las fotos de prueba son PNG
     config.min_sharpness = min_sharpness;
     detector.detections = {face_in_frame()};
+    // En el registro, la cabeza esta en la pose que se pide (las pruebas de la verificacion
+    // de pose cambian esto a mano).
+    fakes::follow_enrollment_pose(detector, bus);
     embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}};
     gallery.upsert("320068234", std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});
     gallery.upsert("320068235", std::vector<float>{0.0f, 1.0f, 0.0f, 0.0f});
     service = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock, anchors_ptr},
+        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock, anchors_ptr,
+                    [this] { return gallery_ready ? gallery_ready() : true; }},
         config);
   }
 
@@ -120,7 +127,8 @@ struct Harness {
     service.reset();
     config = new_config;
     service = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock, anchors_ptr},
+        ServiceDeps{bus, http, detector, embedder, gallery, clock, wall_clock, anchors_ptr,
+                    [this] { return gallery_ready ? gallery_ready() : true; }},
         config);
   }
 
@@ -131,6 +139,17 @@ struct Harness {
   void pir() { bus.inject(topics::kCameraPir, PirEvent{}); }
   void command(VisionAction action, std::string account = "") {
     bus.inject(topics::kVisionCmd, VisionCommand{action, std::move(account), std::nullopt});
+  }
+
+  // Ordena enrolar una cuenta con la galeria de las pruebas de pase de lista VACIA: el registro
+  // rechaza un rostro que ya esta en la galeria con otra cuenta (duplicado), y las dos cuentas
+  // del Harness tienen los mismos embeddings que el embedder falso da en el registro. Las
+  // pruebas de duplicados y de galeria usan command(VisionAction::Enroll, ...) o agregan sus
+  // cuentas despues de este comando.
+  void enroll(std::string account) {
+    gallery.remove("320068234");
+    gallery.remove("320068235");
+    command(VisionAction::Enroll, std::move(account));
   }
 
   std::vector<AttendanceResult> results() const {
@@ -485,7 +504,7 @@ TEST(enrollment_runs_five_poses_and_publishes_normalized_mean_embedding) {
                         {10.0f, 0.0f, 0.0f, 0.0f}};
   h.queue_frames(5);
 
-  h.command(VisionAction::Enroll, "999000111");
+  h.enroll("999000111");
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
   CHECK_EQ(h.progress().size(), std::size_t{1});
@@ -549,12 +568,19 @@ struct RegistroFinal {
   bool completo = false;
 };
 
-// Corre un registro completo de cinco poses con los embeddings dados.
+// Corre un registro completo de cinco poses con los embeddings dados. Estas pruebas son del
+// descarte FINAL de outliers, que es la red de seguridad: se apaga la comprobacion de
+// identidad por pose (umbrales en 0), que si no rechazaria antes las poses que aqui se
+// quieren ver llegar al descarte.
 RegistroFinal correr_registro(Harness& h, const std::string& cuenta,
                                const std::vector<std::vector<float>>& poses) {
+  ServiceConfig config = h.config;
+  config.min_front_similarity = 0.0f;
+  config.min_front_2_similarity = 0.0f;
+  h.restart(config);
   h.embedder.outputs = poses;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, cuenta);
+  h.enroll(cuenta);
   h.service->poll();
   for (int i = 0; i < 5; ++i) h.enrollment_step();
 
@@ -756,10 +782,909 @@ TEST(el_descarte_conserva_un_grupo_coherente_de_tres) {
         supervivientes.end());
 }
 
+// --- Verificacion de la pose y de la identidad en el registro ----------------------------
+
+namespace {
+
+// Que se decidio en cada captura del registro, en orden: "pose:aceptada" o
+// "pose:rechazada:motivo".
+std::vector<std::string> decisiones(const Harness& h) {
+  std::vector<std::string> out;
+  for (const EnrollmentProgress& p : h.progress()) {
+    if (p.status == EnrollmentStatus::Accepted) {
+      out.push_back(p.pose + ":aceptada");
+    } else if (p.status == EnrollmentStatus::Rejected) {
+      out.push_back(p.pose + ":rechazada:" + p.reason.value_or("?"));
+    }
+  }
+  return out;
+}
+
+// Abre un registro y deja listo el turno de la primera pose.
+void abrir_registro(Harness& h, int fotos = 12) {
+  h.queue_frames(fotos);
+  h.enroll("999000111");
+  h.service->poll();
+}
+
+// La cabeza queda fija en esta pose (grados) en todas las capturas siguientes, sin importar
+// la que pide el registro.
+void cabeza_fija(Harness& h, double yaw, double pitch) {
+  h.detector.adjust = [yaw, pitch](std::vector<FaceDetection>& faces) {
+    for (FaceDetection& face : faces) face.landmarks = fakes::synthetic_landmarks(yaw, pitch);
+  };
+}
+
+void cabeza_sigue_la_pose(Harness& h) { fakes::follow_enrollment_pose(h.detector, h.bus); }
+
+// Un rostro de frente, con recuadro, de `lado` px de ancho y centrado en (cx, cy).
+FaceDetection rostro_de(float cx, float cy, float lado, float score) {
+  FaceDetection face;
+  face.score = score;
+  face.bbox = cv::Rect2f(cx - lado / 2, cy - lado / 2, lado, lado);
+  face.landmarks = fakes::synthetic_landmarks(0.0, 0.0, lado / 80.0, {cx, cy - lado * 0.15f});
+  return face;
+}
+
+// Un embedding unitario de 4 componentes con coseno `c` contra (1, 0, 0, 0). `lado` elige la
+// segunda componente: asi se arman poses con la similitud que se quiere.
+std::vector<float> con_coseno(float c, float lado = 1.0f) {
+  return {c, lado * std::sqrt(1.0f - c * c), 0.0f, 0.0f};
+}
+
+}  // namespace
+
+TEST(el_registro_acepta_cada_pose_cuando_la_cabeza_esta_en_ella) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);
+  for (int i = 0; i < 5; ++i) h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:aceptada", "izquierda:aceptada",
+                                                    "derecha:aceptada", "arriba:aceptada",
+                                                    "frente_2:aceptada"}));
+  CHECK_EQ(h.embeddings().size(), std::size_t{1});
+  // Cada pose aceptada deja sus medidas para calibrar.
+  CHECK_EQ(log.count("pose aceptada: izquierda"), std::size_t{1});
+  CHECK(log.count("yaw") >= 5);
+}
+
+TEST(una_pose_que_no_se_gira_sale_pose_incorrecta_y_se_repite) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);
+  h.enrollment_step();  // frente, aceptada
+  cabeza_fija(h, 0.0, 0.0);  // el alumno no gira
+  h.enrollment_step();
+  CHECK(decisiones(h) ==
+        (std::vector<std::string>{"frente:aceptada", "izquierda:rechazada:pose_incorrecta"}));
+  CHECK(h.service->state() == ServiceState::Enrolling);
+  CHECK_EQ(h.embedder.calls, std::size_t{1});  // solo "frente": la pose rechazada no gasta NPU
+  CHECK(h.progress().back().status == EnrollmentStatus::Rejected);
+  CHECK_EQ(h.progress().back().pose, std::string("izquierda"));  // la misma pose
+  // El rechazo deja los valores medidos por stderr, para calibrar.
+  CHECK_EQ(log.count("pose rechazada: izquierda (motivo: pose_incorrecta"), std::size_t{1});
+  CHECK(log.count("yaw ") >= 1);
+  CHECK(log.count("pitch") >= 1);
+
+  cabeza_sigue_la_pose(h);  // ahora si gira
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "izquierda:aceptada");
+  CHECK_EQ(h.progress().back().pose, std::string("derecha"));
+}
+
+TEST(girar_hacia_el_lado_contrario_es_pose_incorrecta) {
+  Harness h;
+  abrir_registro(h);
+  h.enrollment_step();
+  cabeza_fija(h, -30.0, 0.0);  // gira a la derecha cuando se pide la izquierda
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "izquierda:rechazada:pose_incorrecta");
+}
+
+TEST(invertir_el_giro_cambia_el_sentido_de_izquierda_y_derecha) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.pose_limits.invert_turn = true;
+  h.restart(config);
+  abrir_registro(h);
+  h.enrollment_step();
+  cabeza_fija(h, -30.0, 0.0);  // con la imagen en espejo, este es el giro de "izquierda"
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "izquierda:aceptada");
+  h.enrollment_step();  // derecha, con la cabeza todavia a -30: ahora es el sentido contrario
+  CHECK(decisiones(h).back() == "derecha:rechazada:pose_incorrecta");
+}
+
+TEST(un_giro_exagerado_sale_giro_excesivo) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);
+  h.enrollment_step();
+  cabeza_fija(h, 70.0, 0.0);
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "izquierda:rechazada:giro_excesivo");
+  CHECK_EQ(log.count("pose rechazada: izquierda (motivo: giro_excesivo"), std::size_t{1});
+}
+
+TEST(arriba_sin_levantar_la_cara_sale_pose_incorrecta) {
+  Harness h;
+  abrir_registro(h);
+  h.enrollment_step();
+  h.enrollment_step();
+  h.enrollment_step();  // frente, izquierda y derecha aceptadas
+  cabeza_fija(h, 0.0, 0.0);
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "arriba:rechazada:pose_incorrecta");
+  cabeza_fija(h, 0.0, -20.0);  // mirando hacia abajo tampoco
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "arriba:rechazada:pose_incorrecta");
+  cabeza_fija(h, 0.0, 25.0);
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "arriba:aceptada");
+}
+
+TEST(el_cabeceo_de_arriba_se_mide_contra_el_de_frente) {
+  Harness h;
+  abrir_registro(h);
+  // La camara esta alta: "frente" se mide a -15 grados y mirar de frente otra vez tambien.
+  cabeza_fija(h, 0.0, -15.0);
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "frente:aceptada");
+  h.detector.adjust = [](std::vector<FaceDetection>& faces) {
+    for (FaceDetection& face : faces) face.landmarks = fakes::synthetic_landmarks(30.0, -15.0);
+  };
+  h.enrollment_step();  // izquierda
+  h.detector.adjust = [](std::vector<FaceDetection>& faces) {
+    for (FaceDetection& face : faces) face.landmarks = fakes::synthetic_landmarks(-30.0, -15.0);
+  };
+  h.enrollment_step();  // derecha
+  cabeza_fija(h, 0.0, -15.0);  // sigue igual que en "frente": no levanto la cara
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "arriba:rechazada:pose_incorrecta");
+  cabeza_fija(h, 0.0, 5.0);  // 20 grados mas que en "frente"
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "arriba:aceptada");
+  cabeza_fija(h, 0.0, -15.0);  // "frente_2" se compara con "frente", no con el cero absoluto
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "frente_2:aceptada");
+}
+
+TEST(frente_2_tambien_exige_estar_de_frente) {
+  Harness h;
+  abrir_registro(h);
+  for (int i = 0; i < 4; ++i) h.enrollment_step();
+  cabeza_fija(h, 30.0, 0.0);
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "frente_2:rechazada:pose_incorrecta");
+}
+
+TEST(la_primera_pose_tambien_se_verifica) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);
+  cabeza_fija(h, 30.0, 0.0);
+  h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:rechazada:pose_incorrecta"}));
+  CHECK_EQ(log.count("pose rechazada: frente"), std::size_t{1});
+}
+
+TEST(las_poses_rechazadas_por_pose_cuentan_para_los_intentos_y_abortan_el_registro) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.max_attempts_per_pose = 3;
+  h.restart(config);
+  abrir_registro(h);
+  cabeza_fija(h, 40.0, 0.0);  // "frente" con la cabeza girada, siempre
+  for (int i = 0; i < 3; ++i) h.enrollment_step();
+  CHECK_EQ(decisiones(h).size(), std::size_t{3});
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  // El error lleva el motivo del ULTIMO rechazo, no "npu" (que es de fallos del pipeline).
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kWrongPose));
+  CHECK(h.embeddings().empty());
+  CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+}
+
+// --- Varios rostros ---
+
+TEST(dos_rostros_de_tamano_parecido_rechazan_la_pose_con_varios_rostros) {
+  Harness h;
+  CapturedStderr log;
+  h.detector.adjust = nullptr;
+  h.detector.detections = {rostro_de(100.0f, 120.0f, 80.0f, 0.95f),
+                           rostro_de(240.0f, 120.0f, 76.0f, 0.90f)};
+  abrir_registro(h);
+  h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:rechazada:varios_rostros"}));
+  CHECK_EQ(h.embedder.calls, std::size_t{0});  // ni siquiera se calcula el embedding
+  CHECK_EQ(log.count("pose rechazada: frente (motivo: varios_rostros"), std::size_t{1});
+  CHECK(h.progress().back().status == EnrollmentStatus::Rejected);
+  CHECK(h.service->state() == ServiceState::Enrolling);
+}
+
+TEST(un_rostro_claramente_pequeno_de_fondo_se_ignora) {
+  Harness h;
+  h.detector.adjust = nullptr;
+  // Area 24x24 contra 80x80: 0.09 de la principal, por debajo de 0.35.
+  h.detector.detections = {rostro_de(100.0f, 120.0f, 80.0f, 0.95f),
+                           rostro_de(260.0f, 60.0f, 24.0f, 0.90f)};
+  abrir_registro(h);
+  h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:aceptada"}));
+}
+
+TEST(una_deteccion_de_score_bajo_se_ignora_aunque_sea_grande) {
+  Harness h;
+  h.detector.adjust = nullptr;
+  h.detector.detections = {rostro_de(100.0f, 120.0f, 80.0f, 0.95f),
+                           rostro_de(240.0f, 120.0f, 80.0f, 0.45f)};
+  abrir_registro(h);
+  h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:aceptada"}));
+}
+
+TEST(en_el_registro_la_principal_es_la_de_mayor_area_y_no_la_de_mayor_score) {
+  Harness h;
+  h.detector.adjust = nullptr;
+  // El rostro de fondo (chico) tiene mejor score y la cabeza girada; el del alumno es el
+  // grande, de frente. Si se tomara el de mayor score la pose de frente saldria rechazada.
+  FaceDetection fondo = rostro_de(260.0f, 60.0f, 24.0f, 0.99f);
+  fondo.landmarks = fakes::synthetic_landmarks(40.0, 0.0, 0.3, {260.0f, 56.0f});
+  h.detector.detections = {fondo, rostro_de(100.0f, 120.0f, 80.0f, 0.80f)};
+  abrir_registro(h);
+  h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:aceptada"}));
+}
+
+TEST(en_el_pase_de_lista_se_sigue_tomando_el_rostro_de_mayor_score) {
+  Harness h;
+  h.detector.adjust = nullptr;
+  h.detector.detections = {rostro_de(100.0f, 120.0f, 80.0f, 0.80f),
+                           rostro_de(240.0f, 120.0f, 76.0f, 0.95f)};
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}};
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+  CHECK_EQ(h.results().size(), std::size_t{1});
+  CHECK(h.results()[0].decision == Decision::Recognized);  // dos rostros no son un rechazo aqui
+}
+
+// --- Identidad contra la pose "frente" ---
+
+TEST(una_pose_de_otra_persona_sale_rechazada_inconsistente_y_el_registro_sigue) {
+  Harness h;
+  CapturedStderr log;
+  // frente; izquierda de "otra persona" (coseno 0 con frente) y despues la buena.
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}, con_coseno(0.6f)};
+  abrir_registro(h);
+  h.enrollment_step();
+  h.enrollment_step();
+  CHECK(decisiones(h) ==
+        (std::vector<std::string>{"frente:aceptada", "izquierda:rechazada:inconsistente"}));
+  CHECK(h.service->state() == ServiceState::Enrolling);  // no se aborta
+  CHECK(h.progress().back().status == EnrollmentStatus::Rejected);
+  CHECK_EQ(h.progress().back().pose, std::string("izquierda"));
+  CHECK_EQ(log.count("pose rechazada: izquierda (motivo: inconsistente"), std::size_t{1});
+  CHECK(log.count("coseno con frente 0.00") >= 1);
+
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "izquierda:aceptada");
+}
+
+TEST(el_rechazo_por_identidad_cuenta_para_los_intentos_y_agota_el_registro) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.max_attempts_per_pose = 2;
+  h.restart(config);
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}};  // repite la ultima
+  abrir_registro(h);
+  for (int i = 0; i < 3; ++i) h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:aceptada",
+                                                    "izquierda:rechazada:inconsistente",
+                                                    "izquierda:rechazada:inconsistente"}));
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kInconsistent));
+  CHECK(h.embeddings().empty());
+}
+
+TEST(la_identidad_se_compara_con_frente_y_no_con_la_pose_anterior) {
+  Harness h;
+  // izquierda y derecha tienen coseno 0.6 con frente pero -0.28 entre si.
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, con_coseno(0.6f, 1.0f), con_coseno(0.6f, -1.0f)};
+  abrir_registro(h);
+  for (int i = 0; i < 3; ++i) h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:aceptada", "izquierda:aceptada",
+                                                    "derecha:aceptada"}));
+}
+
+TEST(el_umbral_de_identidad_de_las_poses_de_perfil_deja_pasar_un_coseno_de_0_3) {
+  Harness h;
+  // Una ESTIMACION, sin medir (lo unico medido es que dos personas distintas dan menos de 0.1):
+  // la misma persona de perfil daria de 0.3 a 0.5 con la de frente.
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, con_coseno(0.3f), con_coseno(0.3f, -1.0f),
+                        con_coseno(0.3f, 1.0f)};
+  abrir_registro(h);
+  for (int i = 0; i < 4; ++i) h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:aceptada", "izquierda:aceptada",
+                                                    "derecha:aceptada", "arriba:aceptada"}));
+}
+
+TEST(frente_2_exige_mas_parecido_a_frente_que_las_demas_poses) {
+  Harness h;
+  // frente_2 con coseno 0.3: bueno para una pose de perfil, insuficiente para la misma pose.
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, con_coseno(0.9f), con_coseno(0.9f, -1.0f),
+                        con_coseno(0.9f), con_coseno(0.3f), con_coseno(0.8f)};
+  abrir_registro(h);
+  for (int i = 0; i < 6; ++i) h.enrollment_step();
+  const std::vector<std::string> d = decisiones(h);
+  CHECK_EQ(d.size(), std::size_t{6});
+  CHECK_EQ(d[4], std::string("frente_2:rechazada:inconsistente"));
+  CHECK_EQ(d[5], std::string("frente_2:aceptada"));
+}
+
+TEST(con_los_umbrales_de_identidad_en_cero_no_se_comprueba_la_identidad) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.min_front_similarity = 0.0f;
+  config.min_front_2_similarity = 0.0f;
+  h.restart(config);
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}};
+  abrir_registro(h);
+  h.enrollment_step();
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "izquierda:aceptada");
+}
+
+TEST(un_embedding_de_otra_dimension_sigue_abortando_antes_de_comparar_identidad) {
+  Harness h;
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}};
+  abrir_registro(h);
+  h.enrollment_step();
+  h.enrollment_step();
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kInconsistent));
+}
+
+TEST(la_pose_se_verifica_antes_que_la_identidad) {
+  Harness h;
+  CapturedStderr log;
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}};
+  abrir_registro(h);
+  h.enrollment_step();
+  cabeza_fija(h, 0.0, 0.0);  // ni gira ni se parece
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "izquierda:rechazada:pose_incorrecta");
+}
+
+TEST(la_configuracion_de_pose_e_identidad_invalida_se_rechaza_al_arrancar) {
+  Harness h;
+  const auto invalida = [&](const std::function<void(ServiceConfig&)>& cambio) {
+    ServiceConfig config = h.config;
+    cambio(config);
+    h.service.reset();
+    CHECK_THROWS(VisionService(ServiceDeps{h.bus, h.http, h.detector, h.embedder, h.gallery,
+                                           h.clock, h.wall_clock, nullptr},
+                               config),
+                 std::invalid_argument);
+  };
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  invalida([](ServiceConfig& c) { c.min_front_similarity = -0.1f; });
+  invalida([](ServiceConfig& c) { c.min_front_similarity = 1.1f; });
+  invalida([&](ServiceConfig& c) { c.min_front_similarity = nan; });
+  invalida([](ServiceConfig& c) { c.min_front_2_similarity = 1.5f; });
+  invalida([&](ServiceConfig& c) { c.min_front_2_similarity = nan; });
+  // frente_2 es la misma pose que frente: no puede ser mas laxo.
+  invalida([](ServiceConfig& c) {
+    c.min_front_similarity = 0.4f;
+    c.min_front_2_similarity = 0.3f;
+  });
+  invalida([](ServiceConfig& c) { c.other_face_min_area_ratio = 0.0f; });
+  invalida([](ServiceConfig& c) { c.other_face_min_area_ratio = 1.5f; });
+  invalida([&](ServiceConfig& c) { c.other_face_min_area_ratio = nan; });
+  invalida([](ServiceConfig& c) { c.other_face_min_score = -0.5f; });
+  invalida([&](ServiceConfig& c) { c.other_face_min_score = nan; });
+  invalida([&](ServiceConfig& c) { c.pose_limits.max_yaw_deg = nan; });
+  invalida([](ServiceConfig& c) { c.pose_limits.min_lateral_yaw_deg = 0.0f; });
+  invalida([](ServiceConfig& c) { c.pose_limits.max_pitch_deg = c.pose_limits.min_up_pitch_deg; });
+  // Reglas nuevas de los limites.
+  invalida([](ServiceConfig& c) { c.pose_limits.min_lateral_yaw_deg = c.pose_limits.max_frontal_yaw_deg; });
+  invalida([](ServiceConfig& c) { c.pose_limits.min_up_pitch_deg = 4.0f; });
+  invalida([](ServiceConfig& c) { c.pose_limits.max_yaw_deg = 90.0f; });
+  invalida([](ServiceConfig& c) { c.pose_limits.max_pitch_deg = 90.0f; });
+  invalida([](ServiceConfig& c) {
+    c.pose_limits.max_first_pitch_deg = c.pose_limits.max_frontal_pitch_deg - 1.0f;
+  });
+  // Controles casi apagados y tope de identidad.
+  invalida([](ServiceConfig& c) { c.other_face_min_area_ratio = 0.81f; });
+  invalida([](ServiceConfig& c) { c.other_face_min_score = 0.91f; });
+  invalida([](ServiceConfig& c) { c.max_identity_rejections = 0; });
+  // Umbral de duplicado: en (0, min_dudoso_score].
+  invalida([](ServiceConfig& c) { c.min_duplicate_similarity = 0.0f; });
+  invalida([](ServiceConfig& c) { c.min_duplicate_similarity = c.min_dudoso_score + 0.01f; });
+  invalida([&](ServiceConfig& c) { c.min_duplicate_similarity = nan; });
+  invalida([](ServiceConfig& c) { c.pose_limits.max_reference_pitch_deg = 0.0f; });
+  invalida([](ServiceConfig& c) { c.pose_limits.max_reference_pitch_deg = 90.0f; });
+}
+
+// --- Duplicados en la galeria -------------------------------------------------------------
+
+namespace {
+
+// Un embedding unitario de 4 componentes con coseno `c` contra (1, 0, 0, 0), en el eje `eje`
+// (1 a 3): poses con la similitud que se quiere y distintas entre si.
+std::vector<float> en_eje(float c, int eje) {
+  std::vector<float> v(4, 0.0f);
+  v[0] = c;
+  v[static_cast<std::size_t>(eje)] = std::sqrt(1.0f - c * c);
+  return v;
+}
+
+// Corre las 5 poses de un registro abierto con abrir_registro.
+void correr_cinco_poses(Harness& h) {
+  for (int i = 0; i < 5; ++i) h.enrollment_step();
+}
+
+}  // namespace
+
+TEST(un_rostro_que_ya_esta_en_la_galeria_con_otra_cuenta_cierra_como_duplicado) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);
+  h.gallery.upsert("320068999", std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});  // el mismo rostro
+  correr_cinco_poses(h);
+
+  CHECK(h.service->state() == ServiceState::Idle);
+  const auto progress = h.progress();
+  CHECK(progress.back().status == EnrollmentStatus::Error);
+  CHECK_EQ(progress.back().reason.value(), std::string(enrollment_reasons::kDuplicate));
+  CHECK_EQ(progress.back().similar_to.value(), std::string("320068999"));
+  for (const EnrollmentProgress& p : progress) CHECK(p.status != EnrollmentStatus::Completed);
+  CHECK(h.embeddings().empty());  // no se publica el embedding
+  CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+  CHECK_EQ(log.count("ya esta registrado con otra cuenta"), std::size_t{1});
+  CHECK_EQ(log.count("320068999"), std::size_t{0});  // el log no lleva la cuenta
+  CHECK_EQ(log.count("coseno 1.00"), std::size_t{1});
+}
+
+TEST(un_registro_que_cierra_como_duplicado_lleva_parecido_a_en_el_json_del_contrato) {
+  Harness h;
+  abrir_registro(h);
+  h.gallery.upsert("320068999", std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});
+  correr_cinco_poses(h);
+  const std::optional<std::string> doc = json::serialize(h.progress().back());
+  CHECK(doc.has_value());
+  CHECK(doc->find("\"estado\":\"error\"") != std::string::npos);
+  CHECK(doc->find("\"motivo\":\"duplicado\"") != std::string::npos);
+  CHECK(doc->find("\"parecido_a\":\"320068999\"") != std::string::npos);
+  CHECK(json::deserialize(topics::kVisionEnrollment, *doc).ok());
+}
+
+TEST(la_propia_cuenta_en_la_galeria_puede_re_registrarse) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);  // la cuenta es 999000111
+  h.gallery.upsert("999000111", std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});
+  correr_cinco_poses(h);
+  CHECK(h.progress().back().status == EnrollmentStatus::Completed);
+  CHECK_EQ(h.embeddings().size(), std::size_t{1});
+  CHECK_EQ(log.count("no hay otras cuentas en la galeria"), std::size_t{1});  // sin otras: se dice
+}
+
+TEST(el_duplicado_tiene_umbral_propio_y_un_parecido_de_0_50_ya_bloquea) {
+  {  // 0.40 < 0.45: no es duplicado
+    Harness h;
+    abrir_registro(h);
+    h.gallery.upsert("320068999", en_eje(0.40f, 1));
+    correr_cinco_poses(h);
+    CHECK(h.progress().back().status == EnrollmentStatus::Completed);
+    CHECK_EQ(h.embeddings().size(), std::size_t{1});
+  }
+  {  // 0.50 >= 0.45 aunque este por debajo de min_recognized_score (0.60): una misma persona
+     // no puede tener dos cuentas con parecidos que el pase de lista ya trata como "dudoso"
+    Harness h;
+    abrir_registro(h);
+    h.gallery.upsert("320068999", en_eje(0.50f, 1));
+    correr_cinco_poses(h);
+    CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kDuplicate));
+    CHECK_EQ(h.progress().back().similar_to.value(), std::string("320068999"));
+    CHECK(h.embeddings().empty());
+  }
+}
+
+TEST(el_umbral_de_duplicado_es_configurable_y_no_pasa_de_min_dudoso_score) {
+  {  // mas laxo (0.55, con "dudoso" en 0.55): 0.50 ya no bloquea
+    Harness h;
+    ServiceConfig config = h.config;
+    config.min_dudoso_score = 0.55f;
+    config.min_duplicate_similarity = 0.55f;
+    h.restart(config);
+    abrir_registro(h);
+    h.gallery.upsert("320068999", en_eje(0.50f, 1));
+    correr_cinco_poses(h);
+    CHECK(h.progress().back().status == EnrollmentStatus::Completed);
+  }
+  {  // mas estricto (0.30): 0.40 bloquea
+    Harness h;
+    ServiceConfig config = h.config;
+    config.min_duplicate_similarity = 0.30f;
+    h.restart(config);
+    abrir_registro(h);
+    h.gallery.upsert("320068999", en_eje(0.40f, 1));
+    correr_cinco_poses(h);
+    CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kDuplicate));
+  }
+}
+
+TEST(con_la_galeria_vacia_tras_una_carga_correcta_el_registro_sigue) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);
+  CHECK_EQ(h.gallery.size(), std::size_t{0});
+  correr_cinco_poses(h);
+  CHECK(h.progress().back().status == EnrollmentStatus::Completed);
+  CHECK_EQ(h.embeddings().size(), std::size_t{1});
+  CHECK_EQ(log.count("no hay otras cuentas en la galeria"), std::size_t{1});
+}
+
+TEST(una_excepcion_al_comparar_con_la_galeria_falla_cerrado_con_galeria_no_disponible) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);
+  h.gallery.upsert("320068999", std::vector<float>{1.0f, 0.0f});  // la galeria es de dimension 2
+  correr_cinco_poses(h);
+  CHECK(h.service->state() == ServiceState::Idle);
+  const auto progress = h.progress();
+  CHECK(progress.back().status == EnrollmentStatus::Error);
+  CHECK_EQ(progress.back().reason.value(), std::string(enrollment_reasons::kGalleryUnavailable));
+  for (const EnrollmentProgress& p : progress) CHECK(p.status != EnrollmentStatus::Completed);
+  CHECK(h.embeddings().empty());
+  CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+  CHECK_EQ(log.count("no se pudo comprobar si el rostro ya esta registrado"), std::size_t{1});
+}
+
+TEST(sin_una_galeria_cargada_el_registro_se_rechaza_antes_de_empezar) {
+  Harness h;
+  CapturedStderr log;
+  h.gallery_ready = [] { return false; };  // la ultima recarga fallo
+  h.queue_frames(5);
+  h.enroll("999000111");
+  h.service->poll();
+  CHECK(h.service->state() == ServiceState::Idle);
+  const auto progress = h.progress();
+  CHECK_EQ(progress.size(), std::size_t{1});
+  CHECK(progress[0].status == EnrollmentStatus::Error);
+  CHECK_EQ(progress[0].reason.value(), std::string(enrollment_reasons::kGalleryUnavailable));
+  CHECK_EQ(progress[0].step, 0);
+  CHECK(h.light_commands().empty());      // ni se enciende la luz
+  CHECK(h.http.requested_urls.empty());   // ni se captura
+  CHECK_EQ(log.count("la galeria no esta cargada"), std::size_t{1});
+  // El pase de lista no depende de esto: sigue funcionando.
+  h.pir();
+  h.queue_frames(3);
+  h.service->poll();
+  CHECK_EQ(h.results().size(), std::size_t{1});
+}
+
+TEST(la_galeria_que_deja_de_ser_de_fiar_a_mitad_del_registro_falla_cerrado) {
+  Harness h;
+  bool fiable = true;
+  h.gallery_ready = [&fiable] { return fiable; };
+  abrir_registro(h);
+  for (int i = 0; i < 4; ++i) h.enrollment_step();
+  fiable = false;  // una recarga fallo mientras el alumno posaba
+  h.enrollment_step();
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kGalleryUnavailable));
+  CHECK(h.embeddings().empty());
+  for (const EnrollmentProgress& p : h.progress()) CHECK(p.status != EnrollmentStatus::Completed);
+}
+
+TEST(una_galeria_cargada_pero_vacia_no_bloquea_el_registro) {
+  Harness h;
+  h.gallery_ready = [] { return true; };
+  abrir_registro(h);
+  CHECK_EQ(h.gallery.size(), std::size_t{0});
+  correr_cinco_poses(h);
+  CHECK(h.progress().back().status == EnrollmentStatus::Completed);
+}
+
+TEST(el_duplicado_se_busca_con_la_media_final_y_no_con_las_poses_descartadas) {
+  Harness h;
+  ServiceConfig config = h.config;
+  config.min_front_similarity = 0.0f;  // las poses raras llegan al descarte final
+  config.min_front_2_similarity = 0.0f;
+  h.restart(config);
+  // Cuatro poses iguales y una ortogonal: la rara se descarta y la media es (1,0,0,0).
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f},
+                        {1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}};
+  abrir_registro(h);
+  h.gallery.upsert("320068999", std::vector<float>{0.0f, 1.0f, 0.0f, 0.0f});  // como la pose rara
+  correr_cinco_poses(h);
+  CHECK(h.progress().back().status == EnrollmentStatus::Completed);  // no es duplicado
+}
+
+// --- Tope global de rechazos por identidad ------------------------------------------------
+
+TEST(el_tercer_rechazo_por_identidad_del_registro_lo_termina_con_error_inconsistente) {
+  Harness h;
+  CapturedStderr log;
+  // frente; izquierda: mala y buena; derecha: mala y buena; arriba: mala (la tercera mala).
+  const std::vector<float> mala = {0.0f, 1.0f, 0.0f, 0.0f};
+  h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, mala, con_coseno(0.6f), mala,
+                        con_coseno(0.6f, -1.0f), mala};
+  abrir_registro(h);
+  for (int i = 0; i < 6; ++i) h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{
+                             "frente:aceptada", "izquierda:rechazada:inconsistente",
+                             "izquierda:aceptada", "derecha:rechazada:inconsistente",
+                             "derecha:aceptada", "arriba:rechazada:inconsistente"}));
+  // Cada pose tenia intentos de sobra (el tope es de TODO el registro).
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK(h.progress().back().status == EnrollmentStatus::Error);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kInconsistent));
+  CHECK(h.embeddings().empty());
+  CHECK(h.light_commands() == (std::vector<int>{1, 0}));
+  CHECK_EQ(log.count("3 poses rechazadas por identidad (maximo 3)"), std::size_t{1});
+}
+
+TEST(el_tope_de_rechazos_por_identidad_es_configurable) {
+  const std::vector<float> mala = {0.0f, 1.0f, 0.0f, 0.0f};
+  const std::vector<std::vector<float>> salidas = {{1.0f, 0.0f, 0.0f, 0.0f}, mala, mala};
+  {  // 1: el primer rechazo termina el registro
+    Harness h;
+    ServiceConfig config = h.config;
+    config.max_identity_rejections = 1;
+    h.restart(config);
+    h.embedder.outputs = salidas;
+    abrir_registro(h);
+    h.enrollment_step();
+    h.enrollment_step();
+    CHECK(h.service->state() == ServiceState::Idle);
+    CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kInconsistent));
+  }
+  {  // 4: tres rechazos seguidos todavia dejan seguir (la pose tiene 5 intentos)
+    Harness h;
+    ServiceConfig config = h.config;
+    config.max_identity_rejections = 4;
+    h.restart(config);
+    h.embedder.outputs = salidas;
+    abrir_registro(h);
+    for (int i = 0; i < 4; ++i) h.enrollment_step();  // frente + 3 rechazos de izquierda
+    CHECK(h.service->state() == ServiceState::Enrolling);
+    h.enrollment_step();  // el cuarto
+    CHECK(h.service->state() == ServiceState::Idle);
+  }
+}
+
+// --- El motivo del error al agotar los intentos es el del ultimo rechazo ------------------
+
+TEST(agotar_los_intentos_cierra_con_el_motivo_del_ultimo_rechazo) {
+  const auto agota = [](const std::function<void(Harness&)>& preparar, std::string_view esperado) {
+    Harness h;
+    ServiceConfig config = h.config;
+    config.max_attempts_per_pose = 2;
+    h.restart(config);
+    preparar(h);
+    abrir_registro(h);
+    h.enrollment_step();
+    h.enrollment_step();
+    CHECK(h.service->state() == ServiceState::Idle);
+    CHECK(h.progress().back().status == EnrollmentStatus::Error);
+    CHECK_EQ(h.progress().back().reason.value(), std::string(esperado));
+    CHECK(h.embeddings().empty());
+  };
+  agota([](Harness& h) { h.detector.detections.clear(); }, enrollment_reasons::kNoFace);
+  agota([](Harness& h) { cabeza_fija(h, 70.0, 0.0); }, enrollment_reasons::kExcessiveTurn);
+  agota([](Harness& h) { cabeza_fija(h, 30.0, 0.0); }, enrollment_reasons::kWrongPose);
+  agota(
+      [](Harness& h) {
+        h.detector.adjust = nullptr;
+        h.detector.detections = {rostro_de(100.0f, 120.0f, 80.0f, 0.95f),
+                                 rostro_de(240.0f, 120.0f, 76.0f, 0.90f)};
+      },
+      enrollment_reasons::kSeveralFaces);
+}
+
+TEST(un_fallo_real_del_pipeline_sigue_cerrando_con_npu) {
+  Harness h;
+  abrir_registro(h);
+  h.detector.on_call = [] { throw std::runtime_error("npu caida"); };
+  h.enrollment_step();
+  CHECK(h.service->state() == ServiceState::Idle);
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kNpu));
+}
+
+// --- Identidad desactivada y coseno negativo ----------------------------------------------
+
+TEST(un_umbral_de_identidad_de_cero_acepta_incluso_un_coseno_negativo) {
+  const std::vector<std::vector<float>> salidas = {{1.0f, 0.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f, 0.0f}};
+  {  // desactivada: un rostro opuesto pasa
+    Harness h;
+    ServiceConfig config = h.config;
+    config.min_front_similarity = 0.0f;
+    config.min_front_2_similarity = 0.0f;
+    h.restart(config);
+    h.embedder.outputs = salidas;
+    abrir_registro(h);
+    h.enrollment_step();
+    h.enrollment_step();
+    CHECK(decisiones(h).back() == "izquierda:aceptada");
+  }
+  {  // activa (0.20): el mismo coseno de -1 se rechaza
+    Harness h;
+    h.embedder.outputs = salidas;
+    abrir_registro(h);
+    h.enrollment_step();
+    h.enrollment_step();
+    CHECK(decisiones(h).back() == "izquierda:rechazada:inconsistente");
+  }
+}
+
+// --- Avisos al arrancar -------------------------------------------------------------------
+
+TEST(el_servicio_avisa_al_arrancar_de_los_controles_desactivados_o_debilitados) {
+  const auto avisos = [](const std::function<void(ServiceConfig&)>& cambio) {
+    Harness h;
+    h.service.reset();
+    ServiceConfig config = h.config;
+    cambio(config);
+    CapturedStderr log;
+    VisionService service(ServiceDeps{h.bus, h.http, h.detector, h.embedder, h.gallery, h.clock,
+                                      h.wall_clock, nullptr, [] { return true; }},
+                          config);
+    return log.count("AVISO");
+  };
+  CHECK_EQ(avisos([](ServiceConfig&) {}), std::size_t{0});  // los valores por omision no avisan
+  {  // sin gallery_ready el chequeo de galeria queda abierto: se avisa (sin lanzar)
+    Harness h;
+    h.service.reset();
+    CapturedStderr log;
+    VisionService service(ServiceDeps{h.bus, h.http, h.detector, h.embedder, h.gallery, h.clock,
+                                      h.wall_clock, nullptr, nullptr},
+                          h.config);
+    CHECK_EQ(log.count("AVISO: sin gallery_ready"), std::size_t{1});
+  }
+  CHECK_EQ(avisos([](ServiceConfig& c) { c.min_front_similarity = 0.0f; }), std::size_t{1});
+  CHECK_EQ(avisos([](ServiceConfig& c) {
+             c.min_front_similarity = 0.0f;
+             c.min_front_2_similarity = 0.0f;
+           }),
+           std::size_t{2});
+  CHECK_EQ(avisos([](ServiceConfig& c) { c.other_face_min_area_ratio = 0.7f; }), std::size_t{1});
+  CHECK_EQ(avisos([](ServiceConfig& c) { c.other_face_min_score = 0.85f; }), std::size_t{1});
+  CHECK_EQ(avisos([](ServiceConfig& c) { c.max_identity_rejections = 11; }), std::size_t{1});
+}
+
+// --- Rostro principal ---------------------------------------------------------------------
+
+TEST(un_falso_positivo_grande_de_score_bajo_no_es_el_rostro_principal) {
+  Harness h;
+  h.detector.adjust = nullptr;
+  // El falso positivo es grande, con score 0.1 y la cabeza girada (si fuera el principal, la pose
+  // de frente saldria rechazada); el rostro real es mas chico y de frente.
+  FaceDetection falso = rostro_de(100.0f, 120.0f, 140.0f, 0.1f);
+  falso.landmarks = fakes::synthetic_landmarks(40.0, 0.0, 1.5, {100.0f, 110.0f});
+  h.detector.detections = {falso, rostro_de(250.0f, 120.0f, 80.0f, 0.9f)};
+  abrir_registro(h);
+  h.enrollment_step();
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:aceptada"}));
+}
+
+TEST(un_score_no_finito_no_rompe_la_eleccion_y_cuenta_como_otro_rostro) {
+  Harness h;
+  h.detector.adjust = nullptr;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  h.detector.detections = {rostro_de(100.0f, 120.0f, 80.0f, 0.9f), rostro_de(240.0f, 120.0f, 76.0f, nan)};  // grande: no es "chico"
+  abrir_registro(h);
+  h.enrollment_step();
+  // Un score que no se puede comparar no se puede dar por "bajo": fallo cerrado.
+  CHECK(decisiones(h) == (std::vector<std::string>{"frente:rechazada:varios_rostros"}));
+}
+
+// --- Un registro completo con la identidad activa y poses de perfil con coseno bajo -------
+
+TEST(un_registro_con_la_identidad_activa_y_perfiles_de_coseno_bajo_llega_al_descarte_final) {
+  Harness h;
+  CapturedStderr log;
+  // Lo esperado con perfiles de la misma persona: de 0.3 a 0.5 contra frente (arriba, 0.25, esta
+  // apenas por encima del umbral de 0.20). Cada pose en su propio eje: se parecen poco entre si.
+  const std::vector<std::vector<float>> poses = {
+      {1.0f, 0.0f, 0.0f, 0.0f}, en_eje(0.40f, 1), en_eje(0.40f, 2), en_eje(0.25f, 3),
+      en_eje(0.80f, 1)};
+  h.embedder.outputs = poses;
+  abrir_registro(h);
+  correr_cinco_poses(h);
+
+  // Ninguna pose se rechazo por identidad (todas por encima de su umbral)...
+  const std::vector<std::string> d = decisiones(h);
+  CHECK_EQ(d.size(), std::size_t{5});
+  for (const std::string& decision : d) CHECK(decision.find("aceptada") != std::string::npos);
+  // ...y el descarte final (min_pose_similarity 0.50, contra la media) sigue activo: con estos
+  // cosenos descarta al menos una pose, y el embedding es la media de las que quedan.
+  const std::vector<std::size_t> esperadas = keep_consistent_poses(poses, h.config.min_pose_similarity);
+  CHECK(esperadas.size() >= 3 && esperadas.size() < 5);
+  CHECK(log.count("pose descartada") >= 1);
+  CHECK(h.progress().back().status == EnrollmentStatus::Completed);
+  CHECK_EQ(h.embeddings().size(), std::size_t{1});
+  std::vector<std::vector<float>> unidades;
+  for (const std::vector<float>& pose : poses) unidades.push_back(l2_normalized(pose));
+  const std::vector<float> media = l2_normalized(mean_embedding(unidades, esperadas));
+  for (std::size_t i = 0; i < media.size(); ++i) {
+    CHECK_NEAR(h.embeddings()[0].embedding[i], media[i], 1e-5);
+  }
+}
+
+// --- "arriba" no se valida con una referencia de "frente" extrema -----------------------------
+
+TEST(frente_en_menos_25_y_arriba_en_0_se_rechaza) {
+  Harness h;
+  CapturedStderr log;
+  abrir_registro(h);
+  // La camara esta muy alta (o el alumno miraba hacia abajo): "frente" sale a -25 grados. Es
+  // aceptable como "frente" (el limite es 30) pero no como referencia de "arriba".
+  const auto cabeza = [&h](double yaw, double pitch) { cabeza_fija(h, yaw, pitch); };
+  cabeza(0.0, -25.0);
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "frente:aceptada");
+  CHECK_EQ(log.count("AVISO: frente aceptada con un pitch de -25.0"), std::size_t{1});
+  cabeza(30.0, -25.0);
+  h.enrollment_step();
+  cabeza(-30.0, -25.0);
+  h.enrollment_step();
+  cabeza(0.0, 0.0);  // una cara neutra: contra una referencia de -25 parecería 25 grados "arriba"
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "arriba:rechazada:pose_incorrecta");
+  cabeza(0.0, 15.0);  // y ni siquiera levantandola: la referencia no sirve (falla cerrado)
+  h.enrollment_step();
+  CHECK(decisiones(h).back() == "arriba:rechazada:pose_incorrecta");
+}
+
+// --- Supervivientes contra frente_2 ---------------------------------------------------------
+
+TEST(una_pose_lateral_que_no_se_parece_a_frente_2_termina_el_registro_como_inconsistente) {
+  const std::vector<std::vector<float>> poses = {
+      {1.0f, 0.0f, 0.0f, 0.0f},        // frente
+      {0.3f, 0.954f, 0.0f, 0.0f},      // izquierda: 0.3 con frente (pasa el 0.20)...
+      en_eje(0.5f, 2),                 // derecha
+      en_eje(0.5f, 3),                 // arriba
+      {0.5f, -0.5f, 0.7071f, 0.0f}};   // frente_2: 0.5 con frente, pero -0.33 con izquierda
+  {
+    Harness h;
+    CapturedStderr log;
+    ServiceConfig config = h.config;
+    config.min_pose_similarity = 0.0f;  // el descarte final no quita ninguna: llegan las cinco
+    h.restart(config);
+    h.embedder.outputs = poses;
+    abrir_registro(h);
+    correr_cinco_poses(h);
+    CHECK(h.service->state() == ServiceState::Idle);
+    CHECK(h.progress().back().status == EnrollmentStatus::Error);
+    CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kInconsistent));
+    CHECK(h.embeddings().empty());
+    for (const EnrollmentProgress& p : h.progress()) CHECK(p.status != EnrollmentStatus::Completed);
+    CHECK_EQ(log.count("la pose izquierda no se parece a frente_2"), std::size_t{1});
+  }
+  {  // con la identidad desactivada (umbral <= 0), esa comprobacion tampoco corre
+    Harness h;
+    ServiceConfig config = h.config;
+    config.min_pose_similarity = 0.0f;
+    config.min_front_similarity = 0.0f;
+    config.min_front_2_similarity = 0.0f;
+    h.restart(config);
+    h.embedder.outputs = poses;
+    abrir_registro(h);
+    correr_cinco_poses(h);
+    CHECK(h.progress().back().status == EnrollmentStatus::Completed);
+  }
+}
+
 TEST(enrollment_pose_names_follow_the_plan) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   for (int i = 0; i < 5; ++i) h.enrollment_step();
 
@@ -773,7 +1698,7 @@ TEST(enrollment_pose_names_follow_the_plan) {
 TEST(pir_is_ignored_while_enrolling) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   const std::size_t published_before = h.bus.published.size();
 
@@ -790,7 +1715,7 @@ TEST(pir_is_ignored_while_enrolling) {
 TEST(pir_queued_with_enroll_command_is_ignored_too) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.pir();  // llega en el mismo lote que el comando, pero despues
   h.service->poll();
 
@@ -801,7 +1726,7 @@ TEST(pir_queued_with_enroll_command_is_ignored_too) {
 TEST(cancel_mid_enrollment_stops_capturing_and_publishes_no_embedding) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();  // pose 1 aceptada
   h.enrollment_step();  // pose 2 aceptada
@@ -835,9 +1760,9 @@ TEST(cancel_when_not_enrolling_does_nothing) {
 
 TEST(second_enroll_while_enrolling_is_rejected_as_busy) {
   Harness h;
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
-  h.command(VisionAction::Enroll, "200000002");
+  h.enroll("200000002");
   h.service->poll();
 
   const auto progress = h.progress();
@@ -851,7 +1776,7 @@ TEST(second_enroll_while_enrolling_is_rejected_as_busy) {
 TEST(test_command_while_enrolling_replies_busy_and_enrollment_continues) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();  // pose 1 aceptada
   const std::size_t before = h.progress().size();
@@ -877,7 +1802,7 @@ TEST(test_command_while_enrolling_replies_busy_and_enrollment_continues) {
 TEST(enroll_with_empty_account_is_dropped_silently_and_starts_no_session) {
   Harness h;
   CapturedStderr log;
-  h.command(VisionAction::Enroll, "");
+  h.enroll("");
   h.service->poll();
 
   CHECK(h.service->state() == ServiceState::Idle);
@@ -890,7 +1815,7 @@ TEST(enroll_with_empty_account_is_dropped_silently_and_starts_no_session) {
 
 TEST(cancel_for_another_account_is_ignored_but_empty_or_matching_cancels) {
   Harness h;
-  h.command(VisionAction::Enroll, "111111111");
+  h.enroll("111111111");
   h.service->poll();
 
   h.command(VisionAction::Cancel, "222222222");
@@ -903,7 +1828,7 @@ TEST(cancel_for_another_account_is_ignored_but_empty_or_matching_cancels) {
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK(h.progress().back().status == EnrollmentStatus::Cancelled);
 
-  h.command(VisionAction::Enroll, "333333333");
+  h.enroll("333333333");
   h.service->poll();
   h.command(VisionAction::Cancel, "333333333");
   h.service->poll();
@@ -916,7 +1841,7 @@ TEST(embedding_dimension_change_between_poses_fails_the_enrollment) {
   Harness h;
   h.embedder.outputs = {{1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f}};
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
   h.enrollment_step();  // la pose 2 llega con 2 dimensiones
@@ -933,7 +1858,7 @@ TEST(zero_embedding_for_a_pose_fails_the_enrollment_with_the_npu_motive) {
   Harness h;
   h.embedder.outputs = {{0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f}};
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
 
@@ -948,7 +1873,7 @@ TEST(rejected_pose_is_retried_then_accepted) {
   Harness h;
   h.http.responses.push_back({500, {}});  // primer intento de la pose 1 falla
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
 
@@ -967,7 +1892,7 @@ TEST(rejected_pose_is_retried_then_accepted) {
 TEST(enrollment_aborts_after_too_many_rejections_of_one_pose) {
   Harness h;  // sin respuestas HTTP
   CHECK_EQ(h.config.max_attempts_per_pose, 5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   for (int i = 0; i < 4; ++i) h.enrollment_step();
   CHECK(h.service->state() == ServiceState::Enrolling);  // 4 rechazos: aun se reintenta
@@ -979,7 +1904,8 @@ TEST(enrollment_aborts_after_too_many_rejections_of_one_pose) {
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK(h.embeddings().empty());
   CHECK(h.progress().back().status == EnrollmentStatus::Error);
-  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kNpu));
+  // El motivo del ultimo rechazo (aqui, una captura sin foto), no "npu".
+  CHECK_EQ(h.progress().back().reason.value(), std::string(enrollment_reasons::kCaptureFailure));
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
 }
 
@@ -990,7 +1916,7 @@ TEST(la_pose_aceptada_lleva_miniatura_y_los_demas_mensajes_no) {
   Harness h;
   h.detector.detections = {face_con_bbox()};
   h.http.responses.push_back(ok(frame_liso()));
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
 
@@ -1014,7 +1940,7 @@ TEST(una_pose_sin_rostro_no_lleva_miniatura) {
   Harness h;
   h.detector.detections.clear();
   h.http.responses.push_back(ok(frame_liso()));
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
 
@@ -1027,7 +1953,7 @@ TEST(una_pose_sin_rostro_no_lleva_miniatura) {
 TEST(una_pose_sin_foto_no_lleva_miniatura) {
   Harness h;
   h.http.responses.push_back({500, {}});  // la placa no contesta
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
 
@@ -1040,7 +1966,7 @@ TEST(una_pose_sin_foto_no_lleva_miniatura) {
 TEST(enrollment_waits_for_the_pose_delay_before_capturing) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.clock.advance(h.config.pose_delay - 1ms);
   h.service->poll();
@@ -1289,7 +2215,7 @@ TEST(test_command_reports_internal_error_with_its_mode_when_the_clock_throws) {
 TEST(poll_keeps_processing_the_batch_after_an_event_throws) {
   Harness h;
   h.queue_frames(3);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.command(VisionAction::Test);  // en el mismo lote
   bool fail = true;
   h.clock.on_now = [&] {
@@ -1308,14 +2234,14 @@ TEST(poll_keeps_processing_the_batch_after_an_event_throws) {
 // Si start_enrollment falla al fijar el plazo, no queda un registro a medias.
 TEST(start_enrollment_failure_leaves_no_partial_enrollment) {
   Harness h;
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.clock.on_now = [] { throw std::runtime_error("reloj roto"); };
   h.service->poll();
   h.clock.on_now = nullptr;
 
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK(!ServiceTestAccess::has_enrollment(*h.service));
-  h.command(VisionAction::Enroll, "100000001");  // y se puede volver a intentar
+  h.enroll("100000001");  // y se puede volver a intentar
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
   CHECK(ServiceTestAccess::has_enrollment(*h.service));
@@ -1325,7 +2251,7 @@ TEST(start_enrollment_failure_leaves_no_partial_enrollment) {
 TEST(poll_isolates_a_throwing_enrollment_step) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   bool armed = false, fired = false;
   h.bus.on_publish = [&](std::string_view, const Payload& p) {
@@ -1352,15 +2278,26 @@ TEST(poll_isolates_a_throwing_enrollment_step) {
 TEST(enrollment_completes_even_if_every_progress_publish_fails) {
   Harness h;
   h.queue_frames(5);
+  // Sin progreso publicado el detector no sabe que pose se pide: la cabeza sigue el orden del
+  // registro (una captura por pose, sin repeticiones).
+  h.detector.adjust = [&h](std::vector<FaceDetection>& faces) {
+    const double yaw[] = {0.0, 30.0, -30.0, 0.0, 0.0};
+    const double pitch[] = {0.0, 0.0, 0.0, 25.0, 0.0};
+    // Con un reintento (mas de 5 llamadas) el indice se acota y el CHECK_EQ de abajo falla con
+    // un mensaje claro, en vez de leer fuera del arreglo.
+    const std::size_t i = std::min<std::size_t>(static_cast<std::size_t>(h.detector.calls - 1), 4);
+    for (FaceDetection& face : faces) face.landmarks = fakes::synthetic_landmarks(yaw[i], pitch[i]);
+  };
   h.bus.on_publish = [](std::string_view topic, const Payload&) {
     if (topic == topics::kVisionEnrollment) throw std::runtime_error("sin broker");
   };
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   for (int i = 0; i < 5; ++i) h.enrollment_step();
 
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK_EQ(h.http.requested_urls.size(), std::size_t{5});  // cada pose se capturo una vez
+  CHECK_EQ(h.detector.calls, 5);  // sin reintentos: la pose sale de la cuenta de llamadas
   CHECK_EQ(h.embeddings().size(), std::size_t{1});
   CHECK(h.light_commands() == (std::vector<int>{1, 0}));
 }
@@ -1371,7 +2308,7 @@ TEST(embedding_publish_failure_fails_the_enrollment_once) {
   h.bus.on_publish = [](std::string_view topic, const Payload&) {
     if (topic == topics::kVisionEmbedding) throw std::runtime_error("sin broker");
   };
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   for (int i = 0; i < 5; ++i) h.enrollment_step();
 
@@ -1392,7 +2329,7 @@ TEST(embedding_publish_failure_fails_the_enrollment_once) {
 template <typename BreakClock>
 void run_enrollment_breaking_clock(Harness& h, const std::string& account, BreakClock break_clock) {
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, account);
+  h.enroll(account);
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
   break_clock();
@@ -1475,7 +2412,7 @@ TEST(registro_con_hora_valida_sigue_publicando_el_embedding) {
 
 // El rechazo temprano: con el reloj ya invalido, el enrolar ni empieza.
 void check_enroll_rejected_by_clock(Harness& h, const CapturedStderr& log) {
-  h.command(VisionAction::Enroll, "100000009");
+  h.enroll("100000009");
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Idle);
   CHECK(!ServiceTestAccess::has_enrollment(*h.service));
@@ -1515,7 +2452,7 @@ TEST(finish_enrollment_frees_the_state_before_publishing_light_off) {
       throw std::runtime_error("sin broker");
     }
   };
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.command(VisionAction::Cancel);
   h.service->poll();
@@ -1525,7 +2462,7 @@ TEST(finish_enrollment_frees_the_state_before_publishing_light_off) {
   CHECK(h.service->state() == ServiceState::Idle);
 
   h.bus.on_publish = nullptr;  // y un registro nuevo puede empezar
-  h.command(VisionAction::Enroll, "200000002");
+  h.enroll("200000002");
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
 }
@@ -1551,7 +2488,7 @@ TEST(captures_use_the_configured_http_timeout) {
 
   h.pir();
   h.service->poll();
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
 
@@ -1721,7 +2658,7 @@ TEST(full_inbox_releases_the_pending_flags_of_dropped_events) {
   h.queue_frames(6);
   CapturedStderr log;
 
-  for (int i = 0; i < 4; ++i) h.command(VisionAction::Enroll, "100000001");  // llenan la cola
+  for (int i = 0; i < 4; ++i) h.enroll("100000001");  // llenan la cola
   h.pir();                                          // descartados: no deben dejar su bandera tomada
   h.command(VisionAction::Test);
   CHECK_EQ(log.count("cola de eventos llena"), std::size_t{1});
@@ -1741,7 +2678,7 @@ TEST(full_inbox_releases_the_pending_flags_of_dropped_events) {
   h.command(VisionAction::Test);
   h.service->poll();
   CHECK_EQ(h.results().size(), std::size_t{2});
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
 }
@@ -1772,7 +2709,7 @@ TEST(probar_is_coalesced_like_pir) {
 TEST(probar_during_enrollment_still_gets_one_busy_refusal_and_enrollment_continues) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   const std::size_t before = h.progress().size();
 
@@ -1824,10 +2761,10 @@ TEST(enroll_with_an_invalid_account_is_dropped_before_taking_a_slot) {
   Harness h;
   CapturedStderr log;
   for (int i = 0; i < 100; ++i) {
-    h.command(VisionAction::Enroll, i % 2 ? "12345678a" : "1234567890");
+    h.enroll(i % 2 ? "12345678a" : "1234567890");
   }
-  h.command(VisionAction::Enroll, "");
-  h.command(VisionAction::Enroll, "<b>hi</b>1");
+  h.enroll("");
+  h.enroll("<b>hi</b>1");
 
   CHECK_EQ(ServiceTestAccess::inbox_size(*h.service), std::size_t{0});  // no ocupan lugar
   CHECK_EQ(log.count("enrolar con cuenta invalida"), std::size_t{1});   // una linea por poll
@@ -1837,11 +2774,11 @@ TEST(enroll_with_an_invalid_account_is_dropped_before_taking_a_slot) {
   CHECK(h.bus.published.empty());  // y no responden
   CHECK(h.service->state() == ServiceState::Idle);
 
-  h.command(VisionAction::Enroll, "100000001");  // uno valido si pasa
+  h.enroll("100000001");  // uno valido si pasa
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
 
-  for (int i = 0; i < 3; ++i) h.command(VisionAction::Enroll, "bad");  // el log vuelve a salir tras un poll
+  for (int i = 0; i < 3; ++i) h.enroll("bad");  // el log vuelve a salir tras un poll
   CHECK_EQ(log.count("enrolar con cuenta invalida"), std::size_t{2});
 }
 
@@ -1863,8 +2800,8 @@ TEST(start_enrollment_refuses_an_invalid_account_without_echoing_it) {
 TEST(second_valid_enroll_in_one_poll_gets_busy_and_the_first_proceeds) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
-  h.command(VisionAction::Enroll, "200000002");
+  h.enroll("100000001");
+  h.enroll("200000002");
   CHECK_EQ(ServiceTestAccess::inbox_size(*h.service), std::size_t{2});  // sin coalescer
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
@@ -1916,7 +2853,7 @@ TEST(pir_probar_and_enrolar_still_get_in_when_the_inbox_is_full_of_cancels) {
   CHECK_EQ(ServiceTestAccess::inbox_size(*h.service), std::size_t{1});
   h.pir();
   h.command(VisionAction::Test);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   CHECK_EQ(ServiceTestAccess::inbox_size(*h.service), std::size_t{4});
   h.service->poll();
   CHECK_EQ(h.results().size(), std::size_t{2});  // el PIR y el probar
@@ -1925,7 +2862,7 @@ TEST(pir_probar_and_enrolar_still_get_in_when_the_inbox_is_full_of_cancels) {
 
 TEST(cancel_with_an_invalid_account_is_ignored_while_empty_means_current) {
   Harness h;
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   for (const char* bad : {"1", "10000000a", "1000000011", "../1"}) {
     h.command(VisionAction::Cancel, bad);
@@ -1939,7 +2876,7 @@ TEST(cancel_with_an_invalid_account_is_ignored_while_empty_means_current) {
 
 TEST(refusals_clear_an_invalid_account_but_echo_a_valid_one) {
   Harness h;
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
 
   h.command(VisionAction::Test, "not-an-account");
@@ -1955,9 +2892,9 @@ TEST(refusals_clear_an_invalid_account_but_echo_a_valid_one) {
 TEST(refusals_use_error_status_with_step_zero_and_never_failed) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
-  h.command(VisionAction::Enroll, "200000002");
+  h.enroll("200000002");
   h.command(VisionAction::Test);
   h.service->poll();
   ServiceTestAccess::handle(*h.service, VisionCommand{VisionAction::Enroll, "bad", std::nullopt}, h.clock.now());
@@ -2150,6 +3087,7 @@ TEST(los_umbrales_mueven_la_zona_gris) {
   CHECK(h.results().at(0).decision == Decision::Doubtful);
 
   config.min_dudoso_score = 0.55f;  // ahora 0.5 queda por debajo
+  config.min_duplicate_similarity = 0.55f;
   h.restart(config);
   h.pir();
   h.service->poll();
@@ -2157,6 +3095,7 @@ TEST(los_umbrales_mueven_la_zona_gris) {
 
   config.min_recognized_score = 0.40f;  // ahora 0.5 queda por encima
   config.min_dudoso_score = 0.30f;
+  config.min_duplicate_similarity = 0.30f;  // no puede pasar de "dudoso"
   h.restart(config);
   h.pir();
   h.service->poll();
@@ -2218,7 +3157,7 @@ TEST(el_margen_es_la_diferencia_con_el_segundo_candidato) {
 TEST(todos_los_mensajes_del_servicio_llevan_ts_en_iso_8601_con_zona) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   for (int i = 0; i < 5; ++i) h.enrollment_step();
   h.pir();
@@ -2265,7 +3204,7 @@ TEST(el_estado_del_servicio_cambia_de_modo) {
 TEST(el_estado_del_servicio_durante_el_registro) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
 
   const auto statuses = h.statuses();
@@ -2282,7 +3221,7 @@ TEST(el_registro_mapea_los_motivos_al_vocabulario_del_contrato) {
   Harness h;
   h.http.responses.push_back({500, {}});  // la primera captura de la pose 1 falla
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
 
@@ -2297,7 +3236,7 @@ TEST(un_rostro_que_no_se_ve_se_rechaza_con_sin_rostro) {
   Harness h;
   h.detector.detections.clear();
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();
 
@@ -2307,9 +3246,9 @@ TEST(un_rostro_que_no_se_ve_se_rechaza_con_sin_rostro) {
 
 TEST(las_ordenes_rechazadas_usan_el_estado_error) {
   Harness h;
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
-  h.command(VisionAction::Enroll, "200000002");  // ocupado
+  h.enroll("200000002");  // ocupado
   h.service->poll();
 
   const auto progress = h.progress();
@@ -2322,7 +3261,7 @@ TEST(las_ordenes_rechazadas_usan_el_estado_error) {
 TEST(el_estado_completado_se_publica_antes_del_embedding) {
   Harness h;
   h.queue_frames(5);
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   for (int i = 0; i < 5; ++i) h.enrollment_step();
 
@@ -2358,7 +3297,7 @@ TEST(el_nombre_del_comando_enrolar_llega_al_registro) {
 // y deja el servicio inactivo.
 TEST(shutdown_cancela_el_registro_apaga_la_luz_y_deja_el_servicio_inactivo) {
   Harness h;
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   CHECK(h.service->state() == ServiceState::Enrolling);
   CHECK(h.light_commands() == (std::vector<int>{1}));
@@ -3074,7 +4013,7 @@ TEST(una_pose_del_registro_espacia_la_rafaga_que_viene_despues) {
   h.http.on_call = [&] { request_times.push_back(h.clock.now()); };
   h.queue_frames(5);
 
-  h.command(VisionAction::Enroll, "100000001");
+  h.enroll("100000001");
   h.service->poll();
   h.enrollment_step();  // captura la primera pose (una foto)
   CHECK_EQ(request_times.size(), std::size_t{1});

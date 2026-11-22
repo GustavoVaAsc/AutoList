@@ -7,6 +7,7 @@
 // formas que se listaron y el formato queda PROVISIONAL, pendiente de que el carril del
 // borde lo confirme (README, seccion "La galeria en RAM").
 
+#include <atomic>
 #include <cstddef>
 #include <mutex>
 #include <string>
@@ -42,6 +43,20 @@ class GalleryStore {
   // Ante aula/vision/galeria/baja: se borra esa cuenta de la galeria en RAM.
   void apply_remove(const std::string& account);
 
+  // true si la ULTIMA recarga tuvo exito (la galeria en RAM es la que devolvio el servidor, aunque
+  // este vacia). false antes de la primera recarga y despues de una recarga fallida: la galeria
+  // puede estar desfasada (una cuenta registrada despues no estaria) y no es de fiar para
+  // comprobar duplicados. Una recarga fallida deja la galeria en RAM como estaba. Una recarga
+  // que SI cargo pero descarto alguna fila (cuenta o embedding invalidos, dimension minoritaria)
+  // devuelve true y deja la galeria en uso para la asistencia, pero loaded_ok() queda en false:
+  // falta un alumno y no se puede comprobar duplicados.
+  //
+  // Es fail-closed a proposito: loaded_ok_ pasa a false AL EMPEZAR cada recarga y solo vuelve a
+  // true si termina bien. Durante toda la recarga (la peticion HTTP puede tardar hasta el
+  // timeout) la galeria no es de fiar, y un registro que llegue en ese lapso se rechaza con
+  // galeria_no_disponible; el alumno puede repetirlo unos segundos despues.
+  [[nodiscard]] bool loaded_ok() const { return loaded_ok_.load(); }
+
   [[nodiscard]] std::size_t size() const;
 
   // Tope del cuerpo de la respuesta: una galeria de 40 alumnos con 512 floats son
@@ -58,6 +73,7 @@ class GalleryStore {
   // Serializa las recargas entre si (la peticion HTTP va sin el mutex de la galeria:
   // mientras se descarga, la galeria en RAM sigue en uso).
   std::mutex reload_mutex_;
+  std::atomic<bool> loaded_ok_{false};
 };
 
 }  // namespace vision

@@ -56,10 +56,20 @@ inline constexpr std::string_view kSeveralFaces = "varios_rostros";
 inline constexpr std::string_view kSmallFace = "rostro_chico";
 inline constexpr std::string_view kBlurry = "borrosa";
 inline constexpr std::string_view kExcessiveTurn = "giro_excesivo";
+// Extension (v0.14): la cabeza no esta en la pose pedida (ver head_pose.hpp).
+inline constexpr std::string_view kWrongPose = "pose_incorrecta";
 inline constexpr std::string_view kCaptureFailure = "fallo_captura";
 inline constexpr std::string_view kBusy = "ocupado";
+// Con estado "error": las cinco fotos no se parecen entre si. Con "rechazada" (v0.14): la pose
+// no se parece a la de "frente" (puede ser otra persona); la pose se repite.
 inline constexpr std::string_view kInconsistent = "inconsistente";
 inline constexpr std::string_view kNpu = "npu";
+// Extension (v0.14), con estado "error": el rostro del registro ya pertenece a otra cuenta de
+// la galeria (coseno >= min_recognized_score); "parecido_a" lleva esa cuenta.
+inline constexpr std::string_view kDuplicate = "duplicado";
+// Extension (v0.14), con estado "error": la galeria en RAM no es de fiar (la ultima recarga
+// fallo o no se pudo consultar), asi que no se puede saber si el rostro ya esta registrado.
+inline constexpr std::string_view kGalleryUnavailable = "galeria_no_disponible";
 // Extension: la cuenta del comando no es un no_cuenta valido.
 inline constexpr std::string_view kInvalidAccount = "cuenta_invalida";
 }  // namespace enrollment_reasons

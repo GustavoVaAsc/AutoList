@@ -44,7 +44,8 @@ enum class ParseOutcome {
 //
 // Si la forma es la correcta pero NINGUNA entrada se puede cargar, se devuelve
 // kNothingUsable: la galeria en RAM no se toca (no se pierde lo que ya habia).
-ParseOutcome parse_entries(const std::vector<std::uint8_t>& body, std::vector<Entry>& entries) {
+ParseOutcome parse_entries(const std::vector<std::uint8_t>& body, std::vector<Entry>& entries,
+                           std::size_t& descartadas_del_parser) {
   // Barreras antes de parsear: el tamano y la profundidad. El parser de nlohmann es
   // descendente y recursivo: un cuerpo muy anidado podria agotar la pila.
   if (body.size() > GalleryStore::kMaxBodyBytes) {
@@ -138,6 +139,7 @@ ParseOutcome parse_entries(const std::vector<std::uint8_t>& body, std::vector<En
     entries.push_back(Entry{*account, std::move(values)});
   }
 
+  descartadas_del_parser = descartadas;
   if (descartadas > 0) {
     std::cerr << "[vision] entradas de la galeria descartadas: " << descartadas << '\n';
   }
@@ -160,6 +162,9 @@ bool GalleryStore::reload() {
   // mientras se recarga al arrancar), la ultima que termina es la que se queda, y no
   // una respuesta vieja que llego antes.
   std::lock_guard reload_lock(reload_mutex_);
+  // Mientras no termine bien, la galeria no es de fiar: cualquier salida temprana (fallo de la
+  // peticion, respuesta rara, excepcion) la deja en false.
+  loaded_ok_.store(false);
 
   std::vector<std::string> headers;
   if (!config_.token.empty()) {
@@ -187,7 +192,8 @@ bool GalleryStore::reload() {
   }
 
   std::vector<Entry> entries;
-  const ParseOutcome outcome = parse_entries(response.body, entries);
+  std::size_t descartadas_del_parser = 0;
+  const ParseOutcome outcome = parse_entries(response.body, entries, descartadas_del_parser);
   if (outcome != ParseOutcome::kOk) return false;
 
   // La galeria nueva se arma aparte: si una entrada no cuadra, se descarta y el resto
@@ -211,6 +217,7 @@ bool GalleryStore::reload() {
 
   Gallery galeria_nueva;
   std::size_t descartadas_por_dimension = 0;
+  std::size_t descartadas_al_cargar = 0;  // EmbeddingError o cuenta invalida
   for (const Entry& entry : entries) {
     if (entry.embedding.size() != dimension) {
       ++descartadas_por_dimension;
@@ -219,9 +226,11 @@ bool GalleryStore::reload() {
     try {
       galeria_nueva.upsert(entry.account, entry.embedding);
     } catch (const EmbeddingError& error) {
+      ++descartadas_al_cargar;
       std::cerr << "[vision] embedding descartado al cargar la galeria: " << error.what()
                 << '\n';
     } catch (const std::invalid_argument&) {
+      ++descartadas_al_cargar;
       std::cerr << "[vision] cuenta descartada al cargar la galeria: no es valida\n";
     }
   }
@@ -237,6 +246,18 @@ bool GalleryStore::reload() {
     cargadas = gallery_.size();
   }
   std::cerr << "[vision] galeria cargada: " << cargadas << " alumnos\n";
+  // Una fila que se descarto es un alumno que falta en la galeria: la asistencia sigue con lo
+  // que se cargo, pero la galeria no es de fiar para comprobar duplicados (el rostro del
+  // alumno que falta podria registrarse en otra cuenta) hasta que alguien arregle la fila.
+  const std::size_t descartadas = descartadas_del_parser + descartadas_por_dimension +
+                                  descartadas_al_cargar;
+  if (descartadas > 0) {
+    std::cerr << "[vision] AVISO: la galeria se cargo con " << descartadas
+              << " fila(s) descartadas: los registros quedan cerrados (galeria_no_disponible) "
+                 "hasta que se corrijan\n";
+    return true;  // se cargo (la asistencia la usa), pero loaded_ok() sigue en false
+  }
+  loaded_ok_.store(true);
   return true;
 }
 

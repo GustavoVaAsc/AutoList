@@ -297,6 +297,49 @@ TEST(enrolamiento_admite_todos_los_estados_del_contrato) {
   }
 }
 
+// Los motivos de un registro con estado "rechazada" (v0.14: pose_incorrecta es nuevo e
+// inconsistente tambien vale con "rechazada", porque la pose no se parece a "frente").
+TEST(enrolamiento_admite_los_motivos_de_pose_y_de_identidad_con_rechazada) {
+  for (const std::string_view motivo : {"pose_incorrecta", "giro_excesivo", "varios_rostros",
+                                        "inconsistente"}) {
+    EnrollmentProgress progress = sample_enrollment();
+    progress.status = EnrollmentStatus::Rejected;
+    progress.reason = std::string(motivo);
+    const Payload parsed =
+        deserialize_or_fail(topics::kVisionEnrollment, serialize_json(progress));
+    const auto* back = std::get_if<EnrollmentProgress>(&parsed);
+    CHECK(back != nullptr);
+    CHECK(back->status == EnrollmentStatus::Rejected);
+    CHECK_EQ(back->reason.value(), std::string(motivo));
+  }
+}
+
+// v0.14: "duplicado" cierra el registro con "error" y lleva la cuenta parecida en "parecido_a".
+TEST(enrolamiento_admite_el_error_duplicado_con_parecido_a) {
+  EnrollmentProgress progress = sample_enrollment();
+  progress.status = EnrollmentStatus::Error;
+  progress.reason = std::string("duplicado");
+  progress.similar_to = std::string("320068999");
+  const Payload parsed = deserialize_or_fail(topics::kVisionEnrollment, serialize_json(progress));
+  const auto* back = std::get_if<EnrollmentProgress>(&parsed);
+  CHECK(back != nullptr);
+  CHECK(back->status == EnrollmentStatus::Error);
+  CHECK_EQ(back->reason.value(), std::string("duplicado"));
+  CHECK_EQ(back->similar_to.value(), std::string("320068999"));
+}
+
+TEST(enrolamiento_admite_el_error_galeria_no_disponible) {
+  EnrollmentProgress progress = sample_enrollment();
+  progress.status = EnrollmentStatus::Error;
+  progress.step = 0;
+  progress.pose = "";
+  progress.reason = std::string("galeria_no_disponible");
+  const Payload parsed = deserialize_or_fail(topics::kVisionEnrollment, serialize_json(progress));
+  const auto* back = std::get_if<EnrollmentProgress>(&parsed);
+  CHECK(back != nullptr);
+  CHECK_EQ(back->reason.value(), std::string("galeria_no_disponible"));
+}
+
 TEST(enrolamiento_rechaza_una_pose_fuera_del_contrato) {
   nj::json doc = serialize_json(sample_enrollment());
   doc["pose"] = "arriba_2";
