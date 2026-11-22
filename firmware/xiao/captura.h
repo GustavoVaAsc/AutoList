@@ -106,12 +106,17 @@ constexpr uint16_t kPuertoHttp = 80;
 // antes de leerlo. Es la salida si un ts absurdo lo dejó fuera de alcance (la
 // pulsación de BOOT al arrancar, o CAPTURA_BORRAR_PISO_TS en secrets.h).
 //
+// `imagenGirada` (CAMARA_GIRADA_180 de secrets.h): gira la imagen 180 grados en
+// el sensor, para la placa montada al revés; el servicio de visión recibe la
+// foto derecha. Se aplica en cada arranque en frío de la cámara.
+//
 // Al arrancar también valida el cifrado de la respuesta (autodiagnóstico de
 // AES-256-GCM contra vectores conocidos); si falla, la cámara no arranca.
 //
 // Devuelve true si el servidor arrancó. Si falla (secreto flojo, IP ausente o
 // mal escrita, cifrado, servidor), /capture no responde.
-bool iniciar(const char* secreto, const char* ipPermitida, bool borrarPisoTs = false);
+bool iniciar(const char* secreto, const char* ipPermitida, bool borrarPisoTs = false,
+             bool imagenGirada = false);
 
 // Última temperatura leída del chip (°C), o NaN si aún no hay lectura. La lee
 // quien la necesite (el latido de salud) sin tocar el sensor: solo captura.cpp
