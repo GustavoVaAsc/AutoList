@@ -247,6 +247,28 @@ class TextosGuia(unittest.TestCase):
         g = vistas.texto_guia(con_guia(estado="rechazada", motivo="nuevo_motivo"))
         self.assertTrue(g["mensaje"])
 
+    def test_rechazada_por_pose_o_identidad_tiene_su_texto(self):
+        for motivo, texto in (("pose_incorrecta", "cabeza"), ("inconsistente", "coinciden")):
+            g = vistas.texto_guia(con_guia(estado="rechazada", motivo=motivo))
+            self.assertIn(texto, g["mensaje"])
+            self.assertNotIn("no se pudo tomar", g["mensaje"])
+
+    def test_error_dice_el_motivo_del_ultimo_rechazo_o_el_duplicado(self):
+        # Al agotar los intentos el error lleva el motivo del ultimo rechazo; "duplicado" es nuevo.
+        for motivo in ("duplicado", "galeria_no_disponible", "sin_rostro", "varios_rostros",
+                       "rostro_chico", "borrosa", "giro_excesivo", "fallo_captura",
+                       "pose_incorrecta", "inconsistente"):
+            g = vistas.texto_guia(con_guia(estado="error", motivo=motivo))
+            self.assertTrue(g["mensaje"].startswith("No se pudo registrar: "), motivo)
+            self.assertNotEqual(g["mensaje"], "No se pudo registrar: error", motivo)
+        self.assertIn("ya registrado", vistas.texto_guia(
+            con_guia(estado="error", motivo="duplicado"))["mensaje"])
+        self.assertIn("galería no disponible", vistas.texto_guia(
+            con_guia(estado="error", motivo="galeria_no_disponible"))["mensaje"])
+        # El mismo motivo dice lo mismo como rechazo que como error final.
+        for motivo, texto in vistas.MOTIVOS_RECHAZO.items():
+            self.assertEqual(vistas.MOTIVOS_ERROR[motivo], texto)
+
     def test_desenlaces(self):
         self.assertIn("completa", vistas.texto_guia(
             con_guia(paso=5, estado="completado"))["mensaje"])

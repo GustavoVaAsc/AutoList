@@ -159,8 +159,8 @@ test('leerRegistro: un motivo desconocido pasa tal cual (se traduce con un texto
 
 test('traducirMotivo: traduce cada código del contrato a español claro, sin código ni rayas largas', () => {
   const codigos = [
-    'sin_rostro', 'varios_rostros', 'rostro_chico', 'borrosa', 'giro_excesivo', 'fallo_captura',
-    'ocupado', 'inconsistente', 'npu', 'cuenta_invalida',
+    'sin_rostro', 'varios_rostros', 'rostro_chico', 'borrosa', 'giro_excesivo', 'pose_incorrecta',
+    'fallo_captura', 'ocupado', 'inconsistente', 'npu', 'duplicado', 'galeria_no_disponible', 'cuenta_invalida',
     'vencido', 'no_guardado', 'embedding_invalido', 'desconocido',
   ]
   const vistos = new Set()
