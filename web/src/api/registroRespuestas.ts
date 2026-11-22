@@ -192,7 +192,7 @@ const MOTIVOS: Record<string, string> = {
   pose_incorrecta: 'La cabeza no está en la pose indicada.',
   fallo_captura: 'No se pudo tomar la foto. Intenta de nuevo.',
   ocupado: 'El reconocimiento está ocupado. Espera unos segundos y repite el registro.',
-  inconsistente: 'Las fotos no se parecen entre sí. Repite el registro.',
+  inconsistente: 'La foto no se parece a la de frente: tiene que ser la misma persona en todas las poses.',
   npu: 'No se pudieron procesar las fotos. Repite el registro.',
   duplicado: 'Este rostro ya está registrado con otra cuenta.',
   galeria_no_disponible: 'No se pudo comprobar si el rostro ya está registrado. Intenta de nuevo en unos segundos.',

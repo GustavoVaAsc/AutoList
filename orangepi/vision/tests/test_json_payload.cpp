@@ -297,7 +297,7 @@ TEST(enrolamiento_admite_todos_los_estados_del_contrato) {
   }
 }
 
-// Los motivos de un registro con estado "rechazada" (v0.14: pose_incorrecta es nuevo e
+// Los motivos de un registro con estado "rechazada" (v0.16: pose_incorrecta es nuevo e
 // inconsistente tambien vale con "rechazada", porque la pose no se parece a "frente").
 TEST(enrolamiento_admite_los_motivos_de_pose_y_de_identidad_con_rechazada) {
   for (const std::string_view motivo : {"pose_incorrecta", "giro_excesivo", "varios_rostros",
