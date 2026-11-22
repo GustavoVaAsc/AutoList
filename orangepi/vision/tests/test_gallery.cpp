@@ -63,6 +63,44 @@ TEST(gallery_top1_and_margin_with_several_students) {
   CHECK_NEAR(*match->margin, 0.866 - 0.5, 1e-3);
 }
 
+TEST(gallery_match_excluding_skips_the_given_account) {
+  Gallery gallery;
+  gallery.upsert(kA, std::vector<float>{1.0f, 0.0f});
+  gallery.upsert(kB, std::vector<float>{0.0f, 1.0f});
+  gallery.upsert(kC, std::vector<float>{-1.0f, 0.0f});
+  // El mejor candidato es A, pero A es la cuenta excluida: gana B (0.0) sobre C (-1.0).
+  const auto match = gallery.match_excluding(std::vector<float>{1.0f, 0.0f}, kA);
+  CHECK(match.has_value());
+  CHECK_EQ(match->account, std::string(kB));
+  CHECK_NEAR(match->score, 0.0, 1e-6);
+  CHECK(!match->margin.has_value());
+  // Excluir una cuenta que no esta no cambia el resultado de match().
+  const auto otra = gallery.match_excluding(std::vector<float>{1.0f, 0.0f}, "999999999");
+  CHECK(otra.has_value());
+  CHECK_EQ(otra->account, std::string(kA));
+  CHECK_NEAR(otra->score, 1.0, 1e-6);
+}
+
+TEST(gallery_match_excluding_without_other_accounts_is_nullopt) {
+  Gallery gallery;
+  CHECK(!gallery.match_excluding(std::vector<float>{1.0f, 0.0f}, kA).has_value());  // vacia
+  gallery.upsert(kA, std::vector<float>{1.0f, 0.0f});
+  CHECK(!gallery.match_excluding(std::vector<float>{1.0f, 0.0f}, kA).has_value());  // solo la propia
+}
+
+TEST(gallery_match_excluding_ignores_the_dimension_when_only_the_excluded_account_is_left) {
+  Gallery gallery;
+  gallery.upsert(kA, std::vector<float>{1.0f, 0.0f});  // la unica cuenta, de otra dimension
+  // No hay otra cuenta con la que comparar: no hay nada que decir (y no se lanza).
+  CHECK(!gallery.match_excluding(std::vector<float>{1.0f, 0.0f, 0.0f}, kA).has_value());
+}
+
+TEST(gallery_match_excluding_rejects_a_dimension_mismatch) {
+  Gallery gallery;
+  gallery.upsert(kA, std::vector<float>{1.0f, 0.0f});
+  CHECK_THROWS(gallery.match_excluding(std::vector<float>{1.0f, 0.0f, 0.0f}, kB), EmbeddingError);
+}
+
 TEST(gallery_margin_when_the_best_candidate_comes_last) {
   Gallery gallery;
   gallery.upsert(kB, std::vector<float>{0.0f, 1.0f});

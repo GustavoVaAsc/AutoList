@@ -9,6 +9,7 @@
 #include "minitest.hpp"
 #include "vision/fakes.hpp"
 #include "vision/gallery.hpp"
+#include "vision/gallery_retry.hpp"
 #include "vision/gallery_store.hpp"
 
 namespace {
@@ -277,4 +278,156 @@ TEST(galeria_rechaza_un_json_muy_anidado) {
   CHECK(!store.reload());
   // La galeria en RAM no se toca.
   CHECK_EQ(gallery.size(), std::size_t{1});
+}
+
+// --- loaded_ok: la galeria solo es de fiar tras una recarga correcta ------------------------
+
+TEST(galeria_loaded_ok_es_false_antes_de_la_primera_recarga) {
+  fakes::FakeHttpClient http;
+  Gallery gallery;
+  GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+  CHECK(!store.loaded_ok());
+}
+
+TEST(galeria_loaded_ok_es_true_tras_una_recarga_correcta_aunque_la_galeria_venga_vacia) {
+  fakes::FakeHttpClient http;
+  http.responses.push_back(json_response(R"({"embeddings":[]})"));  // nadie registrado todavia
+  Gallery gallery;
+  GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+  CHECK(store.reload());
+  CHECK_EQ(gallery.size(), std::size_t{0});
+  CHECK(store.loaded_ok());  // vacia pero cargada: es valida
+}
+
+TEST(galeria_loaded_ok_pasa_a_false_con_una_recarga_fallida_y_vuelve_con_la_siguiente_buena) {
+  fakes::FakeHttpClient http;
+  http.responses.push_back(
+      json_response(R"({"embeddings":[{"cuenta":"320068234","embedding":[1,0,0]}]})"));
+  http.responses.push_back(HttpResponse{});  // error de red (status 0)
+  http.responses.push_back(json_response("{no es json"));
+  http.responses.push_back(
+      json_response(R"({"embeddings":[{"cuenta":"320068234","embedding":[1,0,0]}]})"));
+  Gallery gallery;
+  GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+
+  CHECK(store.reload());
+  CHECK(store.loaded_ok());
+  CHECK(!store.reload());       // la red fallo
+  CHECK(!store.loaded_ok());    // la galeria puede estar desfasada
+  CHECK_EQ(gallery.size(), std::size_t{1});  // pero lo que habia no se toca
+  CHECK(!store.reload());       // una respuesta que no se entiende tambien
+  CHECK(!store.loaded_ok());
+  CHECK(store.reload());
+  CHECK(store.loaded_ok());
+}
+
+TEST(galeria_loaded_ok_es_false_si_el_token_no_puede_viajar) {
+  fakes::FakeHttpClient http;
+  Gallery gallery;
+  GalleryStore store(gallery, http, config("http://galeria.lejana/api/galeria"));
+  CHECK(!store.reload());  // http a un host lejano con token: no se manda
+  CHECK(!store.loaded_ok());
+}
+
+// Una fila descartada es un alumno que falta: la asistencia usa lo cargado, pero la galeria no
+// es de fiar para duplicados (loaded_ok false) hasta que se corrija.
+TEST(galeria_con_filas_descartadas_se_carga_pero_loaded_ok_es_false) {
+  const std::string buena = R"({"cuenta":"320068234","embedding":[1,0,0]})";
+  const std::vector<std::string> con_una_descartada = {
+      // cuenta invalida
+      R"({"embeddings":[)" + buena + R"(,{"cuenta":"123","embedding":[0,1,0]}]})",
+      // embedding con un valor que no es numero
+      R"({"embeddings":[)" + buena + R"(,{"cuenta":"320068235","embedding":[0,"x",0]}]})",
+      // dimension minoritaria (la mayoritaria es 3)
+      R"({"embeddings":[)" + buena +
+          R"(,{"cuenta":"320068236","embedding":[0,1,0]},{"cuenta":"320068235","embedding":[1,0]}]})",
+  };
+  for (const std::string& documento : con_una_descartada) {
+    fakes::FakeHttpClient http;
+    http.responses.push_back(json_response(documento));
+    http.responses.push_back(json_response(R"({"embeddings":[)" + buena + "]}"));
+    Gallery gallery;
+    GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+
+    CHECK(store.reload());  // se cargo: la asistencia usa la galeria
+    CHECK(gallery.size() >= std::size_t{1});
+    CHECK(gallery_has(gallery, "320068234", e0()));
+    CHECK(!store.loaded_ok());  // pero falta una fila: el registro queda cerrado
+    CHECK(store.reload());      // la fila corregida: vuelve a ser de fiar
+    CHECK(store.loaded_ok());
+  }
+}
+
+TEST(galeria_un_alumno_pendiente_de_rostro_no_cuenta_como_fila_descartada) {
+  fakes::FakeHttpClient http;
+  http.responses.push_back(json_response(
+      R"({"embeddings":[{"cuenta":"320068234","embedding":[1,0,0]},{"cuenta":"320068235","embedding":null}]})"));
+  Gallery gallery;
+  GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+  CHECK(store.reload());
+  CHECK(store.loaded_ok());
+}
+
+// Una fila cuyo embedding lanza EmbeddingError al cargarse (norma cero o no finita) es una fila
+// descartada: loaded_ok queda en false.
+TEST(galeria_un_embedding_de_ceros_o_no_finito_deja_loaded_ok_en_false) {
+  const std::string buena = R"({"cuenta":"320068234","embedding":[1,0,0]})";
+  for (const std::string mala : {R"({"cuenta":"320068235","embedding":[0,0,0]})",
+                                 R"({"cuenta":"320068235","embedding":[1e39,0,0]})"}) {
+    fakes::FakeHttpClient http;
+    http.responses.push_back(json_response(R"({"embeddings":[)" + buena + "," + mala + "]}"));
+    Gallery gallery;
+    GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+    CHECK(store.reload());
+    CHECK_EQ(gallery.size(), std::size_t{1});  // la buena se uso
+    CHECK(gallery_has(gallery, "320068234", e0()));
+    CHECK(!store.loaded_ok());
+  }
+}
+
+// Si TODAS las filas se descartan no se carga nada: la galeria previa se conserva, la recarga
+// falla y loaded_ok es false.
+TEST(galeria_si_todas_las_filas_se_descartan_loaded_ok_es_false_y_se_conserva_la_previa) {
+  fakes::FakeHttpClient http;
+  http.responses.push_back(
+      json_response(R"({"embeddings":[{"cuenta":"320068234","embedding":[1,0,0]}]})"));
+  http.responses.push_back(json_response(R"({"embeddings":[{"cuenta":"123","embedding":[0,1,0]}]})"));
+  Gallery gallery;
+  GalleryStore store(gallery, http, config("http://127.0.0.1:1880/api/galeria"));
+  CHECK(store.reload());
+  CHECK(store.loaded_ok());
+  CHECK(!store.reload());  // ninguna entrada utilizable
+  CHECK(!store.loaded_ok());
+  CHECK_EQ(gallery.size(), std::size_t{1});
+  CHECK(gallery_has(gallery, "320068234", e0()));
+}
+
+// --- GalleryRetry: la decision del reintento de main.cpp, sin el proceso -------------------
+
+TEST(el_reintento_se_programa_si_la_recarga_fallo_o_cargo_con_filas_descartadas) {
+  using namespace std::chrono_literals;
+  fakes::ManualClock clock;
+  GalleryRetry retry(Millis(30000), 10);
+  CHECK(!retry.due(clock.now()));  // nada programado
+
+  // La recarga fallo, o cargo pero loaded_ok() quedo en false: en los dos casos no es de fiar.
+  CHECK_EQ(retry.record(false, clock.now()).count(), 30000);
+  CHECK(!retry.due(clock.now()));
+  clock.advance(29999ms);
+  CHECK(!retry.due(clock.now()));
+  clock.advance(1ms);
+  CHECK(retry.due(clock.now()));
+
+  // Backoff: 30 s, 60 s, 120 s... con tope de 10x (300 s).
+  CHECK_EQ(retry.record(false, clock.now()).count(), 60000);
+  CHECK_EQ(retry.record(false, clock.now()).count(), 120000);
+  CHECK_EQ(retry.record(false, clock.now()).count(), 240000);
+  CHECK_EQ(retry.record(false, clock.now()).count(), 300000);
+  CHECK_EQ(retry.record(false, clock.now()).count(), 300000);
+
+  // Una galeria de fiar cancela el reintento y reinicia el intervalo (no queda nada programado).
+  CHECK_EQ(retry.record(true, clock.now()).count(), 0);
+  clock.advance(Millis(10'000'000));
+  CHECK(!retry.due(clock.now()));
+  CHECK_EQ(retry.record(false, clock.now()).count(), 30000);
 }

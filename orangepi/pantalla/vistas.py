@@ -74,13 +74,19 @@ MOTIVOS_RECHAZO = {
     "borrosa": "la imagen salió borrosa",
     "giro_excesivo": "gira menos la cabeza",
     "fallo_captura": "falló la captura",
-}
-MOTIVOS_ERROR = {
-    "ocupado": "ya hay un registro",
+    "pose_incorrecta": "pon la cabeza como se pide",
     "inconsistente": "las fotos no coinciden",
+}
+# Un registro que agota los intentos de una pose termina en "error" con el motivo del ULTIMO
+# rechazo (contrato v0.16): esos motivos llevan el mismo texto que cuando son un rechazo.
+MOTIVOS_ERROR = dict(MOTIVOS_RECHAZO)
+MOTIVOS_ERROR.update({
+    "ocupado": "ya hay un registro",
     "npu": "falló el reconocimiento",
     "cuenta_invalida": "cuenta no válida",
-}
+    "duplicado": "rostro ya registrado",
+    "galeria_no_disponible": "galería no disponible",
+})
 
 
 def cargar_fuentes():

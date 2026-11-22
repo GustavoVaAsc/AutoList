@@ -1231,6 +1231,43 @@ test("recorrido: error de la visión a mitad del registro revierte el consentimi
     assert.equal(embedding(flow, mensajeEmbedding()).salida[0], null);
 });
 
+test("recorrido: un error 'duplicado' con parecido_a cierra como cualquier error, revierte el consentimiento y no guarda el embedding", () => {
+    const flow = abrirInscripcion();
+    const r = progreso(flow, mensajeProgreso({ pose: "frente_2", paso: 5, estado: "error", motivo: "duplicado", parecido_a: "320068999" }));
+    assert.deepEqual(r.salida[0], { params: [CUENTA] });
+    assert.equal(r.salida[1], null);
+    const estado = ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload;
+    assert.equal(estado.abierto, false);
+    assert.equal(estado.estado, "error");
+    assert.equal(estado.motivo, "duplicado");
+    // La cuenta parecida no sale por la API (solo la advertencia informativa la lleva).
+    assert.equal(estado.advertencia, null);
+    assert.equal(embedding(flow, mensajeEmbedding()).salida[0], null);
+});
+
+test("recorrido: 'galeria_no_disponible' (rechazo de la orden, paso 0, sin pose) cierra el registro como cualquier error y revierte el consentimiento", () => {
+    const flow = abrirInscripcion();
+    const r = progreso(flow, mensajeProgreso({ paso: 0, pose: "", estado: "error", motivo: "galeria_no_disponible" }));
+    assert.deepEqual(r.salida[0], { params: [CUENTA] });
+    const estado = ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload;
+    assert.equal(estado.abierto, false);
+    assert.equal(estado.estado, "error");
+    assert.equal(estado.motivo, "galeria_no_disponible");
+    assert.equal(embedding(flow, mensajeEmbedding()).salida[0], null);
+});
+
+test("recorrido: al agotarse los intentos el error trae el motivo del ultimo rechazo (no 'npu') y se muestra tal cual", () => {
+    for (const motivo of ["pose_incorrecta", "giro_excesivo", "varios_rostros", "inconsistente", "sin_rostro", "fallo_captura"]) {
+        const flow = abrirInscripcion();
+        progreso(flow, mensajeProgreso({ pose: "izquierda", paso: 2, estado: "rechazada", motivo }));
+        const r = progreso(flow, mensajeProgreso({ pose: "izquierda", paso: 2, estado: "error", motivo }));
+        assert.deepEqual(r.salida[0], { params: [CUENTA] }, motivo);
+        const estado = ejecutar(ID.estado, { req: { method: "GET" } }, { flow }).salida.payload;
+        assert.equal(estado.abierto, false, motivo);
+        assert.equal(estado.motivo, motivo);
+    }
+});
+
 // ------------------------------------------------ vencimiento y arranque
 
 test("vencer: sin registro, cerrado o dentro del plazo no hace nada", () => {

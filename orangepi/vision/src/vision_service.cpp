@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -82,6 +83,132 @@ std::string nombre_pose(std::size_t indice) {
 void avisar_pose_descartada(std::size_t indice, const std::string& motivo) {
   std::cerr << "[vision] pose descartada: " << nombre_pose(indice) << " (motivo: " << motivo
             << ")\n";
+}
+
+// Las medidas de una pose para el diagnostico: lo que el usuario necesita para calibrar los
+// umbrales (yaw y pitch estimados, coseno contra "frente"). Solo lleva lo que se midio.
+std::string texto_medidas(const std::optional<HeadPose>& cabeza,
+                          const std::optional<float>& coseno_frente) {
+  std::ostringstream texto;
+  texto << std::fixed << std::setprecision(1);
+  // `+ 0.0` convierte un -0.0 (de redondear -0.04) en 0.0 para que el log no confunda.
+  const auto un_decimal = [](double grados) { return std::round(grados * 10.0) / 10.0 + 0.0; };
+  if (cabeza) {
+    texto << "yaw " << un_decimal(cabeza->yaw_deg) << ", pitch " << un_decimal(cabeza->pitch_deg)
+          << " grados";
+  } else {
+    texto << "landmarks no utilizables";
+  }
+  if (coseno_frente) texto << std::setprecision(2) << ", coseno con frente " << *coseno_frente;
+  return texto.str();
+}
+
+// Aviso de una pose rechazada por la verificacion del registro (pose, varios rostros o
+// identidad). Por stderr, como avisar_pose_descartada: el contrato MQTT solo lleva el motivo.
+void avisar_pose_rechazada(std::size_t indice, std::string_view motivo,
+                           const std::string& medidas) {
+  std::cerr << "[vision] pose rechazada: " << nombre_pose(indice) << " (motivo: " << motivo << "; "
+            << medidas << ")\n";
+}
+
+// Aviso de una pose aceptada, con las mismas medidas: sin ellas no se pueden calibrar los
+// umbrales por el lado de lo que SI pasa.
+void avisar_pose_aceptada(std::size_t indice, const std::string& medidas) {
+  std::cerr << "[vision] pose aceptada: " << nombre_pose(indice) << " (" << medidas << ")\n";
+}
+
+bool recuadro_finito(const cv::Rect2f& box) {
+  return std::isfinite(box.x) && std::isfinite(box.y) && std::isfinite(box.width) &&
+         std::isfinite(box.height);
+}
+
+// Area de un recuadro de la deteccion; 0 si no es utilizable (no finito o sin tamano).
+float area_de(const cv::Rect2f& box) {
+  if (!recuadro_finito(box)) return 0.0f;
+  return std::max(box.width, 0.0f) * std::max(box.height, 0.0f);
+}
+
+// El rostro principal del registro: el de mayor area (a igual area, el de mayor score) entre
+// los de score >= `min_score`, para que un falso positivo grande y de score bajo no sea el
+// principal; si ninguno llega al minimo, entre todos. Un score no finito vale -infinito. Se
+// recorre con comparaciones estrictas (no con max_element y un comparador) para que un NaN
+// no rompa el orden.
+const FaceDetection& rostro_principal(const std::vector<FaceDetection>& faces, float min_score) {
+  constexpr float kSinScore = -std::numeric_limits<float>::infinity();
+  const auto score_de = [](const FaceDetection& f) { return std::isfinite(f.score) ? f.score : kSinScore; };
+  const bool alguno_suficiente = std::any_of(
+      faces.begin(), faces.end(), [&](const FaceDetection& f) { return score_de(f) >= min_score; });
+  const FaceDetection* principal = nullptr;
+  for (const FaceDetection& face : faces) {
+    if (alguno_suficiente && !(score_de(face) >= min_score)) continue;
+    if (principal == nullptr || area_de(face.bbox) > area_de(principal->bbox) ||
+        (area_de(face.bbox) == area_de(principal->bbox) && score_de(face) > score_de(*principal))) {
+      principal = &face;
+    }
+  }
+  return *principal;  // `faces` no esta vacia: ya se comprobo
+}
+
+// Cuantos de los demas rostros cuentan como "otro rostro" frente al principal: los que no
+// son claramente pequenos (area menor que `min_area_ratio` de la principal) ni de score bajo
+// (menor que `min_score`). Un recuadro o un score no finito no se puede descartar como
+// "chico" o "bajo": cuenta como otro rostro (fallo cerrado).
+int contar_otros_rostros(const std::vector<FaceDetection>& faces, const FaceDetection& principal,
+                         float min_area_ratio, float min_score) {
+  const float area_principal = area_de(principal.bbox);
+  int otros = 0;
+  for (const FaceDetection& face : faces) {
+    if (&face == &principal) continue;
+    const bool score_bajo = std::isfinite(face.score) && face.score < min_score;
+    const bool chico =
+        recuadro_finito(face.bbox) && area_de(face.bbox) < min_area_ratio * area_principal;
+    if (!score_bajo && !chico) ++otros;
+  }
+  return otros;
+}
+
+// El veredicto de la pose del registro como motivo del contrato (vacio si esta en la pose).
+// Sin medida utilizable (landmarks degenerados) no hay pose que dar por buena.
+std::string_view motivo_de_pose(std::size_t indice, const std::optional<HeadPose>& cabeza,
+                                double pitch_de_frente, const PoseLimits& limites) {
+  if (!cabeza) return enrollment_reasons::kWrongPose;
+  switch (verify_pose(nombre_pose(indice), *cabeza, pitch_de_frente, limites)) {
+    case PoseVerdict::Ok:
+      return {};
+    case PoseVerdict::Excessive:
+      return enrollment_reasons::kExcessiveTurn;
+    case PoseVerdict::Incorrect:
+      break;
+  }
+  return enrollment_reasons::kWrongPose;
+}
+
+// Avisa por stderr, al arrancar, de los controles del registro que la configuracion deja
+// apagados o muy debilitados: no son errores (se pueden querer en una prueba), pero no deben
+// pasar desapercibidos en produccion.
+void avisar_controles_debilitados(const ServiceConfig& config) {
+  if (config.min_front_similarity <= 0.0f) {
+    std::cerr << "[vision] AVISO: la identidad de izquierda, derecha y arriba contra frente esta "
+                 "DESACTIVADA (min_similitud_frente <= 0): un cambio de persona entre poses solo "
+                 "lo detecta el descarte final\n";
+  }
+  if (config.min_front_2_similarity <= 0.0f) {
+    std::cerr << "[vision] AVISO: la identidad de frente_2 contra frente esta DESACTIVADA "
+                 "(min_similitud_frente_2 <= 0)\n";
+  }
+  if (config.other_face_min_area_ratio > enrollment_limits::kOtherFaceWeakAreaRatio) {
+    std::cerr << "[vision] AVISO: area_min_otro_rostro (" << config.other_face_min_area_ratio
+              << ") ignora los rostros de hasta ese tamano relativo: varios_rostros casi no se "
+                 "detecta\n";
+  }
+  if (config.other_face_min_score > enrollment_limits::kOtherFaceWeakScore) {
+    std::cerr << "[vision] AVISO: score_min_otro_rostro (" << config.other_face_min_score
+              << ") ignora casi todos los demas rostros: varios_rostros casi no se detecta\n";
+  }
+  if (config.max_identity_rejections > enrollment_limits::kHighIdentityRejections) {
+    std::cerr << "[vision] AVISO: max_rechazos_identidad (" << config.max_identity_rejections
+              << ") es alto: un cambio de persona puede intentarlo muchas veces\n";
+  }
 }
 
 void log_error(const char* context, const std::exception& error) {
@@ -207,6 +334,48 @@ VisionService::VisionService(ServiceDeps deps, ServiceConfig config)
   if (config_.min_pose_similarity < 0.0f || config_.min_pose_similarity > 1.0f) {
     throw std::invalid_argument(
         "ServiceConfig: min_pose_similarity debe estar entre 0 y 1");
+  }
+  // Los umbrales del registro. Se comprueba la forma valida (y se niega) para que un NaN no pase.
+  if (!(config_.min_front_similarity >= 0.0f && config_.min_front_similarity <= 1.0f) ||
+      !(config_.min_front_2_similarity >= config_.min_front_similarity &&
+        config_.min_front_2_similarity <= 1.0f)) {
+    throw std::invalid_argument(
+        "ServiceConfig: la similitud con frente debe cumplir 0 <= min_front_similarity <= "
+        "min_front_2_similarity <= 1");
+  }
+  if (!(config_.other_face_min_area_ratio > 0.0f && config_.other_face_min_area_ratio <= 1.0f) ||
+      !(config_.other_face_min_score >= 0.0f && config_.other_face_min_score <= 1.0f)) {
+    throw std::invalid_argument(
+        "ServiceConfig: other_face_min_area_ratio debe estar en (0, 1] y other_face_min_score "
+        "entre 0 y 1");
+  }
+  // Un control casi apagado no es una configuracion: area_min y score_min muy altos ignoran
+  // casi cualquier otro rostro.
+  if (!(config_.other_face_min_area_ratio <= enrollment_limits::kOtherFaceMaxAreaRatio) ||
+      !(config_.other_face_min_score <= enrollment_limits::kOtherFaceMaxScore)) {
+    throw std::invalid_argument(
+        "ServiceConfig: other_face_min_area_ratio no puede pasar de 0.8 ni other_face_min_score "
+        "de 0.9 (ignorarian casi cualquier otro rostro)");
+  }
+  // El umbral de duplicado esta en (0, min_dudoso_score]: con 0 todo registro chocaria con
+  // cualquier otra cuenta, y por encima de "dudoso" dejaria dos cuentas con el mismo rostro.
+  if (!(config_.min_duplicate_similarity > 0.0f &&
+        config_.min_duplicate_similarity <= config_.min_dudoso_score)) {
+    throw std::invalid_argument(
+        "ServiceConfig: min_duplicate_similarity debe estar en (0, min_dudoso_score]");
+  }
+  if (config_.max_identity_rejections < 1) {
+    throw std::invalid_argument("ServiceConfig: max_identity_rejections debe ser >= 1");
+  }
+  if (const auto problem = check_pose_limits(config_.pose_limits)) {
+    throw std::invalid_argument(std::string("ServiceConfig: limite de pose invalido (") +
+                                problem->key + "): " + problem->message);
+  }
+  avisar_controles_debilitados(config_);
+  if (!deps_.gallery_ready) {
+    std::cerr << "[vision] AVISO: sin gallery_ready: el chequeo de que la galeria este cargada "
+                 "queda ABIERTO (un registro no se rechaza con una galeria sin cargar). Es lo "
+                 "esperado con --dry-run y en pruebas\n";
   }
   // La clave de la respuesta cifrada: se deriva una sola vez, al arrancar.
   if (!config_.capture_hmac_secret.empty()) {
@@ -668,27 +837,53 @@ cv::Mat VisionService::decode_capture(const HttpResponse& response) const {
   }
 }
 
-// Detecta, alinea y calcula el embedding del rostro con mayor score.
-VisionService::FaceOutcome VisionService::analyze(const cv::Mat& frame) {
+// Detecta y elige el rostro (ver FaceSelection). No calcula el embedding.
+VisionService::FaceOutcome VisionService::detect_face(const cv::Mat& frame, FaceSelection selection) {
   FaceOutcome outcome;
   const TimePoint det_start = deps_.clock.now();
   const std::vector<FaceDetection> faces = deps_.detector.detect(frame);
   outcome.det_ms = elapsed_ms(det_start);
+  outcome.faces_detected = static_cast<int>(faces.size());
   if (faces.empty()) {
     outcome.reason = reasons::kNoFace;
     return outcome;
   }
 
-  const FaceDetection& best = *std::max_element(
-      faces.begin(), faces.end(),
-      [](const FaceDetection& a, const FaceDetection& b) { return a.score < b.score; });
+  const FaceDetection& best =
+      selection == FaceSelection::Enrollment
+          ? rostro_principal(faces, config_.other_face_min_score)
+          : *std::max_element(faces.begin(), faces.end(),
+                              [](const FaceDetection& a, const FaceDetection& b) {
+                                return a.score < b.score;
+                              });
   outcome.bbox = best.bbox;
+  if (selection == FaceSelection::Enrollment) {
+    outcome.other_faces = contar_otros_rostros(faces, best, config_.other_face_min_area_ratio,
+                                               config_.other_face_min_score);
+    if (outcome.other_faces > 0) {
+      // Dos personas en la foto: no se sabe cual es la que se registra.
+      outcome.reason = enrollment_reasons::kSeveralFaces;
+      return outcome;
+    }
+  }
+  outcome.landmarks = best.landmarks;
+  return outcome;
+}
+
+// Alinea con los landmarks del rostro elegido y calcula su embedding.
+void VisionService::embed_face(const cv::Mat& frame, FaceOutcome& outcome) {
   const TimePoint emb_start = deps_.clock.now();
-  outcome.embedding = deps_.embedder.embed(align_face(frame, best.landmarks));
+  outcome.embedding = deps_.embedder.embed(align_face(frame, outcome.landmarks));
   outcome.emb_ms = elapsed_ms(emb_start);
   if (outcome.embedding.empty()) {
     throw EmbeddingError("el embedder devolvio un vector vacio");
   }
+}
+
+// El pase de lista: el rostro con mayor score, con su embedding.
+VisionService::FaceOutcome VisionService::analyze(const cv::Mat& frame) {
+  FaceOutcome outcome = detect_face(frame, FaceSelection::BestScore);
+  if (outcome.reason.empty()) embed_face(frame, outcome);
   return outcome;
 }
 
@@ -775,6 +970,15 @@ void VisionService::start_enrollment(const std::string& account,
     publish_refusal(account, reasons::kBusy);
     return;
   }
+  // Sin una galeria de fiar no se puede comprobar al final si el rostro ya esta registrado:
+  // se rechaza la orden antes de hacer posar al alumno (falla cerrado). Una galeria vacia tras
+  // una carga correcta si es valida.
+  if (!gallery_usable()) {
+    std::cerr << "[vision] registro rechazado: la galeria no esta cargada (la ultima recarga "
+                 "fallo): no se podria comprobar si el rostro ya esta registrado\n";
+    publish_refusal(account, enrollment_reasons::kGalleryUnavailable);
+    return;
+  }
   // Sin hora valida el embedding final no se podria publicar: se rechaza la orden antes
   // de encender la luz o de hacer posar al alumno (motivo npu, como el resto de fallos).
   const std::string timestamp = stamp_now();
@@ -806,6 +1010,11 @@ void VisionService::advance_enrollment() {
   publish_progress(e, EnrollmentStatus::Capturing);
   std::string_view reason;
   std::vector<float> embedding;
+  // Lo medido en esta captura, para decidir y para el diagnostico por stderr.
+  std::optional<HeadPose> head;
+  std::optional<float> front_similarity;  // coseno contra la pose "frente" aceptada
+  int faces_detected = 0;
+  int other_faces = 0;
   // La miniatura del rostro: solo sale en el mensaje de esta pose. No se guarda en
   // ningun sitio (ni disco, ni base de datos, ni galeria).
   std::optional<std::string> miniatura;
@@ -818,9 +1027,20 @@ void VisionService::advance_enrollment() {
     if (frame.empty()) {
       reason = enrollment_reasons::kCaptureFailure;
     } else {
-      const FaceOutcome face = analyze(frame);
+      FaceOutcome face = detect_face(frame, FaceSelection::Enrollment);
       reason = face.reason;
-      if (reason.empty()) embedding = l2_normalized(face.embedding);
+      faces_detected = face.faces_detected;
+      other_faces = face.other_faces;
+      if (reason.empty()) {
+        // La pose antes que el embedding: es lo barato (sin NPU) y lo que el alumno puede
+        // corregir al momento.
+        head = estimate_head_pose(face.landmarks, config_.pose_limits.invert_turn);
+        reason = motivo_de_pose(e.step, head, e.front_pitch_deg.value_or(0.0), config_.pose_limits);
+      }
+      if (reason.empty()) {
+        embed_face(frame, face);
+        embedding = l2_normalized(face.embedding);
+      }
       // Sin rostro no hay recorte: el campo "miniatura" no se manda.
       miniatura = encode_thumbnail(frame, face.bbox);
     }
@@ -839,19 +1059,9 @@ void VisionService::advance_enrollment() {
     return;
   }
 
-  if (!reason.empty()) {
-    publish_progress(e, EnrollmentStatus::Rejected, reason, miniatura);
-    if (++e.attempts >= config_.max_attempts_per_pose) {
-      publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kNpu);
-      finish_enrollment();
-    } else {
-      e.due = deps_.clock.now() + config_.pose_delay;
-    }
-    return;
-  }
-
   // Un embedder que cambia de dimension a mitad del registro no se arregla reintentando.
-  if (!e.embeddings.empty() && embedding.size() != e.embeddings.front().size()) {
+  if (reason.empty() && !e.embeddings.empty() &&
+      embedding.size() != e.embeddings.front().size()) {
     std::cerr << "[vision] la pose " << e.step + 1 << " dio un embedding de dimension "
               << embedding.size() << " y las anteriores de " << e.embeddings.front().size() << '\n';
     publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kInconsistent);
@@ -859,6 +1069,63 @@ void VisionService::advance_enrollment() {
     return;
   }
 
+  // Identidad (plan 5.4, paso 5): cada pose despues de "frente" tiene que parecerse a la
+  // pose "frente" aceptada. Si no, puede ser otra persona: la pose se rechaza y se repite
+  // (NO se aborta el registro), y cuenta para los intentos como cualquier rechazo.
+  // `frente_2` es la misma pose que "frente": umbral mas alto. Un coseno no finito vale 0.
+  // Un umbral <= 0 desactiva la comprobacion (incluso con un coseno negativo); el rechazo se
+  // cuenta en todo el registro (max_identity_rejections).
+  if (reason.empty() && !e.embeddings.empty()) {
+    const float similarity = cosine_similarity(embedding, e.embeddings.front());
+    front_similarity = similarity;
+    const float minimum = kEnrollmentPoses[e.step] == "frente_2" ? config_.min_front_2_similarity
+                                                                  : config_.min_front_similarity;
+    if (minimum > 0.0f && !(similarity >= minimum)) {
+      reason = enrollment_reasons::kInconsistent;
+      ++e.identity_rejections;
+    }
+  }
+
+  if (!reason.empty()) {
+    // Diagnostico de los rechazos de la verificacion (el resto de motivos ya se explican solos).
+    if (reason == enrollment_reasons::kWrongPose || reason == enrollment_reasons::kExcessiveTurn ||
+        reason == enrollment_reasons::kInconsistent) {
+      avisar_pose_rechazada(e.step, reason, texto_medidas(head, front_similarity));
+    } else if (reason == enrollment_reasons::kSeveralFaces) {
+      avisar_pose_rechazada(e.step, reason,
+                            std::to_string(other_faces) + " rostros mas, ademas del principal, de " +
+                                std::to_string(faces_detected) + " detectados");
+    }
+    publish_progress(e, EnrollmentStatus::Rejected, reason, miniatura);
+    // Se termina al agotar los intentos de la pose o los rechazos de identidad del registro; el
+    // error lleva el motivo del ultimo rechazo ("npu" es solo de fallos reales del pipeline).
+    const bool attempts_exhausted = ++e.attempts >= config_.max_attempts_per_pose;
+    const bool identity_exhausted = reason == enrollment_reasons::kInconsistent &&
+                                    e.identity_rejections >= config_.max_identity_rejections;
+    if (attempts_exhausted || identity_exhausted) {
+      if (identity_exhausted) {
+        std::cerr << "[vision] registro terminado: " << e.identity_rejections
+                  << " poses rechazadas por identidad (maximo " << config_.max_identity_rejections
+                  << ")\n";
+      }
+      publish_progress(e, EnrollmentStatus::Error, reason);
+      finish_enrollment();
+    } else {
+      e.due = deps_.clock.now() + config_.pose_delay;
+    }
+    return;
+  }
+
+  avisar_pose_aceptada(e.step, texto_medidas(head, front_similarity));
+  if (e.step == 0 && head) {
+    e.front_pitch_deg = head->pitch_deg;
+    if (std::fabs(head->pitch_deg) > config_.pose_limits.max_reference_pitch_deg) {
+      std::cerr << "[vision] AVISO: frente aceptada con un pitch de " << std::fixed
+                << std::setprecision(1) << head->pitch_deg << " grados (referencia maximo "
+                << config_.pose_limits.max_reference_pitch_deg
+                << "): la pose arriba no se podra validar; pon la camara a la altura de la cara\n";
+    }
+  }
   publish_progress(e, EnrollmentStatus::Accepted, std::nullopt, miniatura);
   e.embeddings.push_back(std::move(embedding));
   e.attempts = 0;
@@ -894,8 +1161,29 @@ void VisionService::advance_enrollment() {
     return;
   }
 
-  // Las 5 poses aceptadas: se avisa con "completado" y despues se publica el embedding.
-  publish_progress(e, EnrollmentStatus::Completed);
+  // Las poses laterales se compararon con "frente" al aceptarlas, pero no con "frente_2" (la
+  // segunda toma de la misma pose): un cambio de persona a mitad del registro tendria que
+  // parecerse a las dos. Cada pose lateral superviviente se compara con "frente_2" con el
+  // mismo umbral; un umbral <= 0 desactiva la comprobacion. Si alguna no cumple, el registro
+  // termina como inconsistente. La referencia es la pose frente_2 ACEPTADA (la ultima de
+  // e.embeddings), aunque el descarte final la haya sacado de los supervivientes: se acepto
+  // contra frente y es la segunda toma de la misma pose, asi que sirve de ancla igual.
+  if (config_.min_front_similarity > 0.0f) {
+    const std::size_t last = e.embeddings.size() - 1;  // frente_2
+    for (const std::size_t i : supervivientes) {
+      if (i == 0 || i == last) continue;  // frente y frente_2 no son laterales
+      const float similarity = cosine_similarity(e.embeddings[i], e.embeddings[last]);
+      if (!(similarity >= config_.min_front_similarity)) {
+        std::cerr << "[vision] registro inconsistente: la pose " << nombre_pose(i)
+                  << " no se parece a frente_2 (coseno " << std::fixed << std::setprecision(2)
+                  << similarity << ", minimo " << config_.min_front_similarity << ")\n";
+        publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kInconsistent);
+        finish_enrollment();
+        return;
+      }
+    }
+  }
+
   // Promedio de los embeddings normalizados que sobreviven, normalizado de nuevo.
   std::optional<EmbeddingMessage> message;
   try {
@@ -908,10 +1196,83 @@ void VisionService::advance_enrollment() {
   } catch (const std::exception& error) {
     log_error("no se pudo promediar el embedding", error);
   }
-  if (!message || !try_publish(topics::kVisionEmbedding, *message, "el embedding del registro")) {
+  if (!message) {
+    publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kNpu);
+    finish_enrollment();
+    return;
+  }
+
+  // Duplicados: el rostro final no puede ser el de otra cuenta de la galeria (la propia puede
+  // re-registrarse). Falla cerrado: si la galeria dejo de ser de fiar, o no se puede
+  // consultar, el registro no se completa.
+  const DuplicateCheck duplicate = find_duplicate(e.account, message->embedding);
+  if (duplicate.unavailable) {
+    publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kGalleryUnavailable);
+    finish_enrollment();
+    return;
+  }
+  if (duplicate.account) {
+    publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kDuplicate, std::nullopt,
+                     *duplicate.account);
+    finish_enrollment();
+    return;
+  }
+
+  // Las 5 poses aceptadas: se avisa con "completado" y despues se publica el embedding.
+  publish_progress(e, EnrollmentStatus::Completed);
+  if (!try_publish(topics::kVisionEmbedding, *message, "el embedding del registro")) {
     publish_progress(e, EnrollmentStatus::Error, enrollment_reasons::kNpu);
   }
   finish_enrollment();
+}
+
+// La galeria sirve para comprobar duplicados: la ultima recarga tuvo exito (o no hay forma de
+// saberlo: pruebas y --dry-run).
+bool VisionService::gallery_usable() const {
+  if (!deps_.gallery_ready) return true;
+  try {
+    return deps_.gallery_ready();
+  } catch (...) {
+    return false;  // fallo cerrado
+  }
+}
+
+// La cuenta de la galeria a la que ya pertenece este rostro (coseno >= min_duplicate_similarity,
+// sin contar la cuenta que se registra). No registra la cuenta en el log.
+//
+// Falla cerrado: una galeria que dejo de ser de fiar, o una excepcion al compararla (una
+// dimension distinta de la del embedder, bad_alloc), es `unavailable` y el registro termina con
+// galeria_no_disponible. Se eligio ese motivo y no "npu" porque la causa es la galeria, no el
+// pipeline de vision: el mensaje "fallo la NPU" mandaria a buscar donde no es. Una galeria
+// vacia o sin otras cuentas tras una carga correcta es valida: no hay con quien chocar.
+VisionService::DuplicateCheck VisionService::find_duplicate(const std::string& account,
+                                                            const std::vector<float>& embedding) {
+  DuplicateCheck result;
+  if (!gallery_usable()) {
+    std::cerr << "[vision] registro rechazado: la galeria dejo de estar disponible antes de "
+                 "cerrar el registro\n";
+    result.unavailable = true;
+    return result;
+  }
+  try {
+    const std::optional<GalleryMatch> match = deps_.gallery.match_excluding(embedding, account);
+    if (!match) {
+      std::cerr << "[vision] no hay otras cuentas en la galeria con las que comparar el rostro "
+                   "del registro\n";
+      return result;
+    }
+    if (match->score >= config_.min_duplicate_similarity) {
+      std::cerr << "[vision] registro rechazado: el rostro ya esta registrado con otra cuenta "
+                   "(coseno "
+                << std::fixed << std::setprecision(2) << match->score << " >= "
+                << config_.min_duplicate_similarity << ")\n";
+      result.account = match->account;
+    }
+  } catch (const std::exception& error) {
+    log_error("registro rechazado: no se pudo comprobar si el rostro ya esta registrado", error);
+    result.unavailable = true;
+  }
+  return result;
 }
 
 // Sin cuenta, o con la del registro en curso, cancela; con cualquier otra (distinta o que ni
@@ -955,7 +1316,8 @@ void VisionService::shutdown() {
 // `paso` es 1-based.
 void VisionService::publish_progress(const Enrollment& e, EnrollmentStatus status,
                                      std::optional<std::string_view> reason,
-                                     std::optional<std::string_view> miniatura) {
+                                     std::optional<std::string_view> miniatura,
+                                     std::optional<std::string_view> similar_to) {
   EnrollmentProgress progress;
   progress.timestamp = stamp_now();
   progress.account = e.account;
@@ -964,6 +1326,7 @@ void VisionService::publish_progress(const Enrollment& e, EnrollmentStatus statu
   progress.pose = std::string(kEnrollmentPoses[e.step]);
   progress.status = status;
   if (reason) progress.reason = std::string(*reason);
+  if (similar_to) progress.similar_to = std::string(*similar_to);
   // La miniatura viaja solo con la pose aceptada o rechazada (contrato MQTT): es la
   // foto de lo que la camara vio, y solo se ve mientras el registro esta abierto.
   if (miniatura && (status == EnrollmentStatus::Accepted || status == EnrollmentStatus::Rejected)) {

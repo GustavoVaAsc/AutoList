@@ -71,6 +71,9 @@ int main() {
     face.landmarks[i] = kArcFaceReference[i] * 2.0f + cv::Point2f(200.0f, 100.0f);
   }
   detector.detections = {face};
+  // La cabeza sigue la pose que pide el registro (si no, el servicio rechazaria izquierda,
+  // derecha y arriba por no estar en la pose).
+  fakes::follow_enrollment_pose(detector, bus);
   embedder.outputs = {{0.9f, 0.1f, 0.2f, 0.3f}};
   gallery.upsert("320068234", embedder.outputs.front());
 
@@ -100,6 +103,9 @@ int main() {
   show_new_messages();
 
   std::cout << "enrolar\n";
+  // El embedder falso da el mismo vector siempre: con la cuenta de arriba en la galeria, el
+  // registro cerraria como duplicado. Se quita para recorrer el registro completo.
+  gallery.remove("320068234");
   bus.inject(topics::kVisionCmd, VisionCommand{VisionAction::Enroll, "320068235", std::nullopt});
   while (true) {
     service.poll();

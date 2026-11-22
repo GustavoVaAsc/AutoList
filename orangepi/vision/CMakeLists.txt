@@ -44,6 +44,7 @@ add_library(vision_core STATIC
   src/alignment.cpp
   src/captura_firma.cpp
   src/gallery.cpp
+  src/head_pose.cpp
   src/hmac_sha256.cpp
   src/image_header.cpp
   src/json_payload.cpp
@@ -124,6 +125,7 @@ add_executable(test_core
   tests/test_alignment.cpp
   tests/test_captura_firma.cpp
   tests/test_gallery.cpp
+  tests/test_head_pose.cpp
   tests/test_hmac_sha256.cpp
   tests/test_image_header.cpp
   tests/test_json_payload.cpp

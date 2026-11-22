@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -13,9 +15,11 @@
 
 #include "vision/captura_firma.hpp"
 #include "vision/clock.hpp"
+#include "vision/enrollment_limits.hpp"
 #include "vision/face_detector.hpp"
 #include "vision/face_embedder.hpp"
 #include "vision/gallery.hpp"
+#include "vision/head_pose.hpp"
 #include "vision/http_client.hpp"
 #include "vision/message_bus.hpp"
 #include "vision/reloj_guardia.hpp"
@@ -62,6 +66,51 @@ struct ServiceConfig {
   // registro es inconsistente.
   // PROVISIONAL: se recalibra con LFW (hito del 18 de noviembre, plan, secciones 9 y 12.1).
   float min_pose_similarity = 0.50f;
+  // Verificacion de la pose en el registro (plan 5.4, paso 3): con los 5 landmarks se estima
+  // el giro (yaw) y la inclinacion (pitch) de la cabeza, y la pose que no coincide con la
+  // pedida se rechaza con pose_incorrecta (o giro_excesivo si el giro es exagerado). Los
+  // limites, y el sentido izquierda/derecha, estan en PoseLimits (head_pose.hpp).
+  // PROVISIONAL: se calibra con la ESP32 a partir de los yaw y pitch que se registran por
+  // stderr en cada pose.
+  PoseLimits pose_limits;
+  // Identidad entre poses (plan 5.4, paso 5): cada pose despues de "frente" se compara
+  // (coseno de embeddings normalizados) con el embedding de la pose "frente" aceptada; por
+  // debajo del umbral la pose se rechaza como inconsistente y se repite (cuenta para
+  // max_attempts_per_pose y para max_identity_rejections). Al cerrar, cada pose lateral
+  // superviviente se compara tambien con "frente_2" con el mismo umbral.
+  //
+  // Los dos valores son una HIPOTESIS PROVISIONAL, sin datos de la ESP32. Lo unico medido (3
+  // fotos fijas de ALTA calidad, no de la camara de la placa, docs/RESULTADOS-PRUEBAS.md) es
+  // que dos personas distintas dan menos de 0.1. Que la MISMA persona de perfil de entre 0.3 y
+  // 0.5 contra su frente es una ESTIMACION, sin medir. 0.20 queda entre esos dos valores, asi que
+  // solo filtra un cambio BURDO de persona (no un parecido razonable) y no sustituye al
+  // chequeo de duplicados ni a la presencia del profesor. "frente_2" es la misma pose que
+  // "frente": se espera un coseno mucho mas alto que en perfil, y su umbral es mas alto que el
+  // de las demas poses (no puede ser menor). Un umbral <= 0 desactiva la comprobacion (incluso
+  // con coseno negativo); el servicio avisa por stderr al arrancar.
+  float min_front_similarity = enrollment_limits::kMinFrontSimilarity;
+  float min_front_2_similarity = enrollment_limits::kMinFront2Similarity;
+  // Tope de rechazos por identidad (inconsistente) en TODO el registro, sin reiniciarse por
+  // pose: al llegar a este numero el registro termina con error e inconsistente. Una persona
+  // que cambia de cara repetidas veces no puede seguir intentando indefinidamente (cada pose
+  // tiene sus propios max_attempts_per_pose). >= 1.
+  int max_identity_rejections = enrollment_limits::kMaxIdentityRejections;
+  // Duplicados: al cerrar el registro se busca la media final en la galeria en RAM, sin contar
+  // la cuenta que se registra (que pueda re-registrarse). Si otra cuenta da un coseno >= este
+  // valor, el registro cierra con error y duplicado (parecido_a lleva esa cuenta). Tiene
+  // umbral propio y no puede pasar de min_dudoso_score: con min_recognized_score, una persona
+  // podria tener dos cuentas con parecidos de 0.45 a 0.59 que el pase de lista ya trata como
+  // "dudoso". En (0, min_dudoso_score]. PROVISIONAL.
+  float min_duplicate_similarity = enrollment_limits::kMinDuplicateSimilarity;
+  // Rostros de fondo durante el registro: la principal es la deteccion de mayor area (la
+  // del alumno, la mas cercana a la camara) entre las de score >= other_face_min_score (un
+  // falso positivo grande y de score bajo no es el principal). Las demas se ignoran si son
+  // claramente pequenas (area menor que other_face_min_area_ratio de la principal) o de score
+  // bajo (menor que other_face_min_score); cualquiera que quede cuenta como otro rostro y la
+  // pose se rechaza con varios_rostros. Conservador a proposito: ignorar de mas deja pasar a
+  // alguien cerca de la camara, y el rechazo de mas solo repite la pose. PROVISIONAL.
+  float other_face_min_area_ratio = enrollment_limits::kOtherFaceMinAreaRatio;
+  float other_face_min_score = enrollment_limits::kOtherFaceMinScore;
   // Nombre y version del modelo de reconocimiento; lo publica el servicio en el
   // embedding y en el estado. Provisional hasta que exista el .nb (plan 6.2).
   std::string model_name = "w600k_mbf-uint8-v1";
@@ -69,7 +118,9 @@ struct ServiceConfig {
   // contador regresivo (ESPERA_POSE_MS, web/src/api/registroRespuestas.ts): si cambia uno,
   // cambia el otro.
   Millis pose_delay{5000};
-  int max_attempts_per_pose = 5;  // intentos antes de abortar el registro
+  // Intentos por pose antes de abortar el registro: el error lleva el motivo del ULTIMO
+  // rechazo (pose_incorrecta, varios_rostros, sin_rostro...); "npu" es solo de fallos reales.
+  int max_attempts_per_pose = 5;
   // La foto viene de la red y no es de fiar: se acota antes de decodificarla. Las
   // dimensiones por defecto cubren UXGA (1600x1200) y el OV3660 (2048x1536).
   Millis http_timeout{2000};                // por peticion de foto
@@ -98,6 +149,12 @@ struct ServiceDeps {
   // firma de la captura. nullptr (pruebas, --dry-run): la primera firma no se ancla a nada
   // absoluto y solo se vigila el salto del reloj dentro del proceso.
   AnclasReloj* clock_anchors = nullptr;
+  // Dice si la galeria en RAM es de fiar: la ultima recarga tuvo exito (GalleryStore::
+  // loaded_ok). Sin ella (galeria sin cargar o con la recarga fallida) un registro no puede
+  // saber si el rostro ya pertenece a otra cuenta: se rechaza con galeria_no_disponible (falla
+  // cerrado). Una galeria VACIA tras una carga correcta si es valida. Vacia (pruebas,
+  // --dry-run): no se comprueba nada, la galeria se da por buena.
+  std::function<bool()> gallery_ready = nullptr;
 };
 
 enum class ServiceState { Idle, AttendanceInProgress, Enrolling };
@@ -153,7 +210,19 @@ class VisionService {
     // Recuadro del rostro con mejor score, en pixeles de la foto: lo usa la
     // miniatura. Vacio si no hubo rostro.
     cv::Rect2f bbox;
+    // Los 5 landmarks del rostro elegido (para estimar la pose). Solo con rostro.
+    std::array<cv::Point2f, 5> landmarks{};
+    // Rostros que dio el detector, y cuantos de los demas cuentan como "otro rostro"
+    // (solo en el registro: ver FaceSelection::Enrollment).
+    int faces_detected = 0;
+    int other_faces = 0;
   };
+
+  // Que rostro elegir cuando el detector devuelve varios. En el pase de lista, el de mayor
+  // score. En el registro, el de mayor area (el alumno, el mas cercano a la camara) entre los
+  // de score suficiente, y si queda otro rostro que no sea claramente pequeno o de score bajo
+  // (ServiceConfig::other_face_*), no hay rostro que registrar: reason = varios_rostros.
+  enum class FaceSelection { BestScore, Enrollment };
 
   struct Enrollment {
     std::string account;
@@ -161,6 +230,10 @@ class VisionService {
     std::size_t step = 0;  // indice 0-based de la pose en curso
     int attempts = 0;
     std::vector<std::vector<float>> embeddings;
+    // Pitch (grados) que dio la pose "frente" aceptada: las demas poses miden el cabeceo
+    // contra este (la altura de la camara no cuenta).
+    std::optional<double> front_pitch_deg;
+    int identity_rejections = 0;  // rechazos "inconsistente" de todo el registro
     TimePoint due;  // cuando toca capturar la pose en curso
   };
 
@@ -189,6 +262,12 @@ class VisionService {
   // espera extra permitida para la rafaga.
   cv::Mat capture_frame(Millis& retry_budget, CaptureStats& stats);
   void log_capture_stats(const CaptureStats& stats) const;
+  // Detecta y elige el rostro (landmarks, recuadro y, en el registro, si hay otros), SIN calcular
+  // el embedding: el registro decide primero la pose y solo despues gasta la NPU.
+  FaceOutcome detect_face(const cv::Mat& frame, FaceSelection selection);
+  // Alinea y calcula el embedding del rostro elegido por detect_face.
+  void embed_face(const cv::Mat& frame, FaceOutcome& outcome);
+  // detect_face (mayor score) + embed_face: el pase de lista.
   FaceOutcome analyze(const cv::Mat& frame);
   // Las publicaciones del servicio no lanzan: un fallo del bus se registra y se sigue.
   void publish_light(bool on);
@@ -203,12 +282,20 @@ class VisionService {
                         const std::optional<std::string>& name);
   void advance_enrollment();
   void finish_enrollment();
+  // Resultado de buscar el rostro del registro en la galeria.
+  struct DuplicateCheck {
+    std::optional<std::string> account;  // la cuenta a la que ya pertenece (duplicado)
+    bool unavailable = false;            // la galeria no se pudo consultar (falla cerrado)
+  };
+  bool gallery_usable() const;
+  DuplicateCheck find_duplicate(const std::string& account, const std::vector<float>& embedding);
   void cancel_enrollment(const std::string& account);
   // `miniatura` es el JPEG del rostro en base64 (contrato MQTT): viaja solo con la
   // pose aceptada o rechazada y no se guarda en ningun sitio.
   void publish_progress(const Enrollment& e, EnrollmentStatus status,
                         std::optional<std::string_view> reason = std::nullopt,
-                        std::optional<std::string_view> miniatura = std::nullopt);
+                        std::optional<std::string_view> miniatura = std::nullopt,
+                        std::optional<std::string_view> similar_to = std::nullopt);
   void publish_refusal(const std::string& account, std::string_view reason);
 
   int elapsed_ms(TimePoint since) const;

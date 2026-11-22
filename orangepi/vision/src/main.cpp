@@ -21,6 +21,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -32,6 +33,7 @@
 #include "vision/alignment.hpp"
 #include "vision/fakes.hpp"
 #include "vision/gallery.hpp"
+#include "vision/gallery_retry.hpp"
 #include "vision/gallery_store.hpp"
 #include "vision/httplib_client.hpp"
 #include "vision/mqtt_bus.hpp"
@@ -535,7 +537,10 @@ int main(int argc, char** argv) {
     ServiceConfig service_config = config.to_service_config();
     service_config.capture_hmac_secret = std::move(secreto_captura);
     servicio = std::make_unique<VisionService>(
-        ServiceDeps{bus, http, *detector, *embedder, galeria, reloj, reloj_pared, &anclas_reloj},
+        ServiceDeps{bus, http, *detector, *embedder, galeria, reloj, reloj_pared, &anclas_reloj,
+                    // Sin una galeria cargada el registro falla cerrado. Con --dry-run (dobles
+                    // en memoria, sin servidor de galeria) no se comprueba.
+                    dry_run ? std::function<bool()>() : [&store] { return store.loaded_ok(); }},
         std::move(service_config));
   } catch (const std::exception& error) {
     std::cerr << "[vision] no se pudo construir el servicio: " << error.what() << '\n';
@@ -556,6 +561,10 @@ int main(int argc, char** argv) {
   publicar_estado(bus, store, config, true);
   std::cerr << "[vision] servicio en linea (modelo " << config.service.model_name << ")\n";
 
+  // Reintento de la recarga de la galeria (backoff).
+  GalleryRetry reintento_galeria(Millis(config.gallery.retry_ms),
+                                 enrollment_limits::kGalleryRetryMaxFactor);
+
   // --- Bucle -------------------------------------------------------------------
   while (g_salir == 0) {
     // Recarga de la galeria: al arrancar y en cada reconexion al broker.
@@ -574,13 +583,25 @@ int main(int argc, char** argv) {
         publicar_estado(bus, store, config, true);
       }
     }
+    // Mientras la galeria no sea de fiar (la recarga fallo, o cargo pero descarto filas:
+    // GalleryStore::loaded_ok()), el registro esta cerrado: se reintenta con backoff (el
+    // intervalo se duplica en cada intento, con tope) en vez de esperar a la proxima
+    // reconexion al broker o a un alta, que no llega con el registro cerrado.
+    if (!recargar && reintento_galeria.due(reloj.now())) recargar = true;
     if (recargar) {
-      if (!store.reload()) {
-        std::cerr << "[vision] no se pudo cargar la galeria; se reintenta en la proxima "
-                     "reconexion\n";
-      } else {
-        publicar_estado(bus, store, config, true);
+      const bool cargada = store.reload();
+      const Millis espera = reintento_galeria.record(cargada && store.loaded_ok(), reloj.now());
+      if (!cargada) {
+        std::cerr << "[vision] no se pudo cargar la galeria";
+      } else if (espera > Millis::zero()) {
+        std::cerr << "[vision] la galeria se cargo con filas descartadas";
       }
+      if (espera > Millis::zero()) {
+        std::cerr << "; se reintenta en " << espera.count() / 1000
+                  << " s (mientras, el registro esta cerrado)\n";
+      }
+      // La asistencia usa la galeria cargada, aunque el registro siga cerrado.
+      if (cargada) publicar_estado(bus, store, config, true);
     }
     servicio->poll();
     reloj.sleep_for(Millis(config.service.poll_ms));

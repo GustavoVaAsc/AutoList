@@ -23,13 +23,80 @@
   "galeria": {
     "url": "https://127.0.0.1:1880/api/galeria",
     "token_env": "GALERIA_TOKEN",
-    "timeout_ms": 5000
+    "timeout_ms": 5000,
+    // Si la recarga falla, se reintenta a este intervalo (ms, minimo 1000), que se duplica en
+    // cada fallo hasta 10 veces el valor. Mientras no haya una recarga correcta, los registros
+    // se rechazan con galeria_no_disponible (un pase de lista no se ve afectado).
+    "reintento_ms": 30000
   },
   "umbrales": {
     "min_sharpness": 0.0,
     "min_recognized_score": 0.6,
     "min_dudoso_score": 0.45,
-    "min_similitud_pose": 0.5
+    "min_similitud_pose": 0.5,
+
+    // --- Verificacion del registro (5 poses). TODO LO DE ABAJO ES PROVISIONAL y no se ha
+    // --- calibrado con la ESP32: se ajusta con lo que el servicio escribe por stderr en cada
+    // --- pose ("pose aceptada" / "pose rechazada", con yaw, pitch y coseno con frente).
+    // --- Estos controles NO verifican quien es el titular del rostro (eso lo cubre el
+    // --- profesor, con las miniaturas del registro): filtran errores y cambios burdos.
+    //
+    // La pose (giro y cabeceo, en grados APROXIMADOS, estimados con los 5 landmarks). El giro
+    // es positivo hacia la izquierda del alumno con la imagen sin espejo.
+    // frente, frente_2 y arriba: |yaw| maximo. Fuera de esto, pose_incorrecta.
+    "max_yaw_frontal_grados": 15,
+    // izquierda y derecha: giro minimo en el sentido correcto (mayor que el anterior).
+    "min_yaw_lateral_grados": 20,
+    // Con mas de este |yaw| (cualquier pose, menor que 90) la pose sale con giro_excesivo.
+    "max_yaw_grados": 55,
+    // frente: |cabeceo| maximo, ABSOLUTO. La primera pose no tiene referencia, asi que NO
+    // compensa la altura de la camara: el limite es holgado a proposito.
+    "max_pitch_frente_grados": 30,
+    // frente_2: |cabeceo| maximo contra el cabeceo de frente (la misma pose: mas estricto).
+    "max_pitch_frontal_grados": 20,
+    // arriba: cabeceo minimo hacia arriba contra el de frente (al menos 5: el ruido de la
+    // estimacion es de unos 7 grados por foto).
+    "min_pitch_arriba_grados": 8,
+    // El cabeceo de frente solo sirve de referencia para arriba hasta este valor (absoluto): con
+    // una referencia de -25 grados (camara muy alta) una cara neutra pareceria "arriba". Mas
+    // alla, arriba NO se puede validar (pose_incorrecta) y el servicio avisa: poner la camara a
+    // la altura de la cara.
+    "max_pitch_referencia_grados": 15,
+    // Con mas de este |cabeceo| (cualquier pose, menor que 90) la pose sale con giro_excesivo.
+    "max_pitch_grados": 45,
+    // No se sabe si la imagen de la ESP32 llega en espejo: con false, "izquierda" es la
+    // izquierda del alumno con la imagen sin espejo. Poner true si el giro sale al reves.
+    "invertir_giro": false,
+    //
+    // Identidad contra la pose frente (coseno de embeddings normalizados). Por debajo, la
+    // pose se rechaza como inconsistente y se repite (cuenta para los intentos).
+    // HIPOTESIS sin datos de la ESP32. Lo unico medido (3 fotos fijas de ALTA calidad) es que
+    // personas distintas dan menos de 0.1; que la misma persona de perfil de 0.3 a 0.5 contra
+    // frente es una ESTIMACION, sin medir. 0.20 queda entre los dos y solo filtra un cambio
+    // BURDO de persona. Al cerrar, cada pose lateral superviviente tambien se compara con
+    // frente_2 con este mismo umbral.
+    "min_similitud_frente": 0.20,
+    // frente_2 es la misma pose que frente: se espera un coseno mucho mas alto, y el umbral es
+    // mas alto (no puede ser menor que el de arriba). Con 0 en el umbral, esa comprobacion se
+    // desactiva (tambien con coseno negativo) y el servicio avisa por stderr al arrancar.
+    "min_similitud_frente_2": 0.45,
+    // Tope de rechazos por identidad en TODO el registro (sin reiniciarse por pose): al llegar,
+    // el registro termina con error e inconsistente. Minimo 1.
+    "max_rechazos_identidad": 3,
+    //
+    // Duplicados: al cerrar el registro, si la media del rostro se parece a OTRA cuenta de la
+    // galeria con un coseno >= este valor, el registro cierra con error duplicado (y parecido_a
+    // lleva esa cuenta). No puede pasar de min_dudoso_score (en (0, min_dudoso_score]): una misma
+    // persona no puede tener dos cuentas con parecidos que el pase de lista ya trata como dudosos.
+    "min_similitud_duplicado": 0.45,
+    //
+    // Otros rostros en la foto del registro: el principal es el de mayor area entre los de
+    // score suficiente. Los demas se ignoran si su area es menor que esta fraccion de la del
+    // principal (alguien al fondo; hasta 0.8) o si su score es menor que el segundo valor (hasta
+    // 0.9). Cualquier otro rostro: varios_rostros. Valores altos casi anulan el control y el
+    // servicio avisa por stderr.
+    "area_min_otro_rostro": 0.35,
+    "score_min_otro_rostro": 0.5
   },
   "servicio": {
     "poll_ms": 20,

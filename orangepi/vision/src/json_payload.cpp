@@ -505,9 +505,12 @@ ParseResult parse_enrollment(const json& doc) {
   check_optional_vocabulary(payload.reason, "motivo",
                    {enrollment_reasons::kNoFace, enrollment_reasons::kSeveralFaces,
                     enrollment_reasons::kSmallFace, enrollment_reasons::kBlurry,
-                    enrollment_reasons::kExcessiveTurn, enrollment_reasons::kCaptureFailure,
+                    enrollment_reasons::kExcessiveTurn, enrollment_reasons::kWrongPose,
+                    enrollment_reasons::kCaptureFailure,
                     enrollment_reasons::kBusy, enrollment_reasons::kInconsistent,
-                    enrollment_reasons::kNpu, enrollment_reasons::kInvalidAccount}, ctx);
+                    enrollment_reasons::kNpu, enrollment_reasons::kDuplicate,
+                    enrollment_reasons::kGalleryUnavailable,
+                    enrollment_reasons::kInvalidAccount}, ctx);
   read_string(doc, "parecido_a", false, false, payload.similar_to, ctx);
   read_string(doc, "miniatura", false, false, payload.thumbnail, ctx);
   check_timestamp(payload.timestamp, "ts", ctx);

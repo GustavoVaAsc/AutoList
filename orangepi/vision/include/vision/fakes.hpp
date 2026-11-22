@@ -4,6 +4,7 @@
 // recorrido en seco de vision_service. No hay adaptadores reales de MQTT/HTTP.
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -17,11 +18,13 @@
 #include <utility>
 #include <vector>
 
+#include "vision/alignment.hpp"
 #include "vision/clock.hpp"
 #include "vision/face_detector.hpp"
 #include "vision/face_embedder.hpp"
 #include "vision/http_client.hpp"
 #include "vision/message_bus.hpp"
+#include "vision/mqtt_contract.hpp"
 #include "vision/reloj_guardia.hpp"
 #include "vision/wall_clock.hpp"
 
@@ -257,14 +260,87 @@ class FakeFaceDetector final : public FaceDetector {
     ++calls;
     last_input = bgr.clone();
     if (on_call) on_call();
-    return detections;
+    std::vector<FaceDetection> out = detections;
+    if (adjust) adjust(out);
+    return out;
   }
 
   std::vector<FaceDetection> detections;
   int calls = 0;
   cv::Mat last_input;
   std::function<void()> on_call;  // puede lanzar para simular un fallo
+  // Cambia lo detectado en cada llamada sin tocar `detections` (p. ej. los landmarks que
+  // corresponden a la pose que el registro esta pidiendo).
+  std::function<void(std::vector<FaceDetection>&)> adjust;
 };
+
+// Landmarks sinteticos de una cabeza en una pose dada, para probar la verificacion de pose.
+//
+// Parte de la cara de frente de ArcFace (kArcFaceReference), le da a la punta de la nariz la
+// profundidad que supone estimate_head_pose (0.5 de la distancia entre los ojos), la gira
+// (primero el cabeceo y luego el giro horizontal) y la proyecta sin perspectiva. Es la misma
+// geometria que asume el estimador: sirve para comprobar signos, escalas y el cableado, no
+// para validar el modelo contra cabezas reales (eso se calibra con la ESP32).
+//
+// yaw_deg > 0: la cabeza gira a la izquierda del alumno (la nariz se corre a la derecha de la
+// imagen). pitch_deg > 0: la cara se levanta. `roll_deg` inclina la cabeza en el plano de la
+// imagen. `scale` y `eye_center` colocan la cara en la foto (el centro de los ojos).
+inline std::array<cv::Point2f, 5> synthetic_landmarks(double yaw_deg, double pitch_deg,
+                                                      double scale = 1.5,
+                                                      cv::Point2f eye_center = {80.0f, 40.0f},
+                                                      double roll_deg = 0.0) {
+  constexpr double kPi = 3.14159265358979323846;
+  const auto& ref = kArcFaceReference;
+  const double d = static_cast<double>(ref[1].x) - ref[0].x;
+  const double ref_cx = (static_cast<double>(ref[0].x) + ref[1].x) / 2.0;
+  const double ref_cy = (static_cast<double>(ref[0].y) + ref[1].y) / 2.0;
+  const double yaw = yaw_deg * kPi / 180.0;
+  const double pitch = pitch_deg * kPi / 180.0;
+  const double roll = roll_deg * kPi / 180.0;
+
+  std::array<cv::Point2f, 5> out;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    const double x = ref[i].x - ref_cx;
+    const double y = ref[i].y - ref_cy;
+    const double z = (i == 2) ? 0.5 * d : 0.0;  // solo la punta de la nariz sobresale
+    // Cabeceo hacia arriba: lo que sobresale sube en la imagen (y crece hacia abajo).
+    const double y_p = y * std::cos(pitch) - z * std::sin(pitch);
+    const double z_p = y * std::sin(pitch) + z * std::cos(pitch);
+    // Giro a la izquierda del alumno: lo que sobresale se corre a la derecha de la imagen.
+    const double x_y = x * std::cos(yaw) + z_p * std::sin(yaw);
+    // Roll en el plano de la imagen.
+    const double x_r = x_y * std::cos(roll) - y_p * std::sin(roll);
+    const double y_r = x_y * std::sin(roll) + y_p * std::cos(roll);
+    out[i] = {static_cast<float>(scale * x_r + eye_center.x),
+              static_cast<float>(scale * y_r + eye_center.y)};
+  }
+  return out;
+}
+
+// Hace que el detector devuelva cada rostro con la cabeza en la pose que el registro esta
+// pidiendo (la del ultimo progreso publicado en `bus`): conserva el tamano y la posicion de
+// los landmarks que ya traia (los toma como los de una cara de frente) y solo gira la
+// cabeza. Sin ningun progreso (un pase de lista), no toca nada. El bus debe vivir mas que
+// el detector.
+inline void follow_enrollment_pose(FakeFaceDetector& detector, const FakeMessageBus& bus) {
+  detector.adjust = [&bus](std::vector<FaceDetection>& faces) {
+    const auto progress = bus.published_as<EnrollmentProgress>(topics::kVisionEnrollment);
+    if (progress.empty()) return;
+    const std::string& pose = progress.back().pose;
+    double yaw = 0.0;
+    double pitch = 0.0;
+    if (pose == "izquierda") yaw = 30.0;
+    if (pose == "derecha") yaw = -30.0;
+    if (pose == "arriba") pitch = 25.0;
+    for (FaceDetection& face : faces) {
+      const auto& front = face.landmarks;
+      const double scale = (static_cast<double>(front[1].x) - front[0].x) /
+                           (static_cast<double>(kArcFaceReference[1].x) - kArcFaceReference[0].x);
+      const cv::Point2f eyes((front[0].x + front[1].x) / 2.0f, (front[0].y + front[1].y) / 2.0f);
+      face.landmarks = synthetic_landmarks(yaw, pitch, scale, eyes);
+    }
+  };
+}
 
 // Devuelve outputs[i] en la llamada i y repite el ultimo despues.
 class FakeFaceEmbedder final : public FaceEmbedder {
