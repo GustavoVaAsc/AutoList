@@ -183,6 +183,7 @@ constexpr std::string_view to_wire(VisionMode mode) {
 // aula/vision/resultado
 //   {"ts":"...","modo":"pase","decision":"reconocido","cuenta":"320068234","conf":0.78,
 //    "margen":0.21,"lat_ms":{"cap":180,"det":12,"emb":6,"total":240}}
+// Con modo "pase" y decision "reconocido" lleva ademas "miniatura" (contrato v0.17), efimera.
 struct AttendanceResult {
   // El modo es obligatorio y no tiene valor por omision: un resultado nunca debe salir
   // como "pase" (que cuenta como asistencia) porque alguien se olvido de fijarlo.
@@ -196,6 +197,7 @@ struct AttendanceResult {
   std::optional<std::string> reason;      // "motivo": detalle fino (extension del contrato)
   AttendanceMode mode;                    // "modo": ver to_wire
   LatenciesMs lat_ms;                    // "lat_ms"
+  std::optional<std::string> thumbnail;  // "miniatura": JPEG en base64 (160x120, ~8 KB); solo con reconocido y modo pase
 };
 
 // aula/vision/cmd  {"accion":"enrolar","cuenta":"320068234","nombre":"Ana López"}

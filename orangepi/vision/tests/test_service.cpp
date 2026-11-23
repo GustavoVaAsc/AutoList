@@ -2621,6 +2621,124 @@ TEST(failed_attendance_keeps_its_mode) {
   CHECK_EQ(h.results().at(0).reason.value(), std::string(reasons::kCaptureFailed));
 }
 
+// --- Miniatura del pase de lista (contrato v0.17) -------------------------------------------
+
+// Una rafaga de fotos lisas (la miniatura de una de ruido no siempre cabe en el tope) y un
+// detector con el recuadro del rostro.
+void preparar_pase_con_rostro(Harness& h) {
+  h.detector.detections = {face_con_bbox()};
+  for (int i = 0; i < 3; ++i) h.http.responses.push_back(ok(frame_liso()));
+}
+
+// Tope del contrato: unos 8 KB de JPEG, que en base64 son 10924 caracteres.
+constexpr std::size_t kMaxMiniaturaBase64 = ((8 * 1024 + 2) / 3) * 4;
+
+// El reconocido del pase de lista lleva la miniatura del rostro: la misma que el registro
+// (recorte del rostro con margen, JPEG en base64, dentro del tope). El resto del resultado es
+// el de siempre.
+TEST(el_reconocido_del_pase_lleva_la_miniatura_del_rostro) {
+  Harness h;
+  preparar_pase_con_rostro(h);
+  h.pir();
+  h.service->poll();
+
+  const AttendanceResult result = h.results().at(0);
+  CHECK(result.mode == AttendanceMode::Attendance);
+  CHECK(result.decision == Decision::Recognized);
+  CHECK_EQ(result.account.value(), std::string("320068234"));
+  CHECK_NEAR(result.confidence.value(), 1.0, 1e-6);
+  CHECK(!result.reason.has_value());
+  CHECK(result.thumbnail.has_value());
+  CHECK(!result.thumbnail->empty());
+  CHECK(result.thumbnail->size() <= kMaxMiniaturaBase64);
+  // Va entera en el mensaje que se publica, muy por debajo del tope de documento de la capa JSON.
+  const std::optional<std::string> documento = json::serialize(result);
+  CHECK(documento.has_value());
+  CHECK(documento->size() < json::kMaxDocumentBytes);
+  CHECK(documento->find("\"miniatura\":\"") != std::string::npos);
+}
+
+// Solo el reconocido del pase lleva miniatura: la prueba del registro, el dudoso, el
+// desconocido, la imagen insuficiente y el "sin rostro" la dejan fuera (no son una asistencia).
+TEST(solo_el_reconocido_del_pase_lleva_miniatura) {
+  {
+    Harness h;  // prueba: reconocido, pero en modo "prueba"
+    preparar_pase_con_rostro(h);
+    h.command(VisionAction::Test);
+    h.service->poll();
+    CHECK(h.results().at(0).decision == Decision::Recognized);
+    CHECK(h.results().at(0).mode == AttendanceMode::Test);
+    CHECK(!h.results().at(0).thumbnail.has_value());
+  }
+  {
+    Harness h;  // dudoso
+    preparar_pase_con_rostro(h);
+    h.embedder.outputs = {{0.5f, 0.5f, 0.5f, 0.5f}};
+    h.pir();
+    h.service->poll();
+    CHECK(h.results().at(0).decision == Decision::Doubtful);
+    CHECK(!h.results().at(0).thumbnail.has_value());
+  }
+  {
+    Harness h;  // desconocido
+    preparar_pase_con_rostro(h);
+    h.embedder.outputs = {{0.0f, 0.0f, 1.0f, 0.0f}};
+    h.pir();
+    h.service->poll();
+    CHECK(h.results().at(0).decision == Decision::Unknown);
+    CHECK(!h.results().at(0).thumbnail.has_value());
+  }
+  {
+    Harness h;  // sin rostro
+    preparar_pase_con_rostro(h);
+    h.detector.detections.clear();
+    h.pir();
+    h.service->poll();
+    CHECK(h.results().at(0).decision == Decision::NoFace);
+    CHECK(!h.results().at(0).thumbnail.has_value());
+  }
+  {
+    Harness h;  // sin fotos: captura fallida
+    h.pir();
+    h.service->poll();
+    CHECK(h.results().at(0).decision == Decision::InsufficientImage);
+    CHECK(!h.results().at(0).thumbnail.has_value());
+  }
+}
+
+// Si la miniatura no se puede armar (aqui, un recuadro fuera de la foto), el resultado se
+// publica igual y sin el campo: la asistencia no depende de la foto.
+TEST(un_fallo_al_armar_la_miniatura_no_impide_publicar_el_resultado) {
+  Harness h;
+  preparar_pase_con_rostro(h);
+  FaceDetection fuera = face_in_frame();
+  fuera.bbox = cv::Rect2f(5000.0f, 5000.0f, 80.0f, 80.0f);
+  h.detector.detections = {fuera};
+  h.pir();
+  h.service->poll();
+
+  CHECK_EQ(h.results().size(), std::size_t{1});
+  const AttendanceResult result = h.results().at(0);
+  CHECK(result.decision == Decision::Recognized);
+  CHECK_EQ(result.account.value(), std::string("320068234"));
+  CHECK(!result.thumbnail.has_value());
+  CHECK(h.service->state() == ServiceState::Idle);
+}
+
+// Aunque la foto sea de ruido (el peor caso para el JPEG), la miniatura o cabe en el tope o no
+// va: nunca se manda una que el contrato no admita.
+TEST(la_miniatura_del_pase_respeta_el_tope_con_una_foto_de_ruido) {
+  Harness h;
+  h.detector.detections = {face_con_bbox()};
+  h.queue_frames(3);
+  h.pir();
+  h.service->poll();
+
+  const AttendanceResult result = h.results().at(0);
+  CHECK(result.decision == Decision::Recognized);
+  if (result.thumbnail.has_value()) CHECK(result.thumbnail->size() <= kMaxMiniaturaBase64);
+}
+
 // --- Cola de eventos -----------------------------------------------------------------------
 
 TEST(inbox_flood_beyond_the_cap_is_dropped_with_one_log_line) {

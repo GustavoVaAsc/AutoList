@@ -9,6 +9,8 @@ import {
   elegirSesionActiva,
   ETIQUETA_ESTADO_ASISTENCIA,
   ETIQUETA_MOTIVO_INTENTO,
+  ETIQUETA_SIN_FOTO,
+  fotoDeAlumno,
   leerDetalleSesion,
   leerSesiones,
 } from '../src/api/asistenciaRespuestas.ts'
@@ -185,4 +187,55 @@ test('las etiquetas de presentación cubren todos los estados y motivos, y cada 
   assertTextosDistintos(Object.values(ETIQUETA_ESTADO_ASISTENCIA))
   assert.deepEqual(Object.keys(ETIQUETA_MOTIVO_INTENTO).sort(), ['desconocido', 'duplicado', 'imagen_insuficiente'])
   assertTextosDistintos(Object.values(ETIQUETA_MOTIVO_INTENTO))
+})
+
+// --- La foto de cada alumno (miniatura del pase de lista, solo en memoria de Node-RED) ---
+
+// Un JPEG de mentira en base64: la lectura solo comprueba la forma y el tamaño.
+const FOTO = '/9j/4AAQSkZJRgABAQEASABIAAD/QUJD'
+
+const alumnoAbierta = (extra = {}) => ({
+  cuenta: '999000001',
+  nombre: 'Alba, Ana',
+  estado: 'presente',
+  hora: '2026-11-06T22:24:00.000Z',
+  confianza: 0.94,
+  metodo: 'rostro',
+  ...extra,
+})
+
+const fotosLeidas = (alumnos) => {
+  const r = leerDetalleSesion({ sesion: sesionAbierta, alumnos, intentos: [] })
+  assert.equal(r.ok, true)
+  return r.ok ? r.detalle.alumnos.map((a) => a.foto) : []
+}
+
+test('leerDetalleSesion: la foto es la miniatura en base64 cuando la API la manda', () => {
+  assert.deepEqual(fotosLeidas([alumnoAbierta({ foto: FOTO })]), [FOTO])
+})
+
+test('leerDetalleSesion: sin foto (ausente, null o de una API vieja) queda null y la fila sigue válida', () => {
+  const sinCampo = alumnoAbierta()
+  const conNull = alumnoAbierta({ cuenta: '999000002', foto: null })
+  const pendiente = alumnoAbierta({ cuenta: '999000003', estado: 'pendiente', hora: null, confianza: null, metodo: null, foto: null })
+  assert.deepEqual(fotosLeidas([sinCampo, conNull, pendiente]), [null, null, null])
+})
+
+test('leerDetalleSesion: una foto inválida se ignora (null) sin rechazar la lista', () => {
+  for (const mala of [7, true, {}, [FOTO], '', 'no es base64!', `data:image/jpeg;base64,${FOTO}`, `${FOTO}\n`, '=QUJD', '/9j/' + 'A'.repeat(12285), 'iVBORw0KGgo=', '/9j/QUJ', 'QUJD']) {
+    assert.deepEqual(fotosLeidas([alumnoAbierta({ foto: mala })]), [null], String(mala).slice(0, 20))
+  }
+  // El tope es el de la miniatura del registro (unos 11 KB de base64).
+  assert.deepEqual(fotosLeidas([alumnoAbierta({ foto: `/9j/${'A'.repeat(12284)}` })]), [`/9j/${'A'.repeat(12284)}`])
+  // Solo se acepta un JPEG: base64 válido de otro formato (un PNG empieza con iVBOR) o sin relleno completo, no.
+})
+
+test('fotoDeAlumno: arma la imagen con un texto alternativo, y sin foto devuelve null', () => {
+  const con = fotoDeAlumno({ ...alumnoAbierta(), foto: FOTO })
+  assert.deepEqual(con, { src: `data:image/jpeg;base64,${FOTO}`, alt: 'Foto del registro de Alba, Ana' })
+  assert.equal(fotoDeAlumno({ ...alumnoAbierta(), foto: null }), null)
+})
+
+test('ETIQUETA_SIN_FOTO: lo que oye un lector de pantalla en la celda vacía', () => {
+  assert.equal(ETIQUETA_SIN_FOTO, 'Sin foto')
 })

@@ -134,6 +134,39 @@ TEST(resultado_ida_y_vuelta_conserva_los_campos) {
   CHECK_EQ(result->lat_ms.total.value(), 240);
 }
 
+// Sin miniatura el resultado no cambia: el campo no aparece (ni vacio ni null).
+TEST(resultado_sin_miniatura_no_la_inventa) {
+  const nj::json doc = serialize_json(sample_result());
+  CHECK(!doc.contains("miniatura"));
+  CHECK_EQ(doc.size(), std::size_t{7});
+}
+
+// La miniatura del pase de lista viaja como un string mas del resultado (contrato MQTT
+// v0.17): opcional, y los demas campos no cambian.
+TEST(resultado_con_miniatura_la_publica_y_la_lee) {
+  AttendanceResult result = sample_result();
+  result.thumbnail = "BASE64";
+  const nj::json doc = serialize_json(result);
+  CHECK(doc.contains("miniatura"));
+  CHECK_EQ(doc["miniatura"].get<std::string>(), std::string("BASE64"));
+  CHECK_EQ(doc.size(), std::size_t{8});
+
+  const Payload leida = deserialize_or_fail(topics::kVisionResult, doc);
+  const auto& leido = std::get<AttendanceResult>(leida);
+  CHECK_EQ(leido.thumbnail.value(), std::string("BASE64"));
+  CHECK_EQ(leido.account.value(), std::string("320068234"));
+}
+
+// Una miniatura que no es un string es un tipo equivocado: la conversion falla sin lanzar.
+TEST(resultado_rechaza_una_miniatura_que_no_es_texto) {
+  nj::json doc = serialize_json(sample_result());
+  doc["miniatura"] = 7;
+  const json::ParseResult parsed = json::deserialize(topics::kVisionResult, doc.dump());
+  CHECK(!parsed.ok());
+  CHECK(parsed.error == json::Error::kWrongType);
+  CHECK_EQ(parsed.field, std::string("miniatura"));
+}
+
 TEST(resultado_sin_cuenta_ni_conf_lleva_null) {
   AttendanceResult result(AttendanceMode::Test);
   result.timestamp = kTs;

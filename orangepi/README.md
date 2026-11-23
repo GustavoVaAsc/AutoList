@@ -227,12 +227,12 @@ El healthcheck del compose no usa usuario por esa razón: se conecta sin credenc
 
 Mosquitto descarta en silencio las publicaciones que la ACL deniega: el publicador no recibe error. Para comprobar un permiso, usar un suscriptor autorizado con tiempo límite (`-W`), no el código de salida del publicador. Para ver tráfico:
 
-1. El editor de Node-RED, con un nodo `mqtt in` en `aula/#` y un nodo debug: no necesita otro usuario ni detener nada. Es la opción preferida.
-2. Con `mosquitto_sub` dentro del contenedor y el usuario `nodered`, **solo con Node-RED detenido**, porque usaría el mismo client id. Se excluyen los tópicos con embeddings (datos biométricos) y miniaturas. Escucha 30 s; después se vuelve a levantar Node-RED:
+1. El editor de Node-RED, con un nodo `mqtt in` y un nodo debug: no necesita otro usuario ni detener nada. Es la opción preferida, con dos reglas (v0.17): suscríbelo a **tópicos concretos y nunca a `aula/#`**, y nunca a `aula/vision/resultado`, `aula/vision/enrolamiento` ni `aula/vision/embedding` (traen miniaturas de rostros, cuentas y embeddings, que el debug muestra en la barra lateral y, con `console: true`, escribiría en el log). Si de verdad hace falta ver uno de esos tópicos, pon antes del debug un nodo `change` que quite `payload.miniatura` (y los campos que no necesites) y deja `console: false`.
+2. Con `mosquitto_sub` dentro del contenedor y el usuario `nodered`, **solo con Node-RED detenido**, porque usaría el mismo client id. Se excluyen los tópicos con embeddings (datos biométricos) y miniaturas (`aula/vision/embedding` y `aula/vision/enrolamiento`; el reconocido del pase de lista de `aula/vision/resultado` también las trae desde v0.17, así que con una sesión real no lo leas en claro: usa `-T aula/vision/resultado`; `mqtt_probe` enmascara `miniatura`, pero `mosquitto_sub` no). Escucha 30 s; después se vuelve a levantar Node-RED:
 
    ```bash
    docker compose stop nodered
-   docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u nodered\n-P %s\n" "$MQTT_NODERED_PASSWORD" > "$d/mosquitto_sub"; XDG_CONFIG_HOME="$d" mosquitto_sub -h localhost -t "aula/#" -T aula/vision/embedding -T aula/vision/enrolamiento -v -W 30; rm -rf "$d"'
+   docker compose exec -T mosquitto sh -c 'd=$(mktemp -d /run/mosquitto/xdg.XXXXXX); printf -- "-u nodered\n-P %s\n" "$MQTT_NODERED_PASSWORD" > "$d/mosquitto_sub"; XDG_CONFIG_HOME="$d" mosquitto_sub -h localhost -t "aula/#" -T aula/vision/embedding -T aula/vision/enrolamiento -T aula/vision/resultado -v -W 30; rm -rf "$d"'
    docker compose start nodered
    ```
 
@@ -501,6 +501,10 @@ Las filas viejas de `sesiones` solo las borra un superusuario con aprobación hu
 
 **Pendiente:** un endpoint de descarga (sin fecha; por ahora el reporte se saca del volumen a mano).
 
+### Foto de la asistencia (solo en memoria)
+
+`GET /api/sesiones/:id` (solo lectura; plan, sección 6.7) trae por cada alumno de la lista nominal el campo `foto`: la miniatura del rostro con que se registró su asistencia por el pase de lista (JPEG en base64, como máximo 160×120 y unos 8 KB, **sin** el prefijo `data:`), o `null`. La visión la manda en `aula/vision/resultado` solo con `modo: "pase"` y `decision: "reconocido"` (contrato MQTT v0.17), y Node-RED la guarda **solo en memoria** (contexto global `miniaturas_pase`, nunca la base, archivos, logs ni el CSV) cuando ese resultado acaba de insertar la asistencia (`presente` o `retardo`). Solo la sesión abierta la devuelve, y solo mientras siga en memoria: una sesión cerrada, un alumno sin asistencia por rostro, un Node-RED reiniciado o desplegado y una miniatura inválida dan `null`. Se borra al cerrar la sesión (`terminar`, el `iniciar` que cierra una olvidada o la reconciliación con la base cuando esta dice que no hay sesión abierta y devuelve la última cerrada, sin tocar las fotos de una sesión posterior), al iniciar otra y al arrancar Node-RED (y con un despliegue completo o que reinicie la pestaña `Pase de lista`; un despliegue que no la toque las conserva, a propósito: quitaría las fotos de la clase en curso). Un resultado en vuelo de una sesión ya cerrada no vuelve a guardar fotos. El tope es de 100 miniaturas por sesión (unos 1,2 MB como máximo en memoria): la 101 no se guarda, aunque la asistencia sí. Solo se aceptan JPEG en base64 (largo múltiplo de 4, empiezan con `/9j/`, hasta 12 288 caracteres). Mientras estén en memoria, el administrador del editor las ve en la barra lateral Context (contexto global `miniaturas_pase`) y por la API de administración de Node-RED. Es un cambio de la regla de privacidad: las fotos del pase de lista ahora también pasan por el navegador, efímeras y solo con la sesión abierta. `curl -k -u profesor "https://127.0.0.1:1880/api/sesiones/<id>"` las imprime en claro: no pegues esa salida en un chat ni en un documento.
+
 ### Reiniciar la pantalla
 
 El nodo `inject` "Reiniciar pantalla" de la pestaña `Sesiones` publica `{"reiniciar":1}` en `aula/pantalla/reinicio` (QoS 1, sin retain) cuando se pulsa su botón en el editor de Node-RED. La pantalla sale con código 0 y systemd la levanta (`orangepi-pantalla.service`, `Restart=always`). No hay API para esto.
@@ -662,6 +666,8 @@ No se sirve `/api/galeria` sin la autenticación de la API y `GALERIA_TOKEN`: No
 | MQTT cifrado | No hay listeners TLS en `mosquitto/mosquitto.conf`. No se implementa sin decisión del equipo. |
 
 ### Datos biométricos
+
+Las miniaturas del rostro del registro (v0.7) y del pase de lista (v0.17) son efímeras: la visión las publica en MQTT, Node-RED las guarda solo en memoria (la del registro mientras el registro está abierto; la del pase mientras la sesión está abierta) y pasan por el navegador; no van a la base, a archivos ni a logs, y reiniciar Node-RED las pierde. Nunca se mezclan con el embedding, que no llega al navegador.
 
 Retirar el consentimiento de un alumno borra su embedding de la base al instante (`embedding = NULL`) y de los archivos de datos cuando autovacuum limpia las tuplas muertas de `alumnos` y de su tabla TOAST. Los bytes pueden sobrevivir en el WAL o en espacio libre hasta que se sobrescriban, y cualquier `pg_dump` o copia del volumen `pgdata` los conserva. Borrar por completo la identidad de una persona (`nombre`, `no_cuenta`) es un procedimiento de superusuario, porque `asistencias` referencia su fila.
 

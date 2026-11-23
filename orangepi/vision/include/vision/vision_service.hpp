@@ -247,6 +247,8 @@ class VisionService {
 
   void run_attendance(TimePoint received, AttendanceMode mode);
   AttendanceResult evaluate_attendance(TimePoint start, AttendanceMode mode);
+  // La miniatura del reconocido del pase de lista; nullopt si no se puede armar (no lanza).
+  std::optional<std::string> attendance_thumbnail(const cv::Mat& frame, const cv::Rect2f& face) const;
   std::vector<cv::Mat> capture_burst();
   // Lo que paso con las fotos de una rafaga (o de una pose), para un solo log por rafaga.
   struct CaptureStats {

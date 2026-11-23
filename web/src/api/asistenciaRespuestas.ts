@@ -1,6 +1,7 @@
 // Lógica pura de asistencia por sesión: validar e interpretar las respuestas de
-// GET /api/sesiones y GET /api/sesiones/:id, elegir la sesión mostrada y
-// detectar cambios de estado entre sondeos de una misma sesión abierta.
+// GET /api/sesiones y GET /api/sesiones/:id, elegir la sesión mostrada,
+// detectar cambios de estado entre sondeos de una misma sesión abierta y armar la
+// foto con que se registró cada asistencia.
 // Sin DOM, sin fetch y sin importar nada: `node --test web/pruebas/*.test.js`
 // carga este archivo directo en Node 22.18+ quitando los tipos.
 
@@ -47,6 +48,13 @@ export interface AlumnoSesion {
   hora: string | null
   confianza: number | null
   metodo: MetodoAsistencia | null
+  /**
+   * La miniatura del rostro con que se registró la asistencia (JPEG en base64, sin el
+   * prefijo `data:`), o `null`. Node-RED la tiene solo en memoria y solo con la sesión
+   * abierta: una sesión cerrada, un alumno sin asistencia por rostro o un Node-RED
+   * reiniciado dan `null`. Una API sin el campo también.
+   */
+  foto: string | null
 }
 
 export interface IntentoSesion {
@@ -88,7 +96,16 @@ export const ETIQUETA_MOTIVO_INTENTO: Record<MotivoIntento, string> = {
   imagen_insuficiente: 'Imagen insuficiente',
 }
 
+/** Lo que oye un lector de pantalla en la celda de la foto cuando no hay: la celda vacía no lleva texto a la vista. */
+export const ETIQUETA_SIN_FOTO = 'Sin foto'
+
 const MAX_INT_PG = 2147483647
+
+/** Tope de la miniatura: el contrato dice ~8 KB de JPEG, que en base64 son ~11 KB (el mismo de Registro). */
+const FOTO_MAX = 12288
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+/** Los tres primeros bytes de un JPEG (FF D8 FF) en base64: todo JPEG empieza así. */
+const JPEG_BASE64 = '/9j/'
 
 function objeto(valor: unknown): Record<string, unknown> | null {
   return typeof valor === 'object' && valor !== null && !Array.isArray(valor)
@@ -214,6 +231,18 @@ function esMotivoIntento(valor: unknown): valor is MotivoIntento {
   return valor === 'desconocido' || valor === 'duplicado' || valor === 'imagen_insuficiente'
 }
 
+/**
+ * La foto de un alumno, si es una miniatura (JPEG en base64 con relleno: largo múltiplo de 4 y
+ * empieza con `/9j/`). Lo que no tenga esa forma (ausente, `null`, otro tipo, con prefijo `data:`,
+ * de otro formato o demasiado larga) queda `null`: una foto rara no es motivo para rechazar la
+ * lista nominal.
+ */
+function fotoDe(valor: unknown): string | null {
+  if (typeof valor !== 'string' || valor.length === 0 || valor.length > FOTO_MAX) return null
+  if (valor.length % 4 !== 0 || !valor.startsWith(JPEG_BASE64)) return null
+  return BASE64.test(valor) ? valor : null
+}
+
 function leerAlumnoSesion(valor: unknown): AlumnoSesion | null {
   const o = objeto(valor)
   if (o === null) return null
@@ -237,6 +266,7 @@ function leerAlumnoSesion(valor: unknown): AlumnoSesion | null {
     hora,
     confianza: confianza.valor,
     metodo,
+    foto: fotoDe(o.foto),
   }
 }
 
@@ -255,6 +285,15 @@ function leerIntentoSesion(valor: unknown): IntentoSesion | null {
     motivo,
     confianzaMax: confianzaMax.valor,
   }
+}
+
+/**
+ * La imagen de la celda Foto de un alumno: la miniatura como URL `data:` y su texto
+ * alternativo, o `null` si no hay foto (la celda queda con solo el recuadro vacío).
+ */
+export function fotoDeAlumno(alumno: Pick<AlumnoSesion, 'nombre' | 'foto'>): { src: string; alt: string } | null {
+  if (alumno.foto === null) return null
+  return { src: `data:image/jpeg;base64,${alumno.foto}`, alt: `Foto del registro de ${alumno.nombre}` }
 }
 
 /** Valida el cuerpo JSON de GET /api/sesiones. */

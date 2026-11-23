@@ -1590,6 +1590,36 @@ code {
   color: var(--tinta);
 }
 
+/* La foto con que se registró la asistencia: la miniatura del pase de lista (JPEG de hasta
+   160x120). Node-RED la tiene solo en memoria y solo con la sesión abierta; el resto de las
+   celdas queda vacío. Recuadro de tamaño fijo y proporción 4:3 (la de la miniatura) con o
+   sin foto, para que la tabla no cambie de alto ni de ancho cuando llega una. Sin foto es
+   solo el recuadro, sin texto ni icono: "Sin foto" va solo para el lector de pantalla.
+   `contain` y no `cover`: no se recorta ningún borde del rostro. */
+.foto-asistencia {
+  display: block;
+  box-sizing: border-box;
+  width: 4rem;
+  height: 3rem;
+  border: 1px solid var(--regla);
+  border-radius: var(--r-papel);
+  background: var(--hoja);
+}
+
+img.foto-asistencia {
+  object-fit: contain;
+}
+
+/* En un teléfono el recuadro se achica (sigue fijo y 4:3) para quitarle el menor ancho
+   posible a la cuenta y al nombre; si aun así la tabla no cabe, se desplaza de lado dentro de
+   su región, como el resto de las columnas. */
+@media (max-width: 640px) {
+  .foto-asistencia {
+    width: 2.5rem;
+    height: 1.875rem;
+  }
+}
+
 .tabla__hora-celda {
   white-space: nowrap;
   font-size: var(--t-ui);

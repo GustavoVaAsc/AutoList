@@ -109,6 +109,7 @@ target_link_libraries(camara_falsa PRIVATE PkgConfig::OPENCV PkgConfig::CPPHTTPL
 
 add_executable(mqtt_probe apps/mqtt_probe.cpp)
 target_link_libraries(mqtt_probe PRIVATE PkgConfig::MOSQUITTO Threads::Threads)
+target_include_directories(mqtt_probe PRIVATE include)
 
 add_executable(npu_smoke apps/npu_smoke.cpp)
 target_link_libraries(npu_smoke PRIVATE vision_npu)
@@ -129,6 +130,7 @@ add_executable(test_core
   tests/test_hmac_sha256.cpp
   tests/test_image_header.cpp
   tests/test_json_payload.cpp
+  tests/test_mascara_miniatura.cpp
   tests/test_npu_preprocess.cpp
   tests/test_process_config.cpp
   tests/test_reloj_guardia.cpp

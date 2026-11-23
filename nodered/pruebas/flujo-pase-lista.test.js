@@ -27,7 +27,12 @@ const ID = {
     publicarAsistencia: "a1f0c0de000000bb",
     avisos: "a1f0c0de000000b7",
     catch: "a1f0c0de000000b8",
-    registrarError: "a1f0c0de000000b9"
+    registrarError: "a1f0c0de000000b9",
+    estadoTrasIniciar: "a1f0c0de00000095",
+    estadoTrasTerminar: "a1f0c0de00000097",
+    estadoBase: "a1f0c0de0000009e",
+    alArrancar: "a1f0c0de00000140",
+    borrarMiniaturas: "a1f0c0de00000141"
 };
 const CUENTA = "320068234";
 
@@ -52,19 +57,35 @@ function relojFijo(ms) {
     };
 }
 
-// Ejecuta la función del nodo `id`. Devuelve { salida, avisos, logs }; la salida se copia por JSON
+// Contexto `global` de mentira (una copia por JSON, como un contexto que sí persiste).
+function nuevoGlobal() {
+    const datos = new Map();
+    return {
+        get: (k) => (datos.has(k) ? JSON.parse(datos.get(k)) : undefined),
+        set: (k, v) => {
+            if (v === undefined) {
+                datos.delete(k);
+            } else {
+                datos.set(k, JSON.stringify(v));
+            }
+        },
+        claves: () => [...datos.keys()]
+    };
+}
+
+// Ejecuta la función del nodo `id`. Devuelve { salida, avisos, logs, global }; la salida se copia por JSON
 // (los objetos del contexto vm son de otro realm). Una excepción se propaga. `ahora` (ms) fija
-// Date.now() para probar la ventana de `ts`.
-function ejecutar(id, msg, { ahora } = {}) {
+// Date.now() para probar la ventana de `ts`. `global` es el contexto global que ve la función y `context`, el del propio nodo.
+function ejecutar(id, msg, { ahora, global = nuevoGlobal(), context = nuevoGlobal(), flow = nuevoGlobal() } = {}) {
     const n = nodo(id);
     assert.equal(n.type, "function");
     const avisos = [];
     const logs = [];
     const contexto = vm.createContext({ Buffer, Date: ahora === undefined ? Date : relojFijo(ahora), Math, Number, Object, console });
-    const funcion = new vm.Script("(function (msg, node) {" + n.func + "\n})").runInContext(contexto);
+    const funcion = new vm.Script("(function (msg, node, global, context, flow) {" + n.func + "\n})").runInContext(contexto);
     const nodoFalso = { warn: (t) => avisos.push(String(t)), log: (t) => logs.push(String(t)), error() {} };
-    const salida = funcion(msg, nodoFalso);
-    return { salida: salida === undefined || salida === null ? salida : JSON.parse(JSON.stringify(salida)), avisos, logs };
+    const salida = funcion(msg, nodoFalso, global, context, flow);
+    return { salida: salida === undefined || salida === null ? salida : JSON.parse(JSON.stringify(salida)), avisos, logs, global, context };
 }
 
 const AHORA = Date.parse("2026-11-05T15:30:12.000Z");
@@ -174,7 +195,7 @@ test("un payload vacío se descarta en silencio", () => {
 test("lo que no es texto, es demasiado largo o no es un objeto JSON se descarta", () => {
     assertDescarte(validar({ topic: "t", payload: 12, retain: false }), /no es texto/);
     assertDescarte(validar({ topic: "t", payload: Buffer.from("{}"), retain: false }), /no es texto/);
-    assertDescarte(validar(mensaje("x".repeat(2049))), /payload de 2049 caracteres \(máximo 2048\)/);
+    assertDescarte(validar(mensaje("x".repeat(16385))), /payload de 16385 caracteres \(máximo 16384\)/);
     assertDescarte(validar(mensaje("no es json")), /no es JSON/);
     assertDescarte(validar(mensaje('{"modo":"pase"')), /no es JSON/);
     for (const texto of ["null", "12", '"texto"', "[]", "[1]", "true"]) {
@@ -586,4 +607,347 @@ test("la limpieza de retenidos borra también aula/vision/resultado, y su mensaj
     const vacio = validar({ topic: "aula/vision/resultado", payload: "", retain: false });
     assert.equal(vacio.salida, null);
     assert.deepEqual(vacio.avisos, []);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Miniatura del rostro del pase de lista (contrato MQTT v0.17): efímera, solo en memoria
+// ---------------------------------------------------------------------------------------------
+
+// Un JPEG de mentira en base64 (la función solo comprueba la forma y el tamaño).
+const FOTO = "/9j/4AAQSkZJRgABAQEASABIAAD/" + "QUJD".repeat(500) + "RA==";
+const OTRA_FOTO = "/9j/4AAQSkZJRgAA" + "WFZH".repeat(300) + "AA==";
+const sinFoto = (r) => !JSON.stringify(r).includes("QUJD");
+
+test("la miniatura de un reconocido de modo pase viaja en el mensaje de la salida 1 y en nada más", () => {
+    const r = validar(mensaje(resultado({ miniatura: FOTO })));
+    assert.equal(r.salida[0].miniatura, FOTO);
+    assert.deepEqual(r.salida[0].params, ["reconocido", CUENTA, 0.78], "los parámetros de la sentencia no cambian");
+    assert.equal(r.salida[1], null);
+    assert.deepEqual(r.avisos, []);
+    // Ni la latencia ni los avisos la llevan.
+    assert.ok(sinFoto(r.salida.slice(1)), "solo la salida 1 lleva la miniatura");
+});
+
+test("un mensaje real, de unos 11 KB con la miniatura, y uno con la miniatura en su tope pasan el límite del payload", () => {
+    for (const largo of [10924, 12288]) {
+        const foto = "/9j/" + "A".repeat(largo - 4);
+        const r = validar(mensaje(resultado({ miniatura: foto })));
+        assert.equal(r.salida[0].miniatura, foto, String(largo));
+        assert.deepEqual(r.salida[0].params, ["reconocido", CUENTA, 0.78]);
+        assert.ok(JSON.stringify(resultado({ miniatura: foto })).length < 16384, "el mensaje cabe en MAX_CARACTERES con margen");
+    }
+});
+
+test("la miniatura debe ser un JPEG en base64 con relleno: lo demás se ignora y el resultado sigue", () => {
+    for (const miniatura of ["iVBORw0KGgo=", "/9j/QUJ", "/9j", "QUJD", "AAAA".repeat(10)]) {
+        const r = validar(mensaje(resultado({ miniatura })));
+        assert.deepEqual(r.salida[0].params, ["reconocido", CUENTA, 0.78], miniatura);
+        assert.equal(r.salida[0].miniatura, undefined, miniatura);
+        assert.match(r.avisos[0], /no es el base64 de un JPEG/);
+    }
+    assert.equal(validar(mensaje(resultado({ miniatura: "/9j/QUJD" }))).salida[0].miniatura, "/9j/QUJD");
+});
+
+test("los avisos de miniatura inválida salen a lo más uno cada 10 s y cuentan los suprimidos", () => {
+    const context = nuevoGlobal();
+    const mala = mensaje(resultado({ miniatura: "no es base64!" }));
+    const en = (ms) => ejecutar(ID.validar, mala, { ahora: AHORA + ms, context });
+    const primero = en(0);
+    assert.equal(primero.avisos.length, 1);
+    for (const ms of [1000, 2000, 9999]) {
+        const r = en(ms);
+        assert.deepEqual(r.avisos, [], "dentro de los 10 s no avisa");
+        assert.deepEqual(r.salida[0].params, ["reconocido", CUENTA, 0.78], "el resultado sigue aunque no avise");
+    }
+    // A los 10 s el aviso vuelve, con la cuenta de los suprimidos y sin contenido.
+    const tarde = en(10000);
+    assert.equal(tarde.avisos.length, 1);
+    assert.match(tarde.avisos[0], /\(3 avisos de miniatura suprimidos\)/);
+    assert.doesNotMatch(tarde.avisos[0], /no es base64!/);
+    // El contador empieza de cero.
+    assert.deepEqual(en(10500).avisos, []);
+    // Un reloj que salta hacia atrás no bloquea el aviso.
+    assert.equal(en(5000).avisos.length, 1);
+});
+
+test("la miniatura se ignora, sin copiarla, si el resultado no es un reconocido del pase", () => {
+    for (const extra of [{ decision: "dudoso" }, { decision: "desconocido" }, { decision: "imagen_insuficiente", cuenta: null, conf: null }]) {
+        const r = validar(mensaje(resultado({ ...extra, miniatura: FOTO })));
+        assert.equal(r.salida[0].miniatura, undefined, JSON.stringify(extra));
+        assert.ok(sinFoto(r.salida), "no sale por ninguna salida");
+        assert.deepEqual(r.avisos, [], "ignorarla aquí no es un aviso");
+    }
+    for (const decision of ["sin_rostro", "error"]) {
+        const r = validar(mensaje(resultado({ decision, cuenta: null, conf: null, miniatura: FOTO })));
+        assert.ok(sinFoto(r.salida), decision);
+    }
+    // El modo prueba va a la pestaña Registro: su resultado nunca lleva la foto.
+    const prueba = validar(mensaje(resultado({ modo: "prueba", miniatura: FOTO })));
+    assert.equal(prueba.salida[0], null);
+    assert.ok(sinFoto(prueba.salida), "la prueba no la lleva");
+});
+
+test("una miniatura inválida se ignora con un aviso sin contenido: el resultado sigue su curso", () => {
+    const casos = [
+        [7, /no es un texto/],
+        [["QUJD"], /no es un texto/],
+        ["QUJD".repeat(3100), /caracteres \(máximo 12288\)/],
+        ["no es base64!", /no es el base64 de un JPEG/],
+        ["QUJD\nQUJD", /no es el base64 de un JPEG/],
+        ["data:image/jpeg;base64,QUJD", /no es el base64 de un JPEG/],
+        ["=QUJD", /no es el base64 de un JPEG/],
+        ["", /no es el base64 de un JPEG/],
+        ["iVBORw0KGgo=", /no es el base64 de un JPEG/],
+        ["/9j/QUJ", /no es el base64 de un JPEG/]
+    ];
+    for (const [miniatura, aviso] of casos) {
+        const r = validar(mensaje(resultado({ miniatura })));
+        assert.deepEqual(r.salida[0].params, ["reconocido", CUENTA, 0.78], String(miniatura).slice(0, 20));
+        assert.equal(r.salida[0].miniatura, undefined);
+        assert.equal(r.avisos.length, 1);
+        assert.match(r.avisos[0], aviso);
+        assert.doesNotMatch(r.avisos[0] + JSON.stringify(r.salida), /QUJD|data:image/);
+    }
+    // null equivale a no traerla.
+    const nula = validar(mensaje(resultado({ miniatura: null })));
+    assert.equal(nula.salida[0].miniatura, undefined);
+    assert.deepEqual(nula.avisos, []);
+});
+
+const guardadas = (g) => g.get("miniaturas_pase");
+const conMiniatura = (extra = {}) => ({ miniatura: FOTO, ...extra });
+
+test("un presente o un retardo guarda la miniatura en memoria, con la sesión y la cuenta, y las salidas salen limpias", () => {
+    for (const resultado of ["presente", "retardo"]) {
+        const global = nuevoGlobal();
+        const r = ejecutar(ID.retro,
+            { payload: [filaResultado(resultado)], decision: "reconocido", params: ["reconocido", CUENTA, 0.8], ...conMiniatura() }, { global });
+        assert.deepEqual(guardadas(global), { sesion_id: 23, fotos: { [CUENTA]: FOTO } }, resultado);
+        assert.deepEqual(global.claves(), ["miniaturas_pase"]);
+        assert.ok(sinFoto(r.salida), "ninguna salida lleva la miniatura");
+        assert.ok(sinFoto(r.avisos) && sinFoto(r.logs), "ni el aviso ni el log");
+        assert.deepEqual(r.logs, ["Pase de lista: " + resultado]);
+    }
+});
+
+test("la miniatura de otro alumno de la misma sesión se suma; la de otra sesión empieza de cero", () => {
+    const global = nuevoGlobal();
+    const dar = (cuenta, foto, sesion) => ejecutar(ID.retro, {
+        payload: [filaResultado("presente", { sesion_id: sesion })], decision: "reconocido", params: ["reconocido", cuenta, 0.8], miniatura: foto
+    }, { global });
+    dar(CUENTA, FOTO, 23);
+    dar("320068235", OTRA_FOTO, 23);
+    assert.deepEqual(guardadas(global), { sesion_id: 23, fotos: { [CUENTA]: FOTO, "320068235": OTRA_FOTO } });
+    dar("320068236", FOTO, 24);
+    assert.deepEqual(guardadas(global), { sesion_id: 24, fotos: { "320068236": FOTO } });
+});
+
+test("un resultado rezagado de una sesión anterior no pisa las fotos de la sesión actual", () => {
+    const global = nuevoGlobal();
+    global.set("miniaturas_pase", { sesion_id: 24, fotos: { "320068235": OTRA_FOTO } });
+    ejecutar(ID.retro, {
+        payload: [filaResultado("presente", { sesion_id: 23 })], decision: "reconocido", params: ["reconocido", CUENTA, 0.8], ...conMiniatura()
+    }, { global });
+    assert.deepEqual(guardadas(global), { sesion_id: 24, fotos: { "320068235": OTRA_FOTO } });
+});
+
+test("sin guardar: duplicado, fuera de grupo, desconocido, dudoso, imagen insuficiente y sin sesión abierta", () => {
+    for (const resultado of ["duplicado", "fuera_de_grupo", "desconocido", "dudoso", "imagen_insuficiente"]) {
+        const global = nuevoGlobal();
+        const r = ejecutar(ID.retro, { payload: [filaResultado(resultado)], decision: "reconocido", params: ["reconocido", CUENTA, 0.8], ...conMiniatura() }, { global });
+        assert.deepEqual(global.claves(), [], resultado);
+        assert.ok(sinFoto(r), resultado + ": no sale por ninguna parte");
+        assert.ok(r.salida[0], "la retroalimentación sigue saliendo");
+    }
+    const global = nuevoGlobal();
+    const sinSesion = ejecutar(ID.retro, { payload: [], decision: "reconocido", params: ["reconocido", CUENTA, 0.8], ...conMiniatura() }, { global });
+    assert.deepEqual(global.claves(), []);
+    assert.ok(sinFoto(sinSesion));
+});
+
+test("una miniatura inválida o una cuenta inválida no se guardan y no impiden la retroalimentación ni la asistencia", () => {
+    const malos = [
+        conMiniatura({ miniatura: 7 }), conMiniatura({ miniatura: "no es base64!" }), conMiniatura({ miniatura: "" }),
+        conMiniatura({ miniatura: "A".repeat(12289) }), conMiniatura({ params: ["reconocido", "abc", 0.8] }),
+        conMiniatura({ params: undefined }), {}
+    ];
+    for (const extra of malos) {
+        const global = nuevoGlobal();
+        const r = ejecutar(ID.retro, { payload: [filaResultado("presente")], decision: "reconocido", params: ["reconocido", CUENTA, 0.8], ...extra }, { global });
+        assert.deepEqual(global.claves(), [], JSON.stringify(Object.keys(extra)));
+        assert.deepEqual(JSON.parse(r.salida[0].payload), { servo: "abrir", led: "verde", buzzer: 1 });
+        assert.equal(JSON.parse(r.salida[2].payload).ultimo.estado, "presente");
+    }
+});
+
+test("tope de miniaturas: pasadas 100, las nuevas no se guardan (con aviso) y las ya guardadas se pueden reemplazar", () => {
+    const global = nuevoGlobal();
+    const fotos = {};
+    for (let i = 0; i < 100; i++) {
+        fotos[String(100000000 + i)] = FOTO;
+    }
+    global.set("miniaturas_pase", { sesion_id: 23, fotos });
+    const r = ejecutar(ID.retro, { payload: [filaResultado("presente")], decision: "reconocido", params: ["reconocido", CUENTA, 0.8], ...conMiniatura() }, { global });
+    assert.equal(Object.keys(guardadas(global).fotos).length, 100);
+    assert.equal(guardadas(global).fotos[CUENTA], undefined);
+    assert.equal(r.avisos.length, 1);
+    assert.match(r.avisos[0], /ya hay 100 guardadas/);
+    assert.ok(r.salida[0], "la retroalimentación sigue saliendo");
+    // Una cuenta que ya tiene foto cabe: reemplaza la suya.
+    ejecutar(ID.retro, { payload: [filaResultado("presente")], decision: "reconocido", params: ["reconocido", "100000005", 0.8], miniatura: OTRA_FOTO }, { global });
+    assert.equal(guardadas(global).fotos["100000005"], OTRA_FOTO);
+    assert.equal(Object.keys(guardadas(global).fotos).length, 100);
+});
+
+test("si el contexto falla, la retroalimentación y la asistencia salen igual y el aviso no lleva la foto", () => {
+    const global = { get() { throw new Error("contexto roto " + FOTO); }, set() { throw new Error("contexto roto"); } };
+    const r = ejecutar(ID.retro, { payload: [filaResultado("presente")], decision: "reconocido", params: ["reconocido", CUENTA, 0.8], ...conMiniatura() }, { global });
+    assert.deepEqual(JSON.parse(r.salida[0].payload), { servo: "abrir", led: "verde", buzzer: 1 });
+    assert.ok(r.salida[2]);
+    assert.deepEqual(r.avisos, ["Miniatura no guardada: falló el contexto"]);
+});
+
+test("al arrancar o desplegar se borran las miniaturas: el inject corre una vez y alimenta solo a la función que las borra", () => {
+    const inject = nodo(ID.alArrancar);
+    assert.equal(inject.type, "inject");
+    assert.equal(inject.once, true);
+    assert.equal(inject.repeat, "");
+    assert.equal(inject.crontab, "");
+    assert.deepEqual(inject.wires, [[ID.borrarMiniaturas]]);
+    const global = nuevoGlobal();
+    global.set("miniaturas_pase", { sesion_id: 23, fotos: { [CUENTA]: FOTO } });
+    const r = ejecutar(ID.borrarMiniaturas, { payload: 1 }, { global });
+    assert.equal(r.salida, null);
+    assert.deepEqual(global.claves(), []);
+    assert.ok(sinFoto(r));
+    assert.equal(nodo(ID.borrarMiniaturas).outputs, 0);
+});
+
+test("la miniatura nunca llega a un log: el error del pase no la lleva, y los nodos debug solo muestran el payload", () => {
+    const r = ejecutar(ID.registrarError, {
+        error: { message: "falló la consulta" }, decision: "reconocido", params: ["reconocido", CUENTA, 0.8], miniatura: FOTO
+    });
+    assert.ok(sinFoto(r), "el aviso del error no lleva la foto");
+    // El mensaje con la miniatura recorre la pestaña del pase; la respuesta de la API, la de Asistencia.
+    for (const n of flujos.filter((x) => x.type === "debug" && (x.z === ID.tab || x.z === "a1f0c0de000000c0"))) {
+        assert.ok(n.complete === "payload" || n.complete === undefined, "debug " + n.id + " muestra el mensaje completo");
+    }
+    // La sentencia solo recibe los tres parámetros: la foto no va a la base.
+    assert.doesNotMatch(consulta, /miniatura/);
+    assert.equal(validar(mensaje(resultado({ miniatura: FOTO }))).salida[0].params.length, 3);
+    // Solo `nodered/flows` toca el contexto de las miniaturas, y siempre el almacén en memoria.
+    const usos = flujos.filter((n) => n.type === "function" && /miniaturas_pase/.test(n.func));
+    assert.deepEqual(usos.map((n) => n.id).sort(), [ID.retro, ID.borrarMiniaturas, ID.estadoTrasIniciar, ID.estadoTrasTerminar, ID.estadoBase, "a1f0c0de000000ca"].sort());
+    for (const n of usos) {
+        assert.doesNotMatch(n.func, /persistente/, n.id + " usa el almacén persistente");
+    }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Carrera al cerrar la sesión: un `presente` en vuelo no vuelve a crear el almacén de la sesión cerrada
+// ---------------------------------------------------------------------------------------------
+
+const presenteDe = (sesion, cuenta = CUENTA, foto = FOTO) => ({
+    payload: [filaResultado("presente", { sesion_id: sesion })], decision: "reconocido", params: ["reconocido", cuenta, 0.8], miniatura: foto
+});
+
+test("la foto de una sesión ya cerrada (o anterior) no se guarda; la de una posterior sí", () => {
+    const global = nuevoGlobal();
+    global.set("miniaturas_pase_cerrada", 23);
+    for (const sesion of [22, 23]) {
+        const r = ejecutar(ID.retro, presenteDe(sesion), { global });
+        assert.equal(guardadas(global), undefined, "sesión " + sesion);
+        assert.ok(r.salida[0] && r.salida[2], "la retroalimentación y la asistencia salen igual");
+    }
+    ejecutar(ID.retro, presenteDe(24), { global });
+    assert.deepEqual(guardadas(global), { sesion_id: 24, fotos: { [CUENTA]: FOTO } });
+});
+
+test("terminar borra las fotos y un presente en vuelo de esa sesión llega tarde sin crear un almacén", () => {
+    const global = nuevoGlobal();
+    ejecutar(ID.retro, presenteDe(23), { global });
+    assert.ok(guardadas(global));
+    ejecutar(ID.estadoTrasTerminar, { payload: [{ id: 23 }], fuente: "terminar" }, { global });
+    assert.equal(guardadas(global), undefined);
+    assert.equal(global.get("miniaturas_pase_cerrada"), 23);
+    // El resultado que iba en vuelo llega después del cierre.
+    const tarde = ejecutar(ID.retro, presenteDe(23, "320068235", OTRA_FOTO), { global });
+    assert.equal(guardadas(global), undefined, "no queda un almacén de la sesión cerrada en memoria");
+    assert.ok(tarde.salida[0], "la asistencia y la retroalimentación no se pierden");
+    // La sesión siguiente sí guarda.
+    ejecutar(ID.retro, presenteDe(24), { global });
+    assert.deepEqual(guardadas(global), { sesion_id: 24, fotos: { [CUENTA]: FOTO } });
+});
+
+test("iniciar con una sesión olvidada abierta marca la olvidada como cerrada y borra sus fotos", () => {
+    const global = nuevoGlobal();
+    ejecutar(ID.retro, presenteDe(23), { global });
+    ejecutar(ID.estadoTrasIniciar, {
+        payload: [{ id: 24, materia: "FSE", grupo: "1", inicio: "2026-11-05T15:30:12+00:00", tol_min: 10, cerrada_id: 23, faltantes: 10 }]
+    }, { global });
+    assert.equal(guardadas(global), undefined);
+    assert.equal(global.get("miniaturas_pase_cerrada"), 23);
+    ejecutar(ID.retro, presenteDe(23, "320068235", OTRA_FOTO), { global });
+    assert.equal(guardadas(global), undefined);
+    ejecutar(ID.retro, presenteDe(24), { global });
+    assert.deepEqual(guardadas(global), { sesion_id: 24, fotos: { [CUENTA]: FOTO } });
+});
+
+test("la reconciliación con la base borra las fotos cuando no hay sesión abierta y las conserva con una abierta", () => {
+    const global = nuevoGlobal();
+    ejecutar(ID.retro, presenteDe(23), { global });
+    const abierta = ejecutar(ID.estadoBase, {
+        payload: [{ id: 23, materia: "FSE", grupo: "1", inicio: "2026-11-05T15:30:12+00:00", tol_min: 10, abierta: true, presentes: 1, retardos: 0, faltantes: 9 }]
+    }, { global });
+    assert.ok(abierta.salida[0]);
+    assert.deepEqual(guardadas(global), { sesion_id: 23, fotos: { [CUENTA]: FOTO } }, "con la sesión abierta no se toca");
+    assert.equal(global.get("miniaturas_pase_cerrada"), undefined);
+    // La base dice que la última sesión (23) está cerrada: otro camino la cerró.
+    ejecutar(ID.estadoBase, { payload: [{ id: 23, materia: "FSE", grupo: "1", inicio: "2026-11-05T15:30:12+00:00", tol_min: 10, abierta: false }] }, { global });
+    assert.equal(guardadas(global), undefined);
+    assert.equal(global.get("miniaturas_pase_cerrada"), 23);
+    ejecutar(ID.retro, presenteDe(23, "320068235", OTRA_FOTO), { global });
+    assert.equal(guardadas(global), undefined);
+});
+
+test("una reconciliación que llega tarde no borra las fotos de una sesión posterior a la cerrada que devolvió la base", () => {
+    const global = nuevoGlobal();
+    // La consulta corrió con la sesión 23 como última (cerrada); después se abrió la 24 y ya tiene fotos.
+    global.set("miniaturas_pase", { sesion_id: 24, fotos: { [CUENTA]: FOTO } });
+    ejecutar(ID.estadoBase, { payload: [{ id: 23, materia: "FSE", grupo: "1", inicio: "2026-11-05T15:30:12+00:00", tol_min: 10, abierta: false }] }, { global });
+    assert.deepEqual(guardadas(global), { sesion_id: 24, fotos: { [CUENTA]: FOTO } }, "la sesión 24 no se toca");
+    assert.equal(global.get("miniaturas_pase_cerrada"), 23, "pero sí se recuerda la 23 como cerrada");
+    // Las fotos de la misma sesión cerrada o de una anterior sí se borran.
+    for (const guardada of [23, 22]) {
+        const g = nuevoGlobal();
+        g.set("miniaturas_pase", { sesion_id: guardada, fotos: { [CUENTA]: FOTO } });
+        ejecutar(ID.estadoBase, { payload: [{ id: 23, abierta: false }] }, { global: g });
+        assert.equal(guardadas(g), undefined, "almacén de la sesión " + guardada);
+    }
+});
+
+test("la reconciliación sin ninguna sesión en la base no borra nada: no hay con qué comparar el almacén", () => {
+    const global = nuevoGlobal();
+    global.set("miniaturas_pase", { sesion_id: 1, fotos: { [CUENTA]: FOTO } });
+    ejecutar(ID.estadoBase, { payload: [] }, { global });
+    assert.deepEqual(guardadas(global), { sesion_id: 1, fotos: { [CUENTA]: FOTO } });
+    assert.equal(global.get("miniaturas_pase_cerrada"), undefined);
+});
+
+test("el id de la última sesión cerrada nunca baja", () => {
+    const global = nuevoGlobal();
+    global.set("miniaturas_pase_cerrada", 30);
+    ejecutar(ID.estadoTrasTerminar, { payload: [{ id: 12 }], fuente: "terminar" }, { global });
+    assert.equal(global.get("miniaturas_pase_cerrada"), 30);
+    ejecutar(ID.estadoBase, { payload: [{ id: 12, abierta: false }] }, { global });
+    assert.equal(global.get("miniaturas_pase_cerrada"), 30);
+});
+
+test("la foto que se guarda debe ser un JPEG en base64 con relleno (Node-RED lo comprueba otra vez al guardar)", () => {
+    for (const foto of ["iVBORw0KGgo=", "/9j/QUJ", "QUJD", "/9j"]) {
+        const global = nuevoGlobal();
+        const r = ejecutar(ID.retro, presenteDe(23, CUENTA, foto), { global });
+        assert.equal(guardadas(global), undefined, foto);
+        assert.ok(r.salida[0]);
+    }
 });

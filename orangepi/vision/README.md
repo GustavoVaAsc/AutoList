@@ -589,6 +589,10 @@ Según la sección 2 de `docs/contrato-mqtt.md`:
 
 El QoS y la retención los aplica el propio bus, con las reglas de `find_topic_rule`. La ACL del contrato (sección 6 de `docs/contrato-mqtt.md`) da al usuario `vision` exactamente esos permisos: lee `aula/camara/pir`, `aula/vision/cmd` y `aula/vision/galeria/#`, y escribe `aula/vision/resultado`, `aula/vision/enrolamiento`, `aula/vision/embedding`, `aula/vision/estado` y `aula/actuador/cmd`. Las ACL del broker las escribe el carril del borde, no este servicio.
 
+### Miniatura del reconocido del pase de lista (contrato v0.17)
+
+El `reconocido` de `modo: "pase"` lleva el campo opcional `miniatura` en `aula/vision/resultado`: el mismo recorte del rostro con margen, 160×120 como máximo y ~8 KB de JPEG en base64 que usa el progreso del registro (`encode_thumbnail`, `src/thumbnail.cpp`). Se arma con el rostro elegido de la foto más nítida (`evaluate_attendance`). No va con `prueba` ni con otra decisión; si no se puede armar (el recorte se sale de la foto, no cabe en el tope o OpenCV lanza), el resultado sale igual y sin el campo, y el error se registra sin contenido. La visión no la guarda: Node-RED la mantiene solo en memoria y solo con la sesión abierta. El mensaje pesa unos 11 KB, por debajo del tope de 64 KiB de la capa JSON y del `max_packet_size` del broker; `mqtt_probe` enmascara `miniatura` al imprimir lo que escucha y el eco de `--publicar` (`include/vision/mascara_miniatura.hpp`, con su suite en `tests/test_mascara_miniatura.cpp`) (`"miniatura":"<N caracteres>"`), así que no saca fotos a la terminal; `mosquitto_sub` y un nodo debug sí las mostrarían.
+
 ### Will
 
 Al caer la conexión sin cerrar limpio, el broker publica `{"en_linea": false}` en `aula/vision/estado`, retenido y con QoS 1. Es el LWT que registra `MosquittoOptions` por omisión. El frontend ve así que la visión ya no está en línea.

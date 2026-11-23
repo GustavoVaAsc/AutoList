@@ -1,12 +1,14 @@
 #pragma once
 
 // La miniatura del rostro: un JPEG pequeno del rostro detectado, en base64, que viaja
-// en el campo "miniatura" del progreso del registro (contrato MQTT, seccion 4).
+// en el campo "miniatura" del progreso del registro y del reconocido del pase de lista
+// (contrato MQTT, seccion 4).
 //
-// Es efimera por diseno: la vision la calcula, la publica en el mensaje de la pose y no
-// la guarda en ningun sitio (ni disco, ni base de datos, ni galeria). Del mensaje la
-// toma Node-RED, que solo la mantiene en el contexto del flujo mientras el registro
-// esta abierto, y de ahi sale al navegador. El rostro del alumno no se persiste.
+// Es efimera por diseno: la vision la calcula, la publica en el mensaje (el de la pose o
+// el del reconocido) y no la guarda en ningun sitio (ni disco, ni base de datos, ni
+// galeria). Del mensaje la toma Node-RED, que solo la mantiene en memoria (la del
+// registro mientras el registro esta abierto, la del pase mientras la sesion sigue
+// abierta), y de ahi sale al navegador. El rostro del alumno no se persiste.
 
 #include <cstddef>
 #include <optional>

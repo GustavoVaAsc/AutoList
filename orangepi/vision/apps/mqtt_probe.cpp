@@ -2,6 +2,9 @@
 // llega. Es la herramienta para hacer sonar el broker a mano (en la placa no hay
 // mosquitto_pub).
 //
+// La miniatura de un rostro ("miniatura": JPEG en base64, contrato v0.7 y v0.17) nunca se
+// imprime: es una foto de una persona. Se muestra el tamano: "miniatura":"<N caracteres>".
+//
 // Uso: mqtt_probe [--host H] [--puerto P] [--usuario U] [--clave C | --clave-env N]
 //                 [--publicar <topico> <json>] [--escuchar <topico>] [--segundos N]
 #include <chrono>
@@ -15,6 +18,8 @@
 #include <unistd.h>
 
 #include <mosquitto.h>
+
+#include "vision/mascara_miniatura.hpp"
 
 namespace {
 
@@ -49,7 +54,7 @@ void al_recibir(struct mosquitto*, void* objeto, const struct mosquitto_message*
       (datos == nullptr || mensaje->payloadlen <= 0)
           ? std::string()
           : std::string(datos, static_cast<std::size_t>(mensaje->payloadlen));
-  std::cout << ahora() << ' ' << mensaje->topic << ' ' << cuerpo << std::endl;
+  std::cout << ahora() << ' ' << mensaje->topic << ' ' << vision::enmascarar_miniatura(cuerpo) << std::endl;
   std::lock_guard lock(estado->mutex);
   ++estado->mensajes;
 }
@@ -231,7 +236,8 @@ int main(int argc, char** argv) {
         std::cerr << "el broker no confirmo la publicacion en " << topico_publicar << '\n';
       }
     }
-    std::cerr << "publicado en " << topico_publicar << ": " << cuerpo_publicar << '\n';
+    std::cerr << "publicado en " << topico_publicar << ": "
+              << vision::enmascarar_miniatura(cuerpo_publicar) << '\n';
   }
 
   if (!topico_escuchar.empty()) {

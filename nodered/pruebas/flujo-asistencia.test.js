@@ -37,14 +37,23 @@ function nodo(id) {
     return n;
 }
 
-function ejecutar(id, msg) {
+// Contexto `global` de mentira, con las miniaturas del pase de lista que se le den (una copia por JSON).
+function nuevoGlobal(miniaturas) {
+    const datos = new Map();
+    if (miniaturas !== undefined) {
+        datos.set("miniaturas_pase", JSON.stringify(miniaturas));
+    }
+    return { get: (k) => (datos.has(k) ? JSON.parse(datos.get(k)) : undefined), set() { throw new Error("la API no escribe el contexto"); } };
+}
+
+function ejecutar(id, msg, { global = nuevoGlobal() } = {}) {
     const n = nodo(id);
     assert.equal(n.type, "function");
     const avisos = [];
-    const contexto = vm.createContext({ Buffer, Date, Math, Number, String, JSON, Array, console });
-    const funcion = new vm.Script("(function (msg, node) {" + n.func + "\n})").runInContext(contexto);
+    const contexto = vm.createContext({ Buffer, Date, Math, Number, String, JSON, Array, Object, console });
+    const funcion = new vm.Script("(function (msg, node, global) {" + n.func + "\n})").runInContext(contexto);
     const nodoFalso = { warn: (t) => avisos.push(String(t)), log() {}, error() {} };
-    const salida = funcion(msg, nodoFalso);
+    const salida = funcion(msg, nodoFalso, global);
     if (salida === undefined || salida === null) {
         return { salida, avisos };
     }
@@ -204,6 +213,83 @@ test("detalle: arma sesion, lista nominal e intentos sin filtrar campos extra", 
     assert.equal(salida.payload.alumnos[0].extra, undefined);
     assert.equal(salida.payload.intentos.length, 2);
     assert.equal(salida.payload.intentos[0].secreto, undefined);
+});
+
+// ---------------------------------------------------------------- La foto de cada alumno (miniatura del pase)
+
+// Un JPEG de mentira en base64: la API solo comprueba la forma y el tamaño.
+const FOTO = "/9j/4AAQSkZJRgABAQEASABIAAD/QUJD";
+const filaAbierta = (extra = {}) => ({
+    id: 21,
+    materia: "FSE",
+    grupo: "1",
+    inicio: "2026-11-06T20:06:30.000Z",
+    fin: null,
+    abierta: true,
+    tol_min: 10,
+    alumnos: [
+        { cuenta: "999000001", nombre: "Alba, Ana", estado: "presente", hora: "2026-11-06T20:10:00.000Z", confianza: 0.92, metodo: "rostro" },
+        { cuenta: "999000002", nombre: "Báez, Bruno", estado: "retardo", hora: "2026-11-06T20:20:00.000Z", confianza: 0.88, metodo: "rostro" },
+        { cuenta: "999000003", nombre: "Cruz, Carla", estado: "pendiente", hora: null, confianza: null, metodo: null }
+    ],
+    confianza_min: 0.88,
+    confianza_max: 0.92,
+    confianza_promedio: 0.9,
+    intentos: [],
+    intentos_desconocido: 0,
+    intentos_duplicado: 0,
+    intentos_imagen_insuficiente: 0,
+    ...extra
+});
+const fotosDe = (r) => r.salida.payload.alumnos.map((a) => a.foto);
+
+test("foto: la sesión abierta devuelve la miniatura de quien se registró por rostro y null en el resto", () => {
+    const global = nuevoGlobal({ sesion_id: 21, fotos: { "999000001": FOTO, "999000002": FOTO + "AAAA", "999000003": FOTO } });
+    const r = ejecutar(ID.formatearDetalle, { payload: [filaAbierta()] }, { global });
+    assert.equal(r.salida.statusCode, 200);
+    // El pendiente no es una asistencia: su foto, aunque estuviera en memoria, no sale.
+    assert.deepEqual(fotosDe(r), [FOTO, FOTO + "AAAA", null]);
+    for (const alumno of r.salida.payload.alumnos) {
+        assert.deepEqual(Object.keys(alumno), ["cuenta", "nombre", "estado", "hora", "confianza", "metodo", "foto"]);
+    }
+});
+
+test("foto: sin miniaturas en memoria, o de otra sesión, cada fila lleva null", () => {
+    assert.deepEqual(fotosDe(ejecutar(ID.formatearDetalle, { payload: [filaAbierta()] })), [null, null, null]);
+    const deOtra = nuevoGlobal({ sesion_id: 20, fotos: { "999000001": FOTO } });
+    assert.deepEqual(fotosDe(ejecutar(ID.formatearDetalle, { payload: [filaAbierta()] }, { global: deOtra })), [null, null, null]);
+});
+
+test("foto: una sesión cerrada nunca devuelve miniaturas, aunque sigan en memoria", () => {
+    const global = nuevoGlobal({ sesion_id: 21, fotos: { "999000001": FOTO } });
+    const cerrada = filaAbierta({ abierta: false, fin: "2026-11-06T20:33:06.000Z" });
+    assert.deepEqual(fotosDe(ejecutar(ID.formatearDetalle, { payload: [cerrada] }, { global })), [null, null, null]);
+});
+
+test("foto: lo que no es una miniatura válida en memoria se ignora (null), sin romper la respuesta", () => {
+    const malas = [7, "", "no es base64!", "/9j/" + "A".repeat(12285), null, ["QUJD"], { x: 1 }, "iVBORw0KGgo=", "/9j/QUJ", "QUJD"];
+    for (const mala of malas) {
+        const global = nuevoGlobal({ sesion_id: 21, fotos: { "999000001": mala } });
+        const r = ejecutar(ID.formatearDetalle, { payload: [filaAbierta()] }, { global });
+        assert.equal(r.salida.statusCode, 200);
+        assert.deepEqual(fotosDe(r), [null, null, null], JSON.stringify(mala));
+    }
+    for (const roto of [null, 7, "x", [], { sesion_id: 21 }, { sesion_id: 21, fotos: "x" }, { sesion_id: 21, fotos: null }]) {
+        const global = nuevoGlobal(roto);
+        assert.equal(ejecutar(ID.formatearDetalle, { payload: [filaAbierta()] }, { global }).salida.statusCode, 200);
+    }
+    // Las claves heredadas de Object no se toman por cuentas.
+    const heredadas = nuevoGlobal({ sesion_id: 21, fotos: { constructor: FOTO, __proto__: { "999000001": FOTO } } });
+    assert.deepEqual(fotosDe(ejecutar(ID.formatearDetalle, { payload: [filaAbierta()] }, { global: heredadas })), [null, null, null]);
+});
+
+test("foto: la API solo lee el contexto, y el CSV y la lista de sesiones no llevan fotos", () => {
+    const global = nuevoGlobal({ sesion_id: 21, fotos: { "999000001": FOTO } });
+    // `set` lanza en el contexto de mentira: la función no escribe.
+    ejecutar(ID.formatearDetalle, { payload: [filaAbierta()] }, { global });
+    for (const id of [ID.formatearSesiones, ID.responderCsv, ID.selectDetalle]) {
+        assert.doesNotMatch(nodo(id).func || nodo(id).query, /miniaturas_pase|miniatura|foto/i, id);
+    }
 });
 
 // ---------------------------------------------------------------- GET /api/sesiones/:id/csv

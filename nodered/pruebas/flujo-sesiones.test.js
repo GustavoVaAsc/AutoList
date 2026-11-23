@@ -79,19 +79,19 @@ function relojFijo(ms) {
     };
 }
 
-// Ejecuta la función del nodo `id`. Devuelve { salida, avisos, logs, flow }; la salida se copia
+// Ejecuta la función del nodo `id`. Devuelve { salida, avisos, logs, flow, global }; la salida se copia
 // por JSON (los objetos del contexto vm son de otro realm). Una excepción se propaga.
 // `ahora` (ms) fija Date.now() para probar el límite de iniciar.
-function ejecutar(id, msg, { flow = nuevoFlow(), ahora } = {}) {
+function ejecutar(id, msg, { flow = nuevoFlow(), ahora, global = nuevoFlow() } = {}) {
     const n = nodo(id);
     assert.equal(n.type, "function");
     const avisos = [];
     const logs = [];
     const contexto = vm.createContext({ Buffer, Date: ahora === undefined ? Date : relojFijo(ahora), Math, console });
-    const funcion = new vm.Script("(function (msg, node, flow) {" + n.func + "\n})").runInContext(contexto);
+    const funcion = new vm.Script("(function (msg, node, flow, global) {" + n.func + "\n})").runInContext(contexto);
     const nodoFalso = { warn: (t) => avisos.push(String(t)), log: (t) => logs.push(String(t)), error() {} };
-    const salida = funcion(msg, nodoFalso, flow);
-    return { salida: salida === undefined || salida === null ? salida : JSON.parse(JSON.stringify(salida)), avisos, logs, flow };
+    const salida = funcion(msg, nodoFalso, flow, global);
+    return { salida: salida === undefined || salida === null ? salida : JSON.parse(JSON.stringify(salida)), avisos, logs, flow, global };
 }
 
 const MATERIA = "Fundamentos de Sistemas Embebidos";
@@ -348,6 +348,23 @@ test("el estado publicado cabe en el búfer de 256 bytes de la XIAO con el peor 
     assert.ok(Buffer.byteLength(r.salida[0].payload) + 3 + 2 + 18 + 2 < 256);
 });
 
+// Las miniaturas del pase de lista (contexto global `miniaturas_pase`, solo en memoria) duran lo que la sesión.
+const CON_FOTOS = { sesion_id: 12, fotos: { "320068234": "QUJD" } };
+
+test("iniciar una sesión borra las miniaturas del pase de lista de la anterior", () => {
+    const global = nuevoFlow();
+    global.set("miniaturas_pase", CON_FOTOS);
+    ejecutar(ID.estadoIniciar, { payload: [{ ...FILA_INICIO, id: 13, cerrada_id: 12 }] }, { global });
+    assert.equal(global.get("miniaturas_pase"), undefined);
+});
+
+test("si iniciar falla, las miniaturas de la sesión abierta se conservan", () => {
+    const global = nuevoFlow();
+    global.set("miniaturas_pase", CON_FOTOS);
+    assert.throws(() => ejecutar(ID.estadoIniciar, { payload: [] }, { global }));
+    assert.deepEqual(global.get("miniaturas_pase"), CON_FOTOS);
+});
+
 test("si iniciar cerró una sesión olvidada, pide su reporte", () => {
     const r = ejecutar(ID.estadoIniciar, { payload: [{ ...FILA_INICIO, id: 13, cerrada_id: 12 }] });
     assert.equal(JSON.parse(r.salida[0].payload).id, 13);
@@ -372,6 +389,13 @@ test("terminar con sesión abierta publica inactivo en estado y asistencia y pid
     assert.deepEqual(r.salida[1], { sesion_id: 12 });
     assert.equal(r.salida[2], null);
     assert.deepEqual(JSON.parse(r.salida[3].payload), { activa: false });
+});
+
+test("terminar con sesión abierta borra las miniaturas del pase de lista", () => {
+    const global = nuevoFlow();
+    global.set("miniaturas_pase", CON_FOTOS);
+    ejecutar(ID.estadoTerminar, { payload: [{ id: 12 }], fuente: "terminar" }, { global });
+    assert.equal(global.get("miniaturas_pase"), undefined);
 });
 
 test("terminar sin sesión abierta no cambia nada: sin reporte y republica el estado real", () => {

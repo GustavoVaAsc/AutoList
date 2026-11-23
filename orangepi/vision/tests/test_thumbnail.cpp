@@ -120,6 +120,36 @@ TEST(la_miniatura_es_un_jpeg_base64_de_160x120) {
   CHECK(imagen.rows > 0);
 }
 
+// Node-RED y el frontend exigen a la miniatura (ademas de base64 y del tope) que sea un JPEG
+// (empieza con "/9j/", los tres bytes FF D8 FF en base64) y que su largo sea multiplo de 4
+// (base64 con relleno). encode_thumbnail lo cumple siempre: con fotos lisas, con degradados,
+// con ruido (que baja la calidad) y con rostros chicos, grandes y a medias.
+TEST(la_miniatura_siempre_es_un_jpeg_base64_con_relleno_que_node_red_acepta) {
+  cv::Mat ruido(240, 320, CV_8UC3);
+  cv::RNG rng(11);
+  rng.fill(ruido, cv::RNG::UNIFORM, 0, 256);
+  const std::vector<cv::Mat> fotos = {foto_sintetica(240, 320), foto_sintetica(600, 800),
+                                      foto_sintetica(64, 64), ruido,
+                                      cv::Mat(240, 320, CV_8UC3, cv::Scalar(170, 170, 170))};
+  const std::vector<cv::Rect2f> rostros = {
+      cv::Rect2f(120.0f, 60.0f, 80.0f, 80.0f), cv::Rect2f(10.0f, 10.0f, 30.0f, 50.0f),
+      cv::Rect2f(0.0f, 0.0f, 320.0f, 240.0f), cv::Rect2f(300.0f, 220.0f, 80.0f, 80.0f),
+      cv::Rect2f(100.5f, 50.25f, 77.7f, 91.3f)};
+  int con_miniatura = 0;
+  for (const cv::Mat& foto : fotos) {
+    for (const cv::Rect2f& rostro : rostros) {
+      const std::optional<std::string> miniatura = encode_thumbnail(foto, rostro);
+      if (!miniatura.has_value()) continue;  // sin miniatura es valido; una mala, no
+      ++con_miniatura;
+      CHECK(es_base64(*miniatura));
+      CHECK_EQ(miniatura->size() % 4, std::size_t{0});
+      CHECK_EQ(miniatura->substr(0, 4), std::string("/9j/"));
+      CHECK(miniatura->size() <= 12288);  // el tope de Node-RED y del frontend
+    }
+  }
+  CHECK(con_miniatura > 10);
+}
+
 // El recorte se lleva un margen alrededor del rostro (la frente y la barbilla): la
 // miniatura lleva el rostro y su alrededor, no un recuadro pelado.
 TEST(el_recorte_lleva_margen_alrededor_del_rostro) {

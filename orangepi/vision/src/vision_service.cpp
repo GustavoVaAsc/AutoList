@@ -610,6 +610,11 @@ AttendanceResult VisionService::evaluate_attendance(TimePoint start, AttendanceM
         result.margin = match->margin;  // nullopt si la galeria tiene menos de dos
         if (match->score >= config_.min_recognized_score) {
           result.decision = Decision::Recognized;
+          // Solo el reconocido del pase de lista lleva la miniatura del rostro (contrato
+          // v0.17): la prueba del registro no marca asistencia y no la necesita.
+          if (mode == AttendanceMode::Attendance) {
+            result.thumbnail = attendance_thumbnail(frames[sharpest->index], face.bbox);
+          }
         } else if (match->score >= config_.min_dudoso_score) {
           result.decision = Decision::Doubtful;
         } else {
@@ -632,6 +637,22 @@ AttendanceResult VisionService::evaluate_attendance(TimePoint start, AttendanceM
   }
   result.lat_ms.total = elapsed_ms(start);
   return result;
+}
+
+// La miniatura del reconocido del pase de lista: el mismo recorte del rostro (con margen), en
+// 160x120 y JPEG en base64 dentro del tope, que usa el registro. Es opcional: si no se puede armar
+// (no cabe, el recorte se sale de la foto o OpenCV lanza), el resultado sale igual y sin ella,
+// porque la asistencia no depende de la foto. Nunca se guarda ni se escribe en el log.
+std::optional<std::string> VisionService::attendance_thumbnail(const cv::Mat& frame,
+                                                               const cv::Rect2f& face) const {
+  try {
+    return encode_thumbnail(frame, face);
+  } catch (const std::exception& error) {
+    log_error("no se pudo armar la miniatura del pase de lista", error);
+  } catch (...) {
+    log_unknown_error("no se pudo armar la miniatura del pase de lista");
+  }
+  return std::nullopt;
 }
 
 // Una rafaga de fotos. Antes de empezar se respeta el intervalo minimo desde el inicio de la

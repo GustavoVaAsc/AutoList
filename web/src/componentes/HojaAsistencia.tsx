@@ -5,6 +5,8 @@ import {
   ETIQUETA_ESTADO_ASISTENCIA,
   ETIQUETA_METODO_ASISTENCIA,
   ETIQUETA_MOTIVO_INTENTO,
+  ETIQUETA_SIN_FOTO,
+  fotoDeAlumno,
   type DetalleSesion,
   type ResumenSesion,
 } from '../api/asistenciaRespuestas'
@@ -247,6 +249,7 @@ export function HojaAsistencia({
                   <th scope="col" className="tabla__n" aria-hidden="true">
                     N.º
                   </th>
+                  <th scope="col">Foto</th>
                   <th scope="col">Cuenta</th>
                   <th scope="col" className="tabla__nombre-col">
                     Nombre
@@ -263,6 +266,7 @@ export function HojaAsistencia({
                   const horaTexto = a.hora !== null ? formatearHora(Date.parse(a.hora)) : null
                   const similitudTexto =
                     a.confianza !== null ? formatearConfianza(a.confianza) : null
+                  const foto = fotoDeAlumno(a)
                   return (
                     <tr
                       key={a.cuenta}
@@ -271,6 +275,20 @@ export function HojaAsistencia({
                     >
                       <td className="tabla__n" aria-hidden="true">
                         {posicion + 1}
+                      </td>
+                      <td className="tabla__foto">
+                        {foto !== null ? (
+                          <img
+                            className="foto-asistencia"
+                            src={foto.src}
+                            alt={foto.alt}
+                            decoding="async"
+                          />
+                        ) : (
+                          <span className="foto-asistencia foto-asistencia--vacia">
+                            <span className="solo-lectores">{ETIQUETA_SIN_FOTO}</span>
+                          </span>
+                        )}
                       </td>
                       <th scope="row" className="tabla__cuenta">
                         {a.cuenta}

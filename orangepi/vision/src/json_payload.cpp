@@ -254,6 +254,7 @@ json to_json(const AttendanceResult& result) {
   if (result.margin.has_value()) doc["margen"] = to_json_float(*result.margin);
   doc["lat_ms"] = write_latencies(result.lat_ms);
   if (result.reason.has_value()) doc["motivo"] = *result.reason;
+  if (result.thumbnail.has_value()) doc["miniatura"] = *result.thumbnail;
   return doc;
 }
 
@@ -431,6 +432,7 @@ ParseResult parse_result(const json& doc) {
   read_float(doc, "conf", true, true, payload.confidence, ctx);
   read_float(doc, "margen", false, true, payload.margin, ctx);
   read_string(doc, "motivo", false, false, payload.reason, ctx);
+  read_string(doc, "miniatura", false, false, payload.thumbnail, ctx);
   check_optional_vocabulary(payload.reason, "motivo",
                    {reasons::kCaptureFailed, reasons::kInsufficientImage, reasons::kNoFace,
                     reasons::kUnknown, reasons::kEmptyGallery, reasons::kInternalError,
