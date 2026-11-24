@@ -126,6 +126,11 @@ SemaphoreHandle_t g_candado = nullptr;
 // Lo siguiente solo se modifica con g_candado tomado. Los atómicos además los
 // lee quien no tiene el candado (el latido de salud).
 std::atomic<bool> g_camaraLista{false};
+
+// Si la imagen sale girada 180 grados (la placa va montada al revés). Lo fija
+// iniciar() desde el sketch (CAMARA_GIRADA_180 de secrets.h) antes de que
+// arranque el servidor; después solo se lee.
+bool g_imagenGirada = false;
 std::atomic<uint32_t> g_ultimaActividadMs{0};  // arranque de la cámara o fin de la última captura
 std::atomic<uint32_t> g_ultimaLecturaMs{0};    // última lectura de temperatura
 std::atomic<float> g_temperatura{NAN};
@@ -453,6 +458,32 @@ void fallarCamara(const char* motivo) {
                 (unsigned long)(logica_proteccion::kReposoTrasFalloMs / 1000));
 }
 
+// Deja la foto derecha con la placa montada al revés (el efecto de un giro de
+// 180 grados). El OV3660 de esta placa ya entrega la imagen en espejo
+// horizontal, así que basta voltear en vertical con el espejo horizontal
+// apagado: vflip=1, hmirror=0. Con los dos en 1 la foto salía en espejo
+// (izquierda por derecha). Comprobado en la placa el 22 nov; otro módulo o
+// sensor puede necesitar otra combinación.
+// Son registros del sensor y esp_camera_init los deja a su valor por omisión, así
+// que se fijan en cada arranque en frío (la cámara se apaga entre tramos) y
+// otra vez tras cambiar la resolución, por si el driver no los conserva. Un
+// fallo no tumba nada: la foto saldría al revés. Devuelve true si ambos
+// setters tuvieron éxito. Con g_candado tomado.
+bool girarImagen() {
+  sensor_t* sensor = esp_camera_sensor_get();
+  if (sensor == nullptr) return false;
+  const int errorVflip = sensor->set_vflip(sensor, 1);
+  if (errorVflip != 0) {
+    Serial.printf("[captura] set_vflip(1) devolvió %d: la imagen puede salir de cabeza\n", errorVflip);
+  }
+  const int errorHmirror = sensor->set_hmirror(sensor, 0);
+  if (errorHmirror != 0) {
+    Serial.printf("[captura] set_hmirror(0) devolvió %d: la imagen puede salir en espejo\n",
+                  errorHmirror);
+  }
+  return errorVflip == 0 && errorHmirror == 0;
+}
+
 // Enciende la cámara al máximo permitido (XGA, para dimensionar los búferes) y
 // con un solo búfer en modo bajo demanda. Con g_candado tomado. No arranca
 // ningún flujo continuo: con fb_count = 1 y GRAB_WHEN_EMPTY el driver solo llena
@@ -506,9 +537,15 @@ bool encenderCamara(const Perfil& perfilInicial) {
   // no se activa aquí: el esp32-camera del core viene sin
   // CONFIG_CAMERA_AF_SUPPORT, así que solo haría falta la biblioteca aparte
   // que controla el VCM.
-  const sensor_t* sensor = esp_camera_sensor_get();
+  sensor_t* sensor = esp_camera_sensor_get();  // sin const: set_vflip y set_hmirror lo piden
   if (sensor != nullptr) {
     Serial.printf("[captura] sensor PID=0x%04x\n", (int)sensor->id.PID);
+    if (g_imagenGirada) {
+      Serial.println(girarImagen() ? "[captura] imagen girada 180 grados"
+                                   : "[captura] no se pudo girar la imagen 180 grados");
+    } else {
+      Serial.println("[captura] imagen sin girar");
+    }
   }
   return true;
 }
@@ -698,6 +735,9 @@ ResultadoCaptura capturarBajoCandado(httpd_req_t* req, uint32_t inicioMs, CopiaF
       return r;
     }
     g_resolucionActual = perfil.resolucion;
+    if (g_imagenGirada && !girarImagen()) {
+      Serial.println("[captura] no se pudo girar la imagen 180 grados tras cambiar la resolución");
+    }
   }
   // La calidad va con la resolución. Es un registro del sensor: barato, así que se
   // fija siempre que se arranca o se cambia de resolución.
@@ -993,7 +1033,8 @@ void abortarInicio() {
 
 }  // namespace
 
-bool iniciar(const char* secreto, const char* ipPermitida, bool borrarPisoTs) {
+bool iniciar(const char* secreto, const char* ipPermitida, bool borrarPisoTs, bool imagenGirada) {
+  g_imagenGirada = imagenGirada;
   if (g_servidor != nullptr) {
     return true;  // ya está en marcha
   }

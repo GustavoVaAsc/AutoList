@@ -50,6 +50,13 @@
 #error "Falta RELAY_IP en secrets.h: la IP del puente (relay) o del servicio de visión que llega a /capture. Ver secrets.h.example. Sin ella la cámara aceptaría conexiones de toda la LAN."
 #endif
 
+// CAMARA_GIRADA_180 (0 o 1, opcional): gira 180 grados la imagen de la cámara
+// para la placa montada al revés. Un secrets.h anterior, que no la define,
+// sigue compilando con 0 (secrets.h.example).
+#ifndef CAMARA_GIRADA_180
+#define CAMARA_GIRADA_180 0
+#endif
+
 using logica_actuadores::PedidoBuzzer;
 using logica_actuadores::PedidoLed;
 using logica_actuadores::PedidoServo;
@@ -574,7 +581,8 @@ void setup() {
   // bloquea el lazo del MQTT (captura.h). La cámara NO se enciende aquí: la
   // enciende la primera petición firmada y se apaga sola en reposo.
   // RELAY_IP (obligatoria, secrets.h): /capture solo acepta esa IP de origen.
-  if (captura::iniciar(CAPTURA_HMAC_SECRETO, RELAY_IP, pedidoBorrarPisoTs())) {
+  if (captura::iniciar(CAPTURA_HMAC_SECRETO, RELAY_IP, pedidoBorrarPisoTs(),
+                       CAMARA_GIRADA_180 != 0)) {
     Serial.println("cámara: /capture listo (cámara apagada hasta la primera petición)");
   } else {
     Serial.println("cámara: no se pudo arrancar; /capture no responde");
